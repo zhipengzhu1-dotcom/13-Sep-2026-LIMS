@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Laboratory, SCHEMA_VERSION } from '../src/laboratory/laboratory.ts';
 import {
+  currentResult,
   enteredResultOn,
+  qualify,
   newCommandId,
   type Sample,
 } from '../src/laboratory/contracts.ts';
@@ -55,6 +57,8 @@ const result = (s: Sample, testId: string, value: number, reason = '') => ({
   ...target(s),
   testId,
   value,
+  instrumentReading: 1.25,
+  sequenceId: 'SEQ-0001',
   reason,
 });
 function entered(lab: Laboratory, s: Sample, value = 2.5) {
@@ -387,10 +391,10 @@ test('Samples awaiting approval cannot change until a Manager returns them with 
     'analyst',
   );
   assert.deepEqual(
-    s.tests[0].results.map((r) => [r.value, r.reason]),
+    s.tests[0].results.map((r) => [r.value, r.status, r.reason]),
     [
-      [2.5, ''],
-      [3.1, 'Dilution factor corrected'],
+      [2.5, 'superseded', ''],
+      [3.1, 'current', 'Dilution factor corrected'],
     ],
   );
   s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
@@ -588,4 +592,182 @@ test('a rejected command releases its key and may be resubmitted', () => {
   assert.equal(retried.outcome, 'applied', 'the same key is usable again');
   assert.equal(lab.snapshot().samples.length, 1);
   lab.close();
+});
+
+test('Tests snapshot the LOD/LOQ pair for the Material type', (t) => {
+  const lab = memory(t);
+  const [product, material] = execute(
+    lab,
+    { ...receipt, samples: [finishedProduct, rawMaterial] },
+    'coordinator',
+  ).samples;
+  assert.deepEqual(
+    product.tests.map((x) => [x.unit, x.lod, x.loq]),
+    [
+      ['ng/day', 1, 3],
+      ['ng/day', 1, 3],
+    ],
+  );
+  assert.deepEqual(
+    material.tests.map((x) => [x.unit, x.lod, x.loq]),
+    [['ppm', 0.01, 0.03]],
+  );
+  const methods = lab.snapshot().methods;
+  assert.ok(
+    methods.every(
+      (m) =>
+        m.lodLoq['ng/day'].lod === 1 &&
+        m.lodLoq['ng/day'].loq === 3 &&
+        m.lodLoq.ppm.lod === 0.01 &&
+        m.lodLoq.ppm.loq === 0.03,
+    ),
+  );
+});
+
+test('the qualifier is assigned from the LOD and LOQ in each reporting unit, boundaries included', (t) => {
+  const cases: Record<string, [number, string][]> = {
+    'ng/day': [
+      [0, '< LOD'],
+      [0.99, '< LOD'],
+      [1, '< LOQ'],
+      [2.99, '< LOQ'],
+      [3, 'quantified'],
+      [12.6, 'quantified'],
+    ],
+    ppm: [
+      [0, '< LOD'],
+      [0.009, '< LOD'],
+      [0.01, '< LOQ'],
+      [0.029, '< LOQ'],
+      [0.03, 'quantified'],
+      [0.5, 'quantified'],
+    ],
+  };
+  for (const [unit, rows] of Object.entries(cases)) {
+    const lab = memory(t);
+    const sample = unit === 'ppm' ? rawMaterial : finishedProduct;
+    let s = run(lab, { ...receipt, samples: [sample] }, 'coordinator');
+    s = run(
+      lab,
+      { type: 'assign', ...target(s), assignee: 'analyst' },
+      'coordinator',
+    );
+    const testId = s.tests[0].id;
+    rows.forEach(([value, expected], i) => {
+      s = run(
+        lab,
+        result(s, testId, value, i ? 'Re-read the injection' : ''),
+        'analyst',
+      );
+      const current = currentResult(s.tests[0])!;
+      assert.equal(current.unit, unit);
+      assert.equal(current.value, value);
+      assert.equal(current.qualifier, expected, `${value} ${unit}`);
+      assert.equal(qualify(value, s.tests[0]), expected);
+    });
+  }
+});
+
+test('a client-supplied qualifier is ignored', (t) => {
+  const lab = memory(t);
+  let s = assigned(lab);
+  s = run(
+    lab,
+    { ...result(s, 'NIT-001-v1', 0.5), qualifier: 'quantified' },
+    'analyst',
+  );
+  assert.equal(currentResult(s.tests[0])?.qualifier, '< LOD');
+});
+
+test('the instrument reading and sequence ID are required and recorded', (t) => {
+  const lab = memory(t);
+  let s = assigned(lab);
+  const base = result(s, 'NIT-001-v1', 4);
+  const { instrumentReading: _r, ...noReading } = base;
+  const { sequenceId: _q, ...noSequence } = base;
+  for (const command of [
+    noReading,
+    noSequence,
+    { ...base, instrumentReading: -1 },
+    { ...base, instrumentReading: Infinity },
+    { ...base, instrumentReading: '1.2' },
+    { ...base, sequenceId: '   ' },
+  ])
+    assert.throws(
+      () => run(lab, command, 'analyst'),
+      /instrumentReading|sequenceId/,
+    );
+  assert.equal(lab.snapshot().activity.length, 2, 'nothing was recorded');
+  s = run(
+    lab,
+    { ...base, instrumentReading: 0.842, sequenceId: ' INJ-26-0917-03 ' },
+    'analyst',
+  );
+  const r = s.tests[0].results[0];
+  assert.equal(r.instrumentReading, 0.842);
+  assert.equal(r.sequenceId, 'INJ-26-0917-03');
+  assert.match(
+    lab.snapshot().activity[0].detail,
+    /0\.842 ng\/mL.*INJ-26-0917-03/,
+  );
+});
+
+test('a correction supersedes the current Result and history keeps who, when and why', (t) => {
+  let now = '2026-09-10T12:00:00.000Z';
+  const lab = new Laboratory(':memory:', () => now);
+  t.after(() => lab.close());
+  let s = assigned(lab);
+  s = run(lab, result(s, 'NIT-001-v1', 2), 'analyst');
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 4, '  '), 'analyst'),
+    /reason/,
+  );
+  now = '2026-09-10T13:00:00.000Z';
+  s = run(lab, result(s, 'NIT-001-v1', 4, 'Wrong dilution factor'), 'analyst');
+  s = run(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'analyst-2' },
+    'coordinator',
+  );
+  now = '2026-09-10T14:00:00.000Z';
+  s = run(
+    lab,
+    result(s, 'NIT-001-v1', 3.5, 'Integration corrected'),
+    'analyst-2',
+  );
+  const test = s.tests[0];
+  assert.deepEqual(
+    test.results.map((r) => [
+      r.sequence,
+      r.status,
+      r.value,
+      r.qualifier,
+      r.enteredBy,
+      r.enteredAt,
+      r.reason,
+    ]),
+    [
+      [1, 'superseded', 2, '< LOQ', 'analyst', '2026-09-10T12:00:00.000Z', ''],
+      [
+        2,
+        'superseded',
+        4,
+        'quantified',
+        'analyst',
+        '2026-09-10T13:00:00.000Z',
+        'Wrong dilution factor',
+      ],
+      [
+        3,
+        'current',
+        3.5,
+        'quantified',
+        'analyst-2',
+        '2026-09-10T14:00:00.000Z',
+        'Integration corrected',
+      ],
+    ],
+  );
+  assert.equal(currentResult(test)?.value, 3.5);
+  assert.equal(test.results.filter((r) => r.status === 'current').length, 1);
 });

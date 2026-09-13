@@ -8,12 +8,16 @@ import React, {
 } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
+  currentResult,
   enteredResultOn,
   materialTypes,
   newCommandId,
+  qualify,
   reportingUnit,
   type Command,
   type MaterialType,
+  type Qualifier,
+  type Result,
   type Snapshot,
   type Sample,
   type SampleReceipt,
@@ -623,7 +627,11 @@ function App() {
       <div className="shell">
         <header className="topbar">
           <h1>
-            {view === 'Samples' ? 'Sample register' : view}
+            {view === 'Samples'
+              ? 'Sample register'
+              : view === 'Methods'
+                ? 'Methods & Limits'
+                : view}
             {isQueue && data && <span className="h-count">{base.length}</span>}
           </h1>
           {isQueue && (
@@ -826,13 +834,13 @@ function App() {
                                 <i
                                   key={t.id}
                                   className={
-                                    t.results.length ? 'entered' : undefined
+                                    currentResult(t) ? 'entered' : undefined
                                   }
                                 />
                               ))}
                             </span>
                             <span className="num">
-                              {s.tests.filter((t) => t.results.length).length}/
+                              {s.tests.filter((t) => currentResult(t)).length}/
                               {s.tests.length}
                             </span>
                           </td>
@@ -910,6 +918,8 @@ function App() {
                   <th>Analyte</th>
                   <th>Technique</th>
                   <th>Material types · reporting unit</th>
+                  <th className="r">LOD / LOQ, ng/day</th>
+                  <th className="r">LOD / LOQ, ppm</th>
                 </tr>
               </thead>
               <tbody>
@@ -926,13 +936,22 @@ function App() {
                         .map((t) => `${t} (${reportingUnit(t)})`)
                         .join(', ')}
                     </td>
+                    <td className="r num">
+                      {m.lodLoq['ng/day'].lod} / {m.lodLoq['ng/day'].loq}
+                    </td>
+                    <td className="r num">
+                      {m.lodLoq.ppm.lod} / {m.lodLoq.ppm.loq}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
             <p className="footnote">
-              Each Test copies its Method code, version and Analyte when the
-              Sample is received. Illustrative Methods only.
+              Each Test copies its Method code, version, Analyte and the LOD/LOQ
+              pair for the Sample's Material type when the Sample is received. A
+              Result below the LOD is reported as {'< LOD'}, from the LOD up to
+              but not including the LOQ as {'< LOQ'}. Illustrative Methods and
+              values only.
             </p>
           </div>
         ) : (
@@ -1271,7 +1290,7 @@ function SamplePanel({
     person.role === 'coordinator' &&
     !['Approved', 'Awaiting approval'].includes(s.status);
   const events = data.activity.filter((a) => a.sampleId === s.id);
-  const recorded = s.tests.filter((t) => t.results.length).length;
+  const recorded = s.tests.filter((t) => currentResult(t)).length;
   return (
     <div className="sample">
       <header className="sample-head">
@@ -1516,21 +1535,122 @@ function SamplePanel({
 }
 
 /** The one place an `enterResult` command is built, so every entry row sends
- * a Result the same way. The unit is never sent: it follows the Material type. */
-function resultDraft(s: Sample, t: Test, value: number, reason: string): Draft {
+ * a Result the same way. The unit and qualifier are never sent: the unit
+ * follows the Material type and the core assigns the qualifier. */
+function resultDraft(s: Sample, t: Test, f: FormData): Draft {
   return {
     type: 'enterResult',
     sampleId: s.id,
     revision: s.revision,
     testId: t.id,
-    value,
-    reason,
+    value: Number(f.get('value')),
+    instrumentReading: Number(f.get('instrumentReading')),
+    sequenceId: String(f.get('sequenceId') ?? ''),
+    reason: String(f.get('reason') ?? ''),
   };
+}
+
+function QualifierTag({ qualifier }: { qualifier: Qualifier }) {
+  return qualifier === 'quantified' ? null : (
+    <span className="qualifier">{qualifier}</span>
+  );
+}
+
+function ResultValue({ result: r }: { result: Result }) {
+  return (
+    <span className={'value' + (r.qualifier === 'quantified' ? '' : ' below')}>
+      <QualifierTag qualifier={r.qualifier} />
+      {r.value}
+      <small>{r.unit}</small>
+    </span>
+  );
+}
+
+/** The entry fields for one Test, with the applicable LOD/LOQ and a preview of
+ * the qualifier the core will assign to the value as typed. */
+function ResultEntry({
+  sample: s,
+  test: t,
+  current,
+  busy,
+  execute,
+  onSaved,
+}: {
+  sample: Sample;
+  test: Test;
+  current: Result | undefined;
+  busy: boolean;
+  execute: Execute;
+  onSaved: () => void;
+}) {
+  const [typed, setTyped] = useState(current ? String(current.value) : '');
+  const value = typed.trim() === '' ? NaN : Number(typed);
+  const preview =
+    Number.isFinite(value) && value >= 0 ? qualify(value, t) : null;
+  return (
+    <form
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (await execute(resultDraft(s, t, new FormData(e.currentTarget))))
+          onSaved();
+      }}
+    >
+      <label>
+        <span>Result, {t.unit}</span>
+        <input
+          name="value"
+          type="number"
+          step="any"
+          min={0}
+          required
+          inputMode="decimal"
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+        />
+      </label>
+      <output className="preview" aria-live="polite">
+        <span className="dim">
+          LOD {t.lod} · LOQ {t.loq} {t.unit}
+        </span>
+        <b>
+          {preview === null
+            ? '—'
+            : preview === 'quantified'
+              ? 'Quantified'
+              : preview}
+        </b>
+      </output>
+      <label>
+        <span>Instrument reading, ng/mL</span>
+        <input
+          name="instrumentReading"
+          type="number"
+          step="any"
+          min={0}
+          required
+          inputMode="decimal"
+        />
+      </label>
+      <label>
+        <span>Injection / sequence ID</span>
+        <input name="sequenceId" required maxLength={200} />
+      </label>
+      {current && (
+        <label className="grow">
+          <span>Reason for correction</span>
+          <input name="reason" required minLength={3} maxLength={1000} />
+        </label>
+      )}
+      <button className="btn sm primary" disabled={busy}>
+        Save
+      </button>
+    </form>
+  );
 }
 
 /** Every requested test as one row. Unrecorded tests show their entry fields
  * inline for the assigned analyst, so a whole sample can be keyed in one pass
- * with Tab and Enter; a recorded result opens for revision on request. */
+ * with Tab and Enter; a current Result opens for correction on request. */
 function TestSheet({
   sample: s,
   canRecord,
@@ -1556,8 +1676,8 @@ function TestSheet({
         </tr>
       </thead>
       {s.tests.map((t) => {
-        const latest = t.results.at(-1);
-        const editing = canRecord && (!latest || editingId === t.id);
+        const current = currentResult(t);
+        const editing = canRecord && (!current || editingId === t.id);
         const history = openHistory === t.id;
         return (
           <tbody key={t.id} className={editing ? 'editing' : undefined}>
@@ -1565,26 +1685,29 @@ function TestSheet({
               <td>
                 <span className="strong">{t.analyteName}</span>
                 <span className="sub num">
-                  {t.methodCode} v{t.methodVersion} · {t.technique}
+                  {t.methodCode} v{t.methodVersion} · {t.technique} · LOD{' '}
+                  {t.lod} / LOQ {t.loq} {t.unit}
                 </span>
               </td>
               <td className="r">
-                {latest ? (
-                  <span className="value">
-                    {latest.value}
-                    <small>{latest.unit}</small>
-                  </span>
+                {current ? (
+                  <>
+                    <ResultValue result={current} />
+                    <span className="sub num">
+                      {current.instrumentReading} ng/mL · {current.sequenceId}
+                    </span>
+                  </>
                 ) : (
                   <span className="dim">— {t.unit}</span>
                 )}
               </td>
               <td>
-                {latest ? (
+                {current ? (
                   <span className="rec">
                     <span>
-                      {initials(personName(data, latest.enteredBy))}{' '}
-                      <time className="num" dateTime={latest.enteredAt}>
-                        {stamp(latest.enteredAt)}
+                      {initials(personName(data, current.enteredBy))}{' '}
+                      <time className="num" dateTime={current.enteredAt}>
+                        {stamp(current.enteredAt)}
                       </time>
                     </span>
                     <span className="rec-actions">
@@ -1594,7 +1717,7 @@ function TestSheet({
                           aria-expanded={history}
                           onClick={() => setOpenHistory(history ? null : t.id)}
                         >
-                          v{t.results.length}
+                          History ({t.results.length})
                         </button>
                       )}
                       {canRecord && (
@@ -1604,7 +1727,7 @@ function TestSheet({
                             setEditingId(editingId === t.id ? null : t.id)
                           }
                         >
-                          {editingId === t.id ? 'Cancel' : 'Revise'}
+                          {editingId === t.id ? 'Cancel' : 'Correct'}
                         </button>
                       )}
                     </span>
@@ -1617,50 +1740,15 @@ function TestSheet({
             {editing && (
               <tr className="entry">
                 <td colSpan={3}>
-                  <form
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      const f = new FormData(e.currentTarget);
-                      if (
-                        await execute(
-                          resultDraft(
-                            s,
-                            t,
-                            Number(f.get('value')),
-                            String(f.get('reason') ?? ''),
-                          ),
-                        )
-                      )
-                        setEditingId(null);
-                    }}
-                  >
-                    <label>
-                      <span>Result, {t.unit}</span>
-                      <input
-                        name="value"
-                        type="number"
-                        step="any"
-                        min={0}
-                        required
-                        inputMode="decimal"
-                        defaultValue={latest?.value}
-                      />
-                    </label>
-                    {latest && (
-                      <label className="grow">
-                        <span>Reason for revision</span>
-                        <input
-                          name="reason"
-                          required
-                          minLength={3}
-                          maxLength={1000}
-                        />
-                      </label>
-                    )}
-                    <button className="btn sm primary" disabled={busy}>
-                      Save
-                    </button>
-                  </form>
+                  <ResultEntry
+                    key={current?.sequence ?? 0}
+                    sample={s}
+                    test={t}
+                    current={current}
+                    busy={busy}
+                    execute={execute}
+                    onSaved={() => setEditingId(null)}
+                  />
                 </td>
               </tr>
             )}
@@ -1668,18 +1756,23 @@ function TestSheet({
               <tr className="revisions">
                 <td colSpan={3}>
                   <ol>
-                    {t.results.map((r, i) => (
-                      <li key={i}>
-                        <span className="num">v{i + 1}</span>
-                        <span className="value">
-                          {r.value}
-                          <small>{r.unit}</small>
+                    {[...t.results].reverse().map((r) => (
+                      <li key={r.sequence} className={r.status}>
+                        <span className="num">#{r.sequence}</span>
+                        <span className={'result-status ' + r.status}>
+                          {r.status === 'current' ? 'Current' : 'Superseded'}
+                        </span>
+                        <ResultValue result={r} />
+                        <span className="dim num">
+                          {r.instrumentReading} ng/mL · {r.sequenceId}
                         </span>
                         <span>{personName(data, r.enteredBy)}</span>
                         <time className="dim" dateTime={r.enteredAt}>
                           {stamp(r.enteredAt)}
                         </time>
-                        {r.reason && <span className="reason">{r.reason}</span>}
+                        {r.reason && (
+                          <span className="reason">Reason: {r.reason}</span>
+                        )}
                       </li>
                     ))}
                   </ol>

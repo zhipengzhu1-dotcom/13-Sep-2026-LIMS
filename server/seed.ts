@@ -26,6 +26,8 @@ export function discardOutdatedDemoDatabase(file: string) {
     rmSync(file + suffix, { force: true });
 }
 
+const pad = (n: number) => String(n).padStart(2, '0');
+
 type Stage = 'received' | 'progress' | 'awaiting' | 'returned' | 'approved';
 
 /** Drives the public command seam, so demo records carry real activity. */
@@ -140,11 +142,25 @@ export function seed(lab: Laboratory) {
       };
       act({ type: 'assign', assignee: 'analyst' }, 'coordinator');
       s.tests.forEach((t, j) => {
-        if (j < values.length)
+        if (j >= values.length) return;
+        const entry = (value: number, run: number, reason = '') =>
           act(
-            { type: 'enterResult', testId: t.id, value: values[j], reason: '' },
+            {
+              type: 'enterResult',
+              testId: t.id,
+              value,
+              // Illustrative only: the analyst converts ng/mL by hand.
+              instrumentReading: Math.round(value * 1000) / 100,
+              sequenceId: `SEQ-${s.id}-${pad(j + 1)}-${run}`,
+              reason,
+            },
             'analyst',
           );
+        if (stage === 'awaiting' && j === 0) {
+          // One corrected Result, so the demo shows a superseded entry.
+          entry(values[j] - 0.5, 1);
+          entry(values[j], 2, 'Wrong injection selected; re-read sequence.');
+        } else entry(values[j], 1);
       });
       if (stage === 'progress') return;
       act({ type: 'submitForApproval' }, 'analyst');

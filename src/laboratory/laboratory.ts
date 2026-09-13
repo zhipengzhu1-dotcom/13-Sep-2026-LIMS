@@ -3,9 +3,11 @@ import { createHash } from 'node:crypto';
 import {
   analytes,
   commandSchema,
+  currentResult,
   enteredResultOn,
   methods,
   people,
+  qualify,
   reportingUnit,
   type Actor,
   type Activity,
@@ -21,7 +23,7 @@ import {
 } from './contracts.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export class WorkflowError extends Error {
   constructor(
@@ -128,6 +130,7 @@ function testOf(method: Method, unit: ReportingUnit): Test {
     analyteName: analyte.name,
     technique: method.technique,
     unit,
+    ...method.lodLoq[unit],
     results: [],
   };
 }
@@ -215,23 +218,33 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     requireAssignedAnalyst(actor, sample);
     const test = sample.tests.find((t) => t.id === command.testId);
     if (!test) throw new WorkflowError('Test not found.');
-    const previous = test.results.at(-1);
+    const previous = currentResult(test);
     if (previous && command.reason.length < 3)
       throw new WorkflowError('Give a reason for changing the Result.');
-    // The unit comes from the Test, which took it from the Material type.
+    if (previous) previous.status = 'superseded';
+    // The unit and LOD/LOQ come from the Test, which took them from the
+    // Material type at receipt; the qualifier is never entered.
+    const qualifier = qualify(command.value, test);
     test.results.push({
+      sequence: test.results.length + 1,
+      status: 'current',
       value: command.value,
       unit: test.unit,
+      qualifier,
+      instrumentReading: command.instrumentReading,
+      sequenceId: command.sequenceId,
       enteredBy: actor.id,
       enteredAt: at,
       reason: command.reason,
     });
-    return `${test.analyteName} (${test.methodCode} v${test.methodVersion}): ${previous ? `${previous.value} → ` : ''}${command.value} ${test.unit}${command.reason ? `; reason: ${command.reason}` : ''}.`;
+    const shown = (v: number, q: string) =>
+      `${v} ${test.unit}${q === 'quantified' ? '' : ` (${q})`}`;
+    return `${test.analyteName} (${test.methodCode} v${test.methodVersion}): ${previous ? `${shown(previous.value, previous.qualifier)} → ` : ''}${shown(command.value, qualifier)}; reading ${command.instrumentReading} ng/mL, sequence ${command.sequenceId}${command.reason ? `; reason: ${command.reason}` : ''}.`;
   },
 
   submitForApproval(_command, actor, sample) {
     requireAssignedAnalyst(actor, sample);
-    if (sample.tests.some((t) => !t.results.length))
+    if (sample.tests.some((t) => !currentResult(t)))
       throw new WorkflowError(
         'Enter a Result for every Test before submitting.',
       );

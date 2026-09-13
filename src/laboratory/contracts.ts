@@ -36,7 +36,12 @@ export type Method = {
   analyteId: Analyte['id'];
   technique: string;
   materialTypes: readonly MaterialType[];
+  /** Fixed, validated values in both reporting units (ADR-0002). */
+  lodLoq: Readonly<Record<ReportingUnit, LodLoq>>;
 };
+
+/** A limit of detection and limit of quantitation in one reporting unit. */
+export type LodLoq = { lod: number; loq: number };
 
 const method = (code: string, analyteId: Analyte['id']): Method => ({
   id: `${code}-v1`,
@@ -45,6 +50,7 @@ const method = (code: string, analyteId: Analyte['id']): Method => ({
   analyteId,
   technique: 'LC-MS/MS',
   materialTypes,
+  lodLoq: { 'ng/day': { lod: 1, loq: 3 }, ppm: { lod: 0.01, loq: 0.03 } },
 });
 /** Illustrative placeholders; each Method measures exactly one Analyte. */
 export const methods: readonly Method[] = [
@@ -55,9 +61,35 @@ export const methods: readonly Method[] = [
   method('NIT-005', 'impurity-c'),
 ];
 
+export type Qualifier = '< LOD' | '< LOQ' | 'quantified';
+
+/** Where a value falls against the LOD and LOQ. Both bounds are inclusive on
+ * the upper side: exactly the LOD is `< LOQ`, exactly the LOQ is quantified. */
+export function qualify(value: number, { lod, loq }: LodLoq): Qualifier {
+  if (value < lod) return '< LOD';
+  if (value < loq) return '< LOQ';
+  return 'quantified';
+}
+
+/**
+ * `current` is the Result a Test reports; `superseded` was replaced by a
+ * correction. Results are never deleted, only moved out of `current`.
+ */
+export type ResultStatus = 'current' | 'superseded';
+
 export type Result = {
+  /** Unique within its Test: 1 for the first Result, counting up. */
+  sequence: number;
+  status: ResultStatus;
+  /** In the Test's reporting unit, calculated by hand (ADR-0002). */
   value: number;
   unit: ReportingUnit;
+  /** Assigned by the core from the Test's LOD/LOQ; never entered. */
+  qualifier: Qualifier;
+  /** The instrument reading in ng/mL the value was calculated from. */
+  instrumentReading: number;
+  /** The injection or sequence ID that traces the Result to raw data. */
+  sequenceId: string;
   enteredBy: string;
   enteredAt: string;
   /** Empty for a first Result; required when it replaces the current one. */
@@ -75,9 +107,18 @@ export type Test = {
   analyteName: string;
   technique: string;
   unit: ReportingUnit;
-  /** Every Result ever entered, oldest first; the last one is current. */
+  /** The Method's LOD/LOQ pair for this Sample's reporting unit, copied at
+   * receipt. */
+  lod: number;
+  loq: number;
+  /** Every Result ever entered, oldest first, each with its status. */
   results: Result[];
 };
+
+/** The Result a Test currently reports, if any. */
+export function currentResult(test: Test): Result | undefined {
+  return test.results.find((r) => r.status === 'current');
+}
 
 export const sampleStatuses = [
   'Received',
@@ -185,6 +226,8 @@ export const commandSchema = z.discriminatedUnion('type', [
     ...target,
     testId: text,
     value: z.number().finite().nonnegative(),
+    instrumentReading: z.number().finite().nonnegative(),
+    sequenceId: text,
     reason: z.string().trim().max(1000),
   }),
   z.object({ commandId, type: z.literal('submitForApproval'), ...target }),
