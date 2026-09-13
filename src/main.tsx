@@ -8,12 +8,15 @@ import React, {
 } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
+  auditsSample,
   currentResult,
   enteredResultOn,
   materialTypes,
   newCommandId,
   qualify,
   reportingUnit,
+  type AuditEntry,
+  type AuditValue,
   type Command,
   type MaterialType,
   type Qualifier,
@@ -31,7 +34,7 @@ type View =
   | 'My work'
   | 'Approval queue'
   | 'Methods'
-  | 'Activity';
+  | 'Audit trail';
 const QUEUES: View[] = ['Receiving', 'Samples', 'My work', 'Approval queue'];
 
 /** A command as a screen writes it. The key is minted by `execute`, not by the
@@ -47,9 +50,9 @@ type Execute = (command: Draft) => Promise<boolean>;
  * `requireAssignedAnalyst` in laboratory.ts), so there is no reason to show
  * them a queue they cannot use. */
 function viewsForRole(role: string | undefined): View[] {
-  if (role === 'analyst') return ['My work', 'Methods', 'Activity'];
-  if (role === 'manager') return ['Approval queue', 'Methods', 'Activity'];
-  return ['Receiving', 'Samples', 'Methods', 'Activity'];
+  if (role === 'analyst') return ['My work', 'Methods', 'Audit trail'];
+  if (role === 'manager') return ['Approval queue', 'Methods', 'Audit trail'];
+  return ['Receiving', 'Samples', 'Methods', 'Audit trail'];
 }
 function defaultViewForRole(role: string | undefined): View {
   return viewsForRole(role)[0];
@@ -169,7 +172,7 @@ function Icon({ name }: { name: string }) {
         <path d="M12 6v13M7 9h2m6 0h2M7 13h2m6 0h2" />
       </>
     ),
-    Activity: (
+    'Audit trail': (
       <>
         <path d="M3 12a9 9 0 1 0 3-7L3 8m0-5v5h5" />
         <path d="M12 7v5l3 2" />
@@ -956,7 +959,7 @@ function App() {
           </div>
         ) : (
           <div className="scroll page">
-            <ActivityTable events={data.activity} data={data} showSample />
+            <AuditTable entries={data.audit} data={data} showSample />
           </div>
         )}
         <footer className="statusbar">
@@ -1289,7 +1292,7 @@ function SamplePanel({
   const canAssign =
     person.role === 'coordinator' &&
     !['Approved', 'Awaiting approval'].includes(s.status);
-  const events = data.activity.filter((a) => a.sampleId === s.id);
+  const history = data.audit.filter((e) => auditsSample(e, s));
   const recorded = s.tests.filter((t) => currentResult(t)).length;
   return (
     <div className="sample">
@@ -1410,7 +1413,7 @@ function SamplePanel({
             <span className="tab-n">
               {t === 'Results'
                 ? `${recorded}/${s.tests.length}`
-                : events.length}
+                : history.length}
             </span>
           </button>
         ))}
@@ -1422,7 +1425,7 @@ function SamplePanel({
         aria-labelledby={`${tabIds}-tab-${tab}`}
       >
         {tab === 'History' ? (
-          <ActivityTable events={events} data={data} />
+          <AuditTable entries={history} data={data} />
         ) : (
           <>
             {s.status === 'Returned' && s.lastReturn && (
@@ -1786,7 +1789,7 @@ function TestSheet({
   );
 }
 
-const ACTION_LABELS: Record<string, string> = {
+const COMMAND_LABELS: Record<string, string> = {
   receiveSubmission: 'Received',
   assign: 'Assigned',
   enterResult: 'Result entered',
@@ -1795,46 +1798,81 @@ const ACTION_LABELS: Record<string, string> = {
   return: 'Returned',
 };
 
-function ActivityTable({
-  events,
+const auditValue = (value: AuditValue) =>
+  value === null ? <span className="none">empty</span> : String(value);
+
+/** A Test's record ID repeats its Sample, which the History tab already shows. */
+const recordLabel = (e: AuditEntry, showSample: boolean) =>
+  e.recordType === 'Test' && !showSample
+    ? `Test ${e.recordId.slice(e.recordId.indexOf('/') + 1)}`
+    : `${e.recordType} ${e.recordId}`;
+
+/** The audit trail, newest first, one group per command: who acted, when and
+ * through which command, then each field it changed with the reason. */
+function AuditTable({
+  entries,
   data,
   showSample = false,
 }: {
-  events: Snapshot['activity'];
+  entries: AuditEntry[];
   data: Snapshot;
   showSample?: boolean;
 }) {
-  if (!events.length) return <p className="blank">No activity yet.</p>;
+  if (!entries.length) return <p className="blank">No audit entries yet.</p>;
+  // Entries of one command are contiguous, because a command writes all of its
+  // entries inside its own transaction.
+  const commands: AuditEntry[][] = [];
+  for (const e of entries) {
+    const last = commands.at(-1);
+    if (last && last[0].commandId === e.commandId) last.push(e);
+    else commands.push([e]);
+  }
   return (
-    <table className="grid activity">
+    <table className="grid audit">
       <thead>
         <tr>
-          <th>Time</th>
-          {showSample && <th>Sample</th>}
-          <th>By</th>
-          <th>Action</th>
-          <th>Detail</th>
+          <th>Record</th>
+          <th>Field</th>
+          <th>Old value</th>
+          <th>New value</th>
+          <th>Reason</th>
         </tr>
       </thead>
-      <tbody>
-        {events.map((e) => (
-          <tr key={e.id}>
-            <td className="num nowrap">
-              <time dateTime={e.at}>{stamp(e.at)}</time>
-            </td>
-            {showSample && <td className="num nowrap">{e.sampleId}</td>}
-            <td className="nowrap">
-              {data.people.find((p) => p.id === e.actor)?.name ?? e.actor}
-            </td>
-            <td>
-              <span className={'action a-' + e.action}>
-                {ACTION_LABELS[e.action] ?? e.action}
-              </span>
-            </td>
-            <td className="wrap">{e.detail}</td>
-          </tr>
-        ))}
-      </tbody>
+      {commands.map((group) => {
+        const [first] = group;
+        // Written in field order, so show them that way under the newest-first
+        // command headings.
+        const fields = [...group].reverse();
+        return (
+          <tbody key={first.commandId}>
+            <tr className="audit-command">
+              <th colSpan={5} scope="rowgroup">
+                <time dateTime={first.at}>{stamp(first.at)}</time>
+                <span className={'action a-' + first.commandType}>
+                  {COMMAND_LABELS[first.commandType] ?? first.commandType}
+                </span>
+                <span>{personName(data, first.actor) ?? first.actor}</span>
+                {showSample && (
+                  <span className="num">
+                    {[...new Set(group.map((e) => e.sampleId ?? e.recordId))]
+                      .sort()
+                      .join(', ')}
+                  </span>
+                )}
+              </th>
+            </tr>
+            {fields.map((e) => (
+              <tr key={e.sequence}>
+                <td className="num nowrap">{recordLabel(e, showSample)}</td>
+                <td className="num nowrap">{e.field}</td>
+                <td className="wrap">{auditValue(e.oldValue)}</td>
+                <td className="wrap">{auditValue(e.newValue)}</td>
+                <td className="wrap">{e.reason}</td>
+              </tr>
+            ))}
+          </tbody>
+        );
+      })}
     </table>
   );
 }

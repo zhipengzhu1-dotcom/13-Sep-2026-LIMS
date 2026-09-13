@@ -30,7 +30,7 @@ const pad = (n: number) => String(n).padStart(2, '0');
 
 type Stage = 'received' | 'progress' | 'awaiting' | 'returned' | 'approved';
 
-/** Drives the public command seam, so demo records carry real activity. */
+/** Drives the public command seam, so demo records carry a real audit trail. */
 export function seed(lab: Laboratory) {
   if (lab.snapshot().submissions.length) return;
   const due = (days: number) =>

@@ -10,7 +10,7 @@ import {
   qualify,
   reportingUnit,
   type Actor,
-  type Activity,
+  type AuditEntry,
   type Command,
   type CommandOutcome,
   type Method,
@@ -21,9 +21,10 @@ import {
   type Submission,
   type Test,
 } from './contracts.ts';
+import { AuditTrail, auditRecord, type Audit } from './audit.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export class WorkflowError extends Error {
   constructor(
@@ -92,30 +93,35 @@ type Series = 'submission' | 'sample';
  * own verb means. `at` is the single timestamp for the whole command, so every
  * row a command writes bears the same instant. `allocate` takes the next number
  * of a per-year sequence inside the same transaction, so a rejected command
- * consumes none.
+ * consumes none. `audit` writes the command's field-level audit entries; every
+ * command must write at least one.
  */
-type Context = { at: string; allocate: (series: Series) => number };
+type Context = {
+  at: string;
+  allocate: (series: Series) => number;
+  audit: Audit;
+};
 
 /**
  * Receipt is the one verb that creates its subjects, so it returns the
- * Submission and its Samples, each with its activity detail.
+ * Submission and its Samples.
  */
 type ReceiptHandler = (
   command: CommandOf<'receiveSubmission'>,
   actor: Actor,
   context: Context,
-) => { submission: Submission; samples: Sample[]; details: string[] };
+) => { submission: Submission; samples: Sample[] };
 
 /**
  * Every other verb acts on one Sample: it is handed the loaded Sample, mutates
- * it in place and returns only the activity detail.
+ * it in place, auditing each change.
  */
 type SampleHandler<T extends SampleCommandType> = (
   command: CommandOf<T>,
   actor: Actor,
   sample: Sample,
   context: Context,
-) => string;
+) => void;
 
 const pad = (n: number, width: number) => String(n).padStart(width, '0');
 
@@ -138,7 +144,7 @@ function testOf(method: Method, unit: ReportingUnit): Test {
 const receiveSubmission: ReceiptHandler = (
   command,
   actor,
-  { at, allocate },
+  { at, allocate, audit },
 ) => {
   requireRole(actor, 'coordinator');
   // Every Sample is checked before any identifier is allocated.
@@ -187,18 +193,23 @@ const receiveSubmission: ReceiptHandler = (
     submission.sampleIds.push(sample.id);
     return sample;
   });
-  return {
-    submission,
-    samples,
-    details: samples.map(
-      (s) =>
-        `Received under ${submission.id}: ${s.product}, batch ${s.batch}, ${s.materialType}; ${s.tests.length} Test(s).`,
-    ),
-  };
+  audit.compare(auditRecord.submission(submission), null, submission, {
+    omit: ['id', 'sampleIds'],
+  });
+  for (const sample of samples) {
+    audit.compare(auditRecord.sample(sample), null, sample, {
+      omit: ['id', 'tests', 'revision', 'lastReturn'],
+    });
+    for (const test of sample.tests)
+      audit.compare(auditRecord.test(sample, test), null, test, {
+        omit: ['id', 'results'],
+      });
+  }
+  return { submission, samples };
 };
 
 const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
-  assign(command, actor, sample) {
+  assign(command, actor, sample, { audit }) {
     requireRole(actor, 'coordinator');
     if (sample.status === 'Awaiting approval')
       throw new WorkflowError(
@@ -208,26 +219,29 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       (p) => p.id === command.assignee && p.role === 'analyst',
     );
     if (!analyst) throw new WorkflowError('Select an analyst.');
-    const detail = `Assigned to ${analyst.name} (previous: ${sample.assignee ?? 'unassigned'}).`;
-    sample.assignee = analyst.id;
-    if (sample.status === 'Received') sample.status = 'In progress';
-    return detail;
+    if (sample.assignee === analyst.id)
+      throw new WorkflowError(
+        `The Sample is already assigned to ${analyst.name}.`,
+      );
+    const record = auditRecord.sample(sample);
+    audit.set(record, sample, 'assignee', analyst.id);
+    if (sample.status === 'Received')
+      audit.set(record, sample, 'status', 'In progress');
   },
 
-  enterResult(command, actor, sample, { at }) {
+  enterResult(command, actor, sample, { at, audit }) {
     requireAssignedAnalyst(actor, sample);
     const test = sample.tests.find((t) => t.id === command.testId);
     if (!test) throw new WorkflowError('Test not found.');
     const previous = currentResult(test);
     if (previous && command.reason.length < 3)
       throw new WorkflowError('Give a reason for changing the Result.');
-    if (previous) previous.status = 'superseded';
     // The unit and LOD/LOQ come from the Test, which took them from the
     // Material type at receipt; the qualifier is never entered.
     const qualifier = qualify(command.value, test);
-    test.results.push({
+    const next = {
       sequence: test.results.length + 1,
-      status: 'current',
+      status: 'current' as const,
       value: command.value,
       unit: test.unit,
       qualifier,
@@ -236,24 +250,50 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       enteredBy: actor.id,
       enteredAt: at,
       reason: command.reason,
-    });
-    const shown = (v: number, q: string) =>
-      `${v} ${test.unit}${q === 'quantified' ? '' : ` (${q})`}`;
-    return `${test.analyteName} (${test.methodCode} v${test.methodVersion}): ${previous ? `${shown(previous.value, previous.qualifier)} → ` : ''}${shown(command.value, qualifier)}; reading ${command.instrumentReading} ng/mL, sequence ${command.sequenceId}${command.reason ? `; reason: ${command.reason}` : ''}.`;
+    };
+    // The actor, time and reason are the entry's own columns, and the sequence
+    // and status only say which Result is current, so only the Result's
+    // content is compared, field by field, with the current Result.
+    const record = auditRecord.test(sample, test);
+    const reason = command.reason;
+    const changed = audit.compare(
+      record,
+      previous ? { result: previous } : null,
+      { result: next },
+      {
+        reason,
+        omit: [
+          'result.sequence',
+          'result.status',
+          'result.enteredBy',
+          'result.enteredAt',
+          'result.reason',
+        ],
+      },
+    );
+    // Re-entering an unchanged value is still an act the trail must show.
+    if (!changed)
+      audit.change(record, 'result.value', previous!.value, next.value, reason);
+    if (previous) previous.status = 'superseded';
+    test.results.push(next);
   },
 
-  submitForApproval(_command, actor, sample) {
+  submitForApproval(_command, actor, sample, { audit }) {
     requireAssignedAnalyst(actor, sample);
     if (sample.tests.some((t) => !currentResult(t)))
       throw new WorkflowError(
         'Enter a Result for every Test before submitting.',
       );
-    sample.status = 'Awaiting approval';
+    audit.set(
+      auditRecord.sample(sample),
+      sample,
+      'status',
+      'Awaiting approval',
+    );
     sample.lastReturn = null;
-    return 'Submitted all Results for approval.';
   },
 
-  approve(_command, actor, sample) {
+  approve(_command, actor, sample, { audit }) {
     requireRole(actor, 'manager');
     requireAwaitingApproval(sample);
     if (enteredResultOn(sample, actor.id))
@@ -261,16 +301,21 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
         'A Manager cannot approve a Sample on which they entered a Result.',
         403,
       );
-    sample.status = 'Approved';
-    return 'Approved.';
+    audit.set(auditRecord.sample(sample), sample, 'status', 'Approved');
   },
 
-  return(command, actor, sample, { at }) {
+  return(command, actor, sample, { at, audit }) {
     requireRole(actor, 'manager');
     requireAwaitingApproval(sample);
-    sample.status = 'Returned';
+    // The comment is the reason for the change of status.
+    audit.set(
+      auditRecord.sample(sample),
+      sample,
+      'status',
+      'Returned',
+      command.comment,
+    );
     sample.lastReturn = { comment: command.comment, by: actor.id, at };
-    return `Returned to the analyst: ${command.comment}`;
   },
 };
 
@@ -280,6 +325,7 @@ type Subject = { submissionId: string | null; sampleIds: string[] };
 
 export class Laboratory {
   private db: DatabaseSync;
+  private audit: AuditTrail;
   constructor(
     path: string,
     private clock = () => new Date().toISOString(),
@@ -289,7 +335,6 @@ export class Laboratory {
       CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, document TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS samples (id TEXT PRIMARY KEY, document TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sequences (series TEXT NOT NULL, year INTEGER NOT NULL, value INTEGER NOT NULL, PRIMARY KEY (series, year)) WITHOUT ROWID;
-      CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, sampleId TEXT NOT NULL, action TEXT NOT NULL, actor TEXT NOT NULL, at TEXT NOT NULL, detail TEXT NOT NULL, commandId BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS commands (commandId BLOB PRIMARY KEY, actorId TEXT NOT NULL, commandType TEXT NOT NULL, fingerprint BLOB NOT NULL, receivedAt TEXT NOT NULL, subject TEXT) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS commandReplays (id INTEGER PRIMARY KEY, commandId BLOB NOT NULL REFERENCES commands(commandId), at TEXT NOT NULL, actorId TEXT NOT NULL);`);
     // Stamp the schema version only on a database that has none. A migration
@@ -299,6 +344,7 @@ export class Laboratory {
       .prepare('PRAGMA user_version')
       .get() as { user_version: number };
     if (version === 0) this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
+    this.audit = new AuditTrail(this.db);
   }
 
   close() {
@@ -309,22 +355,26 @@ export class Laboratory {
     return {
       submissions: this.documents('submissions'),
       samples: this.documents('samples'),
-      activity: this.db
-        .prepare(
-          'SELECT id, sampleId, action, actor, at, detail FROM activity ORDER BY id DESC',
-        )
-        .all() as Activity[],
+      audit: this.audit.entries(),
       people,
       analytes,
       methods,
     };
   }
 
+  /** The audit trail, newest first: lab-wide, or one Sample's history
+   * (the Sample, its Tests and Results, and its Submission). */
+  auditTrail(sampleId?: string): AuditEntry[] {
+    return this.audit.entries(
+      sampleId === undefined ? undefined : this.load(sampleId),
+    );
+  }
+
   /**
    * The single entry point, and the only place that opens a transaction.
    * It resolves the actor, validates the command, loads and guards the subject,
    * dispatches to exactly one handler, and writes the records and their
-   * activity rows together. Nothing below this method may call BEGIN.
+   * audit entries together. Nothing below this method may call BEGIN.
    */
   execute(input: unknown, actorId: string): CommandOutcome {
     const actor = people.find((p) => p.id === actorId);
@@ -341,9 +391,17 @@ export class Laboratory {
     const fingerprint = fingerprintOf(command);
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      const at = this.clock();
+      const audit = this.audit.writer({
+        actor: actor.id,
+        at,
+        commandType: command.type,
+        commandId: command.commandId,
+      });
       const context: Context = {
-        at: this.clock(),
-        allocate: (series) => this.allocate(series, context.at),
+        at,
+        allocate: (series) => this.allocate(series, at),
+        audit,
       };
       // Claim the key as the first statement inside the transaction, before any
       // validation or domain work. A suppressed insert returns no row, which is
@@ -363,19 +421,9 @@ export class Laboratory {
       let submission: Submission | null = null;
       let samples: Sample[];
       if (command.type === 'receiveSubmission') {
-        const receipt = receiveSubmission(command, actor, context);
-        ({ submission, samples } = receipt);
+        ({ submission, samples } = receiveSubmission(command, actor, context));
         this.save('submissions', submission.id, submission);
-        samples.forEach((s, i) =>
-          this.persist(
-            s,
-            command.type,
-            actor,
-            context,
-            receipt.details[i],
-            key,
-          ),
-        );
+        for (const s of samples) this.save('samples', s.id, s);
       } else {
         const sample = this.load(command.sampleId);
         if (sample.revision !== command.revision)
@@ -391,11 +439,14 @@ export class Laboratory {
         const handler = sampleHandlers[
           command.type
         ] as SampleHandler<SampleCommandType>;
-        const detail = handler(command, actor, sample, context);
+        handler(command, actor, sample, context);
         sample.revision++;
-        this.persist(sample, command.type, actor, context, detail, key);
+        this.save('samples', sample.id, sample);
         samples = [sample];
       }
+      // A command that changed nothing on the record must not pass silently.
+      if (!audit.written)
+        throw new Error(`${command.type} wrote no audit entry.`);
       const subject: Subject = {
         submissionId: submission?.id ?? null,
         sampleIds: samples.map((s) => s.id),
@@ -512,21 +563,5 @@ export class Laboratory {
         `INSERT INTO ${table} (id, document) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET document=excluded.document`,
       )
       .run(id, JSON.stringify(document));
-  }
-
-  private persist(
-    sample: Sample,
-    action: Command['type'],
-    actor: Actor,
-    { at }: Context,
-    detail: string,
-    commandId: Uint8Array,
-  ) {
-    this.save('samples', sample.id, sample);
-    this.db
-      .prepare(
-        'INSERT INTO activity (sampleId, action, actor, at, detail, commandId) VALUES (?, ?, ?, ?, ?, ?)',
-      )
-      .run(sample.id, action, actor.id, at, detail, commandId);
   }
 }

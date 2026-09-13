@@ -1155,12 +1155,33 @@ body.resizing {
   overflow-wrap: anywhere;
 }
 
-/* activity */
-.activity td {
+/* audit trail */
+.audit td {
   vertical-align: top;
-  padding-top: 7px;
-  padding-bottom: 7px;
+  padding-top: 5px;
+  padding-bottom: 5px;
   height: auto;
+}
+.audit .audit-command th {
+  position: static;
+  height: auto;
+  padding: 7px 10px 5px;
+  background: var(--raised);
+  color: var(--ink);
+  font-size: inherit;
+  font-weight: 400;
+  font-variation-settings: normal;
+  white-space: normal;
+}
+.audit-command th > * + * {
+  margin-left: 12px;
+}
+.audit-command time {
+  color: var(--muted);
+}
+.audit .none {
+  color: var(--muted);
+  font-style: italic;
 }
 .action {
   font-weight: 600;

@@ -156,19 +156,50 @@ export type Sample = {
   revision: number;
 };
 
-export type Activity = {
-  id: number;
-  sampleId: string;
-  action: string;
+/** The kinds of record an audit entry can describe. */
+export type AuditRecordType = 'Submission' | 'Sample' | 'Test';
+/** A single field's value as the audit trail keeps it. */
+export type AuditValue = string | number | boolean | null;
+
+/**
+ * One field-level change made by one command (ADR-0001: who, when, old value,
+ * new value, reason). Entries are append-only: nothing in the application
+ * updates or deletes them. A new record is written as one entry per field with
+ * an `oldValue` of null.
+ */
+export type AuditEntry = {
+  /** Position in the lab-wide trail; a later entry always has a higher one. */
+  sequence: number;
+  recordType: AuditRecordType;
+  /** A Submission or Sample ID, or `{sampleId}/{testId}` for a Test. */
+  recordId: string;
+  /** The Sample the record belongs to; null for a Submission. */
+  sampleId: string | null;
+  /** The field, with dotted paths for nested values (`result.value`). */
+  field: string;
+  oldValue: AuditValue;
+  newValue: AuditValue;
+  reason: string | null;
   actor: string;
   at: string;
-  detail: string;
+  commandType: Command['type'];
+  commandId: string;
 };
+
+/** Whether an entry is part of a Sample's own history: the Sample, its Tests
+ * and Results, and the Submission it was received under. */
+export function auditsSample(entry: AuditEntry, sample: Sample) {
+  return entry.sampleId === null
+    ? entry.recordType === 'Submission' &&
+        entry.recordId === sample.submissionId
+    : entry.sampleId === sample.id;
+}
 
 export type Snapshot = {
   submissions: Submission[];
   samples: Sample[];
-  activity: Activity[];
+  /** The lab-wide audit trail, newest first. */
+  audit: AuditEntry[];
   people: typeof people;
   analytes: typeof analytes;
   methods: typeof methods;
