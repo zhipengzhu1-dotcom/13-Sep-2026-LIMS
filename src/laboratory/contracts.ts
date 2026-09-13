@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import type { AcceptableIntake, ConformityStatement } from './limits.ts';
+
+export * from './limits.ts';
 
 /** Lab users as the workspace shows them. Sign-in accounts (with password
  * hashes, server side only) are seeded from this list in src/accounts. */
@@ -94,6 +97,11 @@ export type Result = {
   enteredAt: string;
   /** Empty for a first Result; required when it replaces the current one. */
   reason: string;
+  /** A copy of the Acceptable intake entry in force when the Result was
+   * entered, kept even after a newer entry is added; null for raw materials. */
+  limit: AcceptableIntake | null;
+  /** Decided by the core when the Result is entered; never entered. */
+  conformity: ConformityStatement;
 };
 
 /** One Method applied to one Sample. The Method's identity and Analyte are
@@ -235,6 +243,8 @@ export type Snapshot = {
   people: typeof people;
   analytes: typeof analytes;
   methods: typeof methods;
+  /** Every Acceptable intake entry, current and historical, in append order. */
+  acceptableIntakes: AcceptableIntake[];
 };
 
 /**

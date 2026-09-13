@@ -1,9 +1,15 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import {
+  acceptableIntakeEntrySchema,
   analytes,
   commandSchema,
+  conformity,
   currentResult,
+  limitInForce,
+  seededAcceptableIntakes,
+  type AcceptableIntake,
+  type AcceptableIntakeEntry,
   enteredResultOn,
   methods,
   people,
@@ -16,6 +22,7 @@ import {
   type CommandOutcome,
   type Method,
   type ReportingUnit,
+  type Result,
   type Sample,
   type SampleStatus,
   type Signature,
@@ -27,7 +34,7 @@ import {
 import { AuditTrail, auditRecord, type Audit } from './audit.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export class WorkflowError extends Error {
   constructor(
@@ -105,12 +112,14 @@ type Series = 'submission' | 'sample';
  * row a command writes bears the same instant. `allocate` takes the next number
  * of a per-year sequence inside the same transaction, so a rejected command
  * consumes none. `audit` writes the command's field-level audit entries; every
- * command must write at least one.
+ * command must write at least one. `limitInForce` is the Acceptable intake
+ * entry for an Analyte in force at `at`.
  */
 type Context = {
   at: string;
   allocate: (series: Series) => number;
   audit: Audit;
+  limitInForce: (analyteId: string) => AcceptableIntake | null;
 };
 
 /**
@@ -240,17 +249,27 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       audit.set(record, sample, 'status', 'In progress');
   },
 
-  enterResult(command, actor, sample, { at, audit }) {
+  enterResult(command, actor, sample, { at, audit, limitInForce }) {
     requireAssignedAnalyst(actor, sample);
     const test = sample.tests.find((t) => t.id === command.testId);
     if (!test) throw new WorkflowError('Test not found.');
     const previous = currentResult(test);
     if (previous && command.reason.length < 3)
       throw new WorkflowError('Give a reason for changing the Result.');
+    // Finished products are judged against the entry in force now; raw
+    // materials have no Limit.
+    const limit =
+      sample.materialType === 'finished product'
+        ? limitInForce(test.analyteId)
+        : null;
+    if (sample.materialType === 'finished product' && !limit)
+      throw new WorkflowError(
+        `No Acceptable intake is in force for ${test.analyteName}.`,
+      );
     // The unit and LOD/LOQ come from the Test, which took them from the
     // Material type at receipt; the qualifier is never entered.
     const qualifier = qualify(command.value, test);
-    const next = {
+    const next: Result = {
       sequence: test.results.length + 1,
       status: 'current' as const,
       value: command.value,
@@ -261,16 +280,26 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       enteredBy: actor.id,
       enteredAt: at,
       reason: command.reason,
+      limit,
+      conformity: conformity({ value: command.value, qualifier }, test, limit),
     };
     // The actor, time and reason are the entry's own columns, and the sequence
     // and status only say which Result is current, so only the Result's
-    // content is compared, field by field, with the current Result.
+    // content is compared, field by field, with the current Result. The Limit
+    // is a copy of reference data, so the trail names its entry and value
+    // rather than every field of the source it was published in.
+    const audited = (r: Result) => ({
+      result: {
+        ...r,
+        limit: r.limit && { entry: r.limit.id, value: r.limit.value },
+      },
+    });
     const record = auditRecord.test(sample, test);
     const reason = command.reason;
     const changed = audit.compare(
       record,
-      previous ? { result: previous } : null,
-      { result: next },
+      previous ? audited(previous) : null,
+      audited(next),
       {
         reason,
         omit: [
@@ -350,7 +379,16 @@ export class Laboratory {
       CREATE TABLE IF NOT EXISTS sequences (series TEXT NOT NULL, year INTEGER NOT NULL, value INTEGER NOT NULL, PRIMARY KEY (series, year)) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS signatures (id INTEGER PRIMARY KEY, sampleId TEXT NOT NULL, signerId TEXT NOT NULL, printedName TEXT NOT NULL, signedAt TEXT NOT NULL, meaning TEXT NOT NULL, command TEXT NOT NULL, commandId BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS commands (commandId BLOB PRIMARY KEY, actorId TEXT NOT NULL, commandType TEXT NOT NULL, fingerprint BLOB NOT NULL, receivedAt TEXT NOT NULL, subject TEXT) WITHOUT ROWID;
-      CREATE TABLE IF NOT EXISTS commandReplays (id INTEGER PRIMARY KEY, commandId BLOB NOT NULL REFERENCES commands(commandId), at TEXT NOT NULL, actorId TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS commandReplays (id INTEGER PRIMARY KEY, commandId BLOB NOT NULL REFERENCES commands(commandId), at TEXT NOT NULL, actorId TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS acceptableIntakes (id INTEGER PRIMARY KEY, analyteId TEXT NOT NULL, value REAL NOT NULL, sourceTitle TEXT NOT NULL, sourceUrl TEXT NOT NULL, sourceRevisionDate TEXT NOT NULL, effectiveFrom TEXT NOT NULL, illustrative INTEGER NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS acceptableIntakesNoUpdate BEFORE UPDATE ON acceptableIntakes BEGIN SELECT RAISE(ABORT, 'Acceptable intake entries are append-only.'); END;
+      CREATE TRIGGER IF NOT EXISTS acceptableIntakesNoDelete BEFORE DELETE ON acceptableIntakes BEGIN SELECT RAISE(ABORT, 'Acceptable intake entries are append-only.'); END;`);
+    // Reference data: a new database starts with the seeded entries, written
+    // as one statement so it is never half seeded.
+    const { entries } = this.db
+      .prepare('SELECT COUNT(*) AS entries FROM acceptableIntakes')
+      .get() as { entries: number };
+    if (!entries) this.insertAcceptableIntakes(seededAcceptableIntakes);
     // Stamp the schema version only on a database that has none. A migration
     // runner owns this value afterwards; overwriting it here would silently
     // undo a migration and defeat the version gate the runner reads.
@@ -380,6 +418,7 @@ export class Laboratory {
       people,
       analytes,
       methods,
+      acceptableIntakes: this.acceptableIntakes(),
     };
   }
 
@@ -389,6 +428,58 @@ export class Laboratory {
     return this.audit.entries(
       sampleId === undefined ? undefined : this.load(sampleId),
     );
+  }
+
+  /** Every Acceptable intake entry, current and historical, in append order. */
+  acceptableIntakes(): AcceptableIntake[] {
+    return (
+      this.db
+        .prepare('SELECT * FROM acceptableIntakes ORDER BY id')
+        .all() as (Omit<AcceptableIntake, 'illustrative'> & {
+        illustrative: number;
+      })[]
+    ).map((row) => ({ ...row, illustrative: row.illustrative === 1 }));
+  }
+
+  /**
+   * Appends a new Acceptable intake entry. Entries are reference data with no
+   * maintenance screen in this release; a changed Acceptable intake is added
+   * this way and never overwrites an earlier entry, so Results keep the Limit
+   * they were judged against.
+   */
+  appendAcceptableIntake(input: unknown): AcceptableIntake {
+    const parsed = acceptableIntakeEntrySchema.safeParse(input);
+    if (!parsed.success)
+      throw new WorkflowError(
+        parsed.error.issues
+          .map((i) => `${i.path.join('.')}: ${i.message}`)
+          .join('; '),
+      );
+    if (!analytes.some((a) => a.id === parsed.data.analyteId))
+      throw new WorkflowError(`Analyte ${parsed.data.analyteId} is not known.`);
+    return this.insertAcceptableIntakes([parsed.data])[0];
+  }
+
+  private insertAcceptableIntakes(
+    entries: readonly AcceptableIntakeEntry[],
+  ): AcceptableIntake[] {
+    const rows = this.db
+      .prepare(
+        `INSERT INTO acceptableIntakes (analyteId, value, sourceTitle, sourceUrl, sourceRevisionDate, effectiveFrom, illustrative)
+         VALUES ${entries.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')} RETURNING id`,
+      )
+      .all(
+        ...entries.flatMap((e) => [
+          e.analyteId,
+          e.value,
+          e.sourceTitle,
+          e.sourceUrl,
+          e.sourceRevisionDate,
+          e.effectiveFrom,
+          e.illustrative ? 1 : 0,
+        ]),
+      ) as { id: number }[];
+    return entries.map((e, i) => ({ ...e, id: Number(rows[i].id) }));
   }
 
   /**
@@ -428,6 +519,8 @@ export class Laboratory {
         at,
         allocate: (series) => this.allocate(series, at),
         audit,
+        limitInForce: (analyteId) =>
+          limitInForce(this.acceptableIntakes(), analyteId, at),
       };
       // Verified before the key is claimed or a replay answered, so a wrong
       // password applies nothing, is never reported as an earlier success, and

@@ -769,7 +769,9 @@ test('the instrument reading and sequence ID are required and recorded', (t) => 
         (e) =>
           e.field !== 'result.value' &&
           e.field !== 'result.unit' &&
-          e.field !== 'result.qualifier',
+          e.field !== 'result.qualifier' &&
+          e.field !== 'result.conformity' &&
+          !e.field.startsWith('result.limit.'),
       )
       .map(change),
     [
@@ -948,6 +950,9 @@ test('enterResult audits old and new Result values with the reason for a change'
     [record, 'result.qualifier', null, '< LOQ', null],
     [record, 'result.instrumentReading', null, 1.25, null],
     [record, 'result.sequenceId', null, 'SEQ-0001', null],
+    [record, 'result.limit.entry', null, 1, null],
+    [record, 'result.limit.value', null, 26.5, null],
+    [record, 'result.conformity', null, 'Complies', null],
   ]);
   s = first.outcome.samples[0];
   const corrected = audited(
