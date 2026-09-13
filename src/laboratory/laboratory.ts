@@ -242,7 +242,7 @@ export class Laboratory {
    */
   execute(input: unknown, actorId: string): CommandOutcome {
     const actor = people.find((p) => p.id === actorId);
-    if (!actor) throw new WorkflowError('Choose a demo user.', 403);
+    if (!actor) throw new WorkflowError('Unknown user.', 403);
     const parsed = commandSchema.safeParse(input);
     if (!parsed.success)
       throw new WorkflowError(

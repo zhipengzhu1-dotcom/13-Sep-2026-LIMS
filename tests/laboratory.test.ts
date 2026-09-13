@@ -117,7 +117,7 @@ test('incomplete and unassigned samples cannot be submitted', (t) => {
 test('unauthorized actors cannot receive, record, or review', (t) => {
   const lab = memory(t);
   assert.throws(() => run(lab, receipt, 'analyst'), /coordinator/);
-  assert.throws(() => run(lab, receipt, 'unknown'), /demo user/);
+  assert.throws(() => run(lab, receipt, 'unknown'), /Unknown user/);
   let s = assigned(lab);
   const result = {
     type: 'record',
