@@ -8,6 +8,7 @@ import { Laboratory, SCHEMA_VERSION } from '../src/laboratory/laboratory.ts';
 import {
   enteredResultOn,
   newCommandId,
+  type AuditEntry,
   type Sample,
 } from '../src/laboratory/contracts.ts';
 
@@ -65,6 +66,27 @@ function submitted(lab: Laboratory) {
   const s = entered(lab, assigned(lab));
   return run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
 }
+/** How many distinct commands the audit trail records. */
+const commandsAudited = (lab: Laboratory) =>
+  new Set(lab.snapshot().audit.map((e) => e.commandId)).size;
+/** Runs a command and returns its outcome with the audit entries it wrote, in
+ * the order it wrote them, as `[record, field, old, new, reason]`. */
+function audited(lab: Laboratory, command: object, actor: string) {
+  const commandId = newCommandId();
+  const outcome = lab.execute({ commandId, ...command }, actor);
+  const entries = lab
+    .auditTrail()
+    .filter((e) => e.commandId === commandId)
+    .reverse();
+  return { outcome, entries, changes: entries.map(change) };
+}
+const change = (e: AuditEntry) => [
+  `${e.recordType} ${e.recordId}`,
+  e.field,
+  e.oldValue,
+  e.newValue,
+  e.reason,
+];
 function memory(t: { after: (fn: () => void) => void }) {
   const lab = new Laboratory(':memory:', () => '2026-09-10T12:00:00.000Z');
   t.after(() => lab.close());
@@ -86,7 +108,7 @@ test('a Sample moves from receipt to Approval, keeps provenance and is then lock
   assert.equal(s.status, 'Awaiting approval');
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
   assert.equal(s.status, 'Approved');
-  assert.equal(lab.snapshot().activity.length, 6);
+  assert.equal(commandsAudited(lab), 6);
   assert.equal(s.tests[0].results[0].enteredBy, 'analyst');
   assert.throws(
     () =>
@@ -229,7 +251,7 @@ test('receipt rejects unknown or duplicate Methods, blank fields, bad Material t
   assert.throws(() => run(lab, { ...receipt, client: ' ' }, 'coordinator'));
   assert.equal(lab.snapshot().submissions.length, 0);
   assert.equal(lab.snapshot().samples.length, 0);
-  assert.equal(lab.snapshot().activity.length, 0);
+  assert.deepEqual(lab.snapshot().audit, []);
 });
 
 test('incomplete and unassigned Samples cannot be submitted', (t) => {
@@ -249,7 +271,7 @@ test('incomplete and unassigned Samples cannot be submitted', (t) => {
     () => run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst'),
     /every Test/,
   );
-  assert.equal(lab.snapshot().activity.length, 3);
+  assert.equal(commandsAudited(lab), 3);
 });
 
 test('every command checks the role of the actor', (t) => {
@@ -448,7 +470,7 @@ test('stale edits are rejected without overwriting newer work', (t) => {
   assert.deepEqual(lab.snapshot().samples[0], current);
 });
 
-test('records and activity survive database reopen', (t) => {
+test('records and the audit trail survive database reopen', (t) => {
   const folder = mkdtempSync(join(tmpdir(), 'lims-persistence-'));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
   const file = join(folder, 'test.sqlite');
@@ -507,6 +529,7 @@ test('a retried command is replayed, not applied a second time', () => {
     samples: [finishedProduct, rawMaterial],
   };
   const first = lab.execute(command, 'coordinator');
+  const trail = lab.auditTrail();
   const retry = lab.execute(command, 'coordinator');
   assert.equal(first.outcome, 'applied');
   assert.equal(retry.outcome, 'replayed');
@@ -514,11 +537,7 @@ test('a retried command is replayed, not applied a second time', () => {
   assert.deepEqual(retry.samples, first.samples);
   assert.equal(lab.snapshot().submissions.length, 1, 'one Submission');
   assert.equal(lab.snapshot().samples.length, 2, 'two Samples, not four');
-  assert.equal(
-    lab.snapshot().activity.length,
-    2,
-    'a replay writes no activity row',
-  );
+  assert.deepEqual(lab.auditTrail(), trail, 'a replay writes no audit entry');
   if (retry.outcome === 'replayed')
     assert.equal(retry.originalActorId, 'coordinator');
   const s = lab.execute(
@@ -588,4 +607,243 @@ test('a rejected command releases its key and may be resubmitted', () => {
   assert.equal(retried.outcome, 'applied', 'the same key is usable again');
   assert.equal(lab.snapshot().samples.length, 1);
   lab.close();
+});
+
+test('receipt audits every field of the new Submission, Sample and Test', (t) => {
+  const lab = memory(t);
+  const { outcome, entries, changes } = audited(
+    lab,
+    { ...receipt, samples: [rawMaterial] },
+    'coordinator',
+  );
+  const at = '2026-09-10T12:00:00.000Z';
+  const created = (record: string, fields: [string, unknown][]) =>
+    fields.map(([field, value]) => [record, field, null, value, null]);
+  assert.deepEqual(changes, [
+    ...created('Submission S26-0001', [
+      ['client', 'Fictional Pharma'],
+      ['receivedAt', at],
+      ['receivedBy', 'coordinator'],
+    ]),
+    ...created('Sample 26-00001', [
+      ['submissionId', 'S26-0001'],
+      ['client', 'Fictional Pharma'],
+      ['product', 'Demo API'],
+      ['batch', 'API-001'],
+      ['materialType', 'raw material'],
+      ['dueDate', '2026-10-01'],
+      ['priority', 'Routine'],
+      ['receivedAt', at],
+      ['receivedBy', 'coordinator'],
+      ['status', 'Received'],
+    ]),
+    ...created('Test 26-00001/NIT-005-v1', [
+      ['methodId', 'NIT-005-v1'],
+      ['methodCode', 'NIT-005'],
+      ['methodVersion', 1],
+      ['analyteId', 'impurity-c'],
+      ['analyteName', 'Impurity C'],
+      ['technique', 'LC-MS/MS'],
+      ['unit', 'ppm'],
+    ]),
+  ]);
+  assert.equal(outcome.samples[0].id, '26-00001');
+  for (const e of entries) {
+    assert.equal(e.actor, 'coordinator');
+    assert.equal(e.at, at);
+    assert.equal(e.commandType, 'receiveSubmission');
+  }
+  assert.deepEqual(
+    entries.map((e) => e.sampleId),
+    [null, null, null, ...Array(17).fill('26-00001')],
+  );
+});
+
+test('assign audits the assignee and the status it starts', (t) => {
+  const lab = memory(t);
+  let s = run(lab, receipt, 'coordinator');
+  const first = audited(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'analyst' },
+    'coordinator',
+  );
+  assert.deepEqual(first.changes, [
+    ['Sample 26-00001', 'assignee', null, 'analyst', null],
+    ['Sample 26-00001', 'status', 'Received', 'In progress', null],
+  ]);
+  s = first.outcome.samples[0];
+  const before = lab.snapshot();
+  assert.throws(
+    () =>
+      run(
+        lab,
+        { type: 'assign', ...target(s), assignee: 'analyst' },
+        'coordinator',
+      ),
+    /already assigned/,
+  );
+  assert.deepEqual(lab.snapshot(), before);
+  assert.deepEqual(
+    audited(
+      lab,
+      { type: 'assign', ...target(s), assignee: 'analyst-2' },
+      'coordinator',
+    ).changes,
+    [['Sample 26-00001', 'assignee', 'analyst', 'analyst-2', null]],
+  );
+});
+
+test('enterResult audits old and new Result values with the reason for a change', (t) => {
+  const lab = memory(t);
+  let s = assigned(lab);
+  const record = 'Test 26-00001/NIT-001-v1';
+  const first = audited(lab, result(s, 'NIT-001-v1', 2.5), 'analyst');
+  assert.deepEqual(first.changes, [
+    [record, 'result.value', null, 2.5, null],
+    [record, 'result.unit', null, 'ng/day', null],
+  ]);
+  s = first.outcome.samples[0];
+  const corrected = audited(
+    lab,
+    result(s, 'NIT-001-v1', 3.1, 'Dilution factor corrected'),
+    'analyst',
+  );
+  assert.deepEqual(corrected.changes, [
+    [record, 'result.value', 2.5, 3.1, 'Dilution factor corrected'],
+  ]);
+  s = corrected.outcome.samples[0];
+  // Re-entering the same value is still recorded, with its reason.
+  assert.deepEqual(
+    audited(lab, result(s, 'NIT-001-v1', 3.1, 'Re-integrated'), 'analyst')
+      .changes,
+    [[record, 'result.value', 3.1, 3.1, 'Re-integrated']],
+  );
+});
+
+test('submitting, returning and approving audit the status, with the return comment as reason', (t) => {
+  const lab = memory(t);
+  let s = entered(lab, assigned(lab));
+  const submit = audited(
+    lab,
+    { type: 'submitForApproval', ...target(s) },
+    'analyst',
+  );
+  assert.deepEqual(submit.changes, [
+    ['Sample 26-00001', 'status', 'In progress', 'Awaiting approval', null],
+  ]);
+  s = submit.outcome.samples[0];
+  const returned = audited(
+    lab,
+    { type: 'return', ...target(s), comment: 'Check the dilution factor.' },
+    'manager',
+  );
+  assert.deepEqual(returned.changes, [
+    [
+      'Sample 26-00001',
+      'status',
+      'Awaiting approval',
+      'Returned',
+      'Check the dilution factor.',
+    ],
+  ]);
+  assert.equal(returned.entries[0].actor, 'manager');
+  s = returned.outcome.samples[0];
+  const resubmit = audited(
+    lab,
+    { type: 'submitForApproval', ...target(s) },
+    'analyst',
+  );
+  assert.deepEqual(resubmit.changes, [
+    ['Sample 26-00001', 'status', 'Returned', 'Awaiting approval', null],
+  ]);
+  s = resubmit.outcome.samples[0];
+  assert.deepEqual(
+    audited(lab, { type: 'approve', ...target(s) }, 'manager').changes,
+    [['Sample 26-00001', 'status', 'Awaiting approval', 'Approved', null]],
+  );
+});
+
+test('a rejected command writes no audit entry', (t) => {
+  const lab = memory(t);
+  const rejected = (command: object, actor: string) => {
+    const before = lab.auditTrail();
+    assert.throws(() => execute(lab, command, actor));
+    assert.deepEqual(lab.auditTrail(), before);
+  };
+  rejected(receipt, 'analyst');
+  rejected(
+    { ...receipt, samples: [{ ...finishedProduct, methodIds: ['x'] }] },
+    'coordinator',
+  );
+  let s = assigned(lab);
+  rejected(
+    { type: 'assign', ...target(s), assignee: 'manager' },
+    'coordinator',
+  );
+  rejected(result(s, 'NIT-001-v1', 1), 'analyst-2');
+  rejected(result(s, 'NIT-001-v1', -1), 'analyst');
+  rejected({ type: 'submitForApproval', ...target(s) }, 'analyst');
+  const stale = s;
+  s = entered(lab, s);
+  rejected(result(stale, 'NIT-001-v1', 1), 'analyst');
+  rejected(result(s, 'NIT-001-v1', 4), 'analyst');
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  rejected({ type: 'return', ...target(s), comment: 'no' }, 'manager');
+  rejected({ type: 'approve', ...target(s) }, 'analyst');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  rejected({ type: 'approve', ...target(s) }, 'manager');
+});
+
+test('the audit trail reads newest first, lab-wide or for one Sample and its Submission', (t) => {
+  const lab = memory(t);
+  const { outcome } = audited(
+    lab,
+    { ...receipt, samples: [finishedProduct, rawMaterial] },
+    'coordinator',
+  );
+  const [product, material] = outcome.samples;
+  run(
+    lab,
+    { type: 'assign', ...target(product), assignee: 'analyst' },
+    'coordinator',
+  );
+  run(
+    lab,
+    { type: 'assign', ...target(material), assignee: 'analyst-2' },
+    'coordinator',
+  );
+  run(lab, receipt, 'coordinator');
+
+  const all = lab.auditTrail();
+  assert.deepEqual(lab.snapshot().audit, all);
+  const sequences = all.map((e) => e.sequence);
+  assert.deepEqual(
+    sequences,
+    [...sequences].sort((a, b) => b - a),
+    'newest first',
+  );
+  assert.equal(new Set(sequences).size, all.length);
+  assert.equal(all[0].recordId, '26-00003/NIT-003-v1');
+
+  const history = lab.auditTrail(material.id);
+  assert.deepEqual(
+    [...new Set(history.map((e) => e.recordId))],
+    ['26-00002', '26-00002/NIT-005-v1', 'S26-0001'],
+  );
+  assert.deepEqual(history.slice(0, 2).map(change), [
+    ['Sample 26-00002', 'status', 'Received', 'In progress', null],
+    ['Sample 26-00002', 'assignee', null, 'analyst-2', null],
+  ]);
+  assert.deepEqual(
+    history,
+    all.filter(
+      (e) =>
+        e.sampleId === material.id ||
+        (e.sampleId === null && e.recordId === 'S26-0001'),
+    ),
+  );
+  assert.throws(
+    () => lab.auditTrail('26-99999'),
+    (e: Error & { status: number }) => e.status === 404,
+  );
 });

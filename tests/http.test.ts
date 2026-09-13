@@ -132,7 +132,10 @@ test('the actor for a command is the session user, not anything the browser clai
   ).json();
   assert.equal(workspace.submissions.length, 1);
   assert.equal(workspace.samples.length, 1);
-  assert.equal(workspace.activity[0].actor, 'coordinator');
+  assert.ok(workspace.audit.length);
+  assert.ok(
+    workspace.audit.every((e: { actor: string }) => e.actor === 'coordinator'),
+  );
 
   // An analyst cannot borrow the coordinator's role by claiming it.
   const analyst = await signIn('analyst', 'analyst-demo');
