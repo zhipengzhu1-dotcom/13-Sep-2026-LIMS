@@ -1,4 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   hasException,
@@ -61,6 +68,10 @@ function matches(s: Sample, f: Filter) {
   if (f === 'All') return true;
   if (f === 'Active') return s.status !== 'Approved';
   if (f === 'Investigate') return hasException(s);
+  // A returned sample is back at the analytical bench, so it is still work in
+  // progress; "Returned" narrows to just those.
+  if (f === 'In progress')
+    return s.status === 'In progress' || s.status === 'Returned';
   return s.status === f;
 }
 
@@ -227,23 +238,39 @@ const PANEL_DEFAULT = 560;
  * hide the register or the open sample. CSS enforces the same floor when the
  * window itself shrinks. */
 const PANE_MIN = 360;
+/** Width of the divider's grid track; must match `.workspace.has-sample`. */
+const SPLITTER_WIDTH = 7;
+
+/** The widest the sample panel may be in a workspace of the given width, so
+ * the register keeps its floor. */
+function panelMax(workspaceWidth: number) {
+  return Math.max(PANE_MIN, workspaceWidth - SPLITTER_WIDTH - PANE_MIN);
+}
+function clampPanel(width: number, workspaceWidth: number) {
+  return Math.round(
+    Math.max(PANE_MIN, Math.min(panelMax(workspaceWidth), width)),
+  );
+}
 
 /** The divider between the register and the open sample. Drag it, or focus it
  * and use the arrow keys (Shift for bigger steps); double-click restores the
- * default width. */
+ * default width. Esc cancels a drag and restores the width it started from.
+ * `width` is the width actually displayed, already clamped to `max`. */
 function Splitter({
   width,
+  max,
   onChange,
-  containerRef,
 }: {
   width: number;
+  max: number;
   onChange: (width: number) => void;
-  containerRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  function clamp(w: number) {
-    const total = containerRef.current?.clientWidth ?? PANEL_DEFAULT * 2;
-    return Math.round(Math.max(PANE_MIN, Math.min(total - PANE_MIN, w)));
-  }
+  const clamp = (w: number) => Math.round(Math.max(PANE_MIN, Math.min(max, w)));
+  // Ends the drag in progress, if any. Kept in a ref so the drag also ends when
+  // the divider unmounts mid-drag (for example the sample is closed), and the
+  // page is never left with a resize cursor or disabled text selection.
+  const endDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => endDrag.current?.(), []);
   return (
     <div
       className="splitter"
@@ -252,12 +279,16 @@ function Splitter({
       aria-label="Resize sample panel"
       aria-valuenow={width}
       aria-valuemin={PANE_MIN}
+      aria-valuemax={max}
       tabIndex={0}
       title="Drag to resize. Double-click to reset."
       onPointerDown={(e) => {
+        if (e.button !== 0) return;
         e.preventDefault();
+        endDrag.current?.();
         const el = e.currentTarget;
         el.setPointerCapture(e.pointerId);
+        el.focus();
         const startX = e.clientX;
         const startWidth = width;
         const move = (m: PointerEvent) =>
@@ -266,12 +297,29 @@ function Splitter({
           el.removeEventListener('pointermove', move);
           el.removeEventListener('pointerup', end);
           el.removeEventListener('pointercancel', end);
+          el.removeEventListener('lostpointercapture', end);
+          window.removeEventListener('keydown', cancel, true);
+          if (el.hasPointerCapture(e.pointerId))
+            el.releasePointerCapture(e.pointerId);
           document.body.classList.remove('resizing');
+          endDrag.current = null;
+        };
+        // Captured on window so it runs before the app's own Esc handling,
+        // which would otherwise close the sample underneath the drag.
+        const cancel = (k: KeyboardEvent) => {
+          if (k.key !== 'Escape') return;
+          k.preventDefault();
+          k.stopImmediatePropagation();
+          end();
+          onChange(startWidth);
         };
         el.addEventListener('pointermove', move);
         el.addEventListener('pointerup', end);
         el.addEventListener('pointercancel', end);
+        el.addEventListener('lostpointercapture', end);
+        window.addEventListener('keydown', cancel, true);
         document.body.classList.add('resizing');
+        endDrag.current = end;
       }}
       onDoubleClick={() => onChange(clamp(PANEL_DEFAULT))}
       onKeyDown={(e) => {
@@ -279,7 +327,10 @@ function Splitter({
         if (e.key === 'ArrowLeft') onChange(clamp(width + step));
         else if (e.key === 'ArrowRight') onChange(clamp(width - step));
         else if (e.key === 'Home') onChange(clamp(PANEL_DEFAULT));
-        else return;
+        else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          // Vertical arrows mean nothing to a vertical divider; they must not
+          // fall through to the register's row navigation.
+        } else return;
         e.preventDefault();
       }}
     />
@@ -304,15 +355,31 @@ function App() {
   const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const pending = useRef<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const workspaceRef = useRef<HTMLDivElement>(null);
+  const [workspaceEl, setWorkspaceEl] = useState<HTMLDivElement | null>(null);
+  // Until the workspace is laid out, the window is the best estimate of it.
+  const [workspaceWidth, setWorkspaceWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    if (!workspaceEl) return;
+    const measure = () => setWorkspaceWidth(workspaceEl.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(workspaceEl);
+    return () => observer.disconnect();
+  }, [workspaceEl]);
   const [panelWidth, setPanelWidth] = useState(() => {
     try {
       const stored = Number(localStorage.getItem(PANEL_WIDTH_KEY));
-      return stored >= PANE_MIN ? stored : PANEL_DEFAULT;
+      // A width stored on a wider screen is clamped to this window, so the
+      // first drag moves the divider at once instead of eating the excess.
+      return stored >= PANE_MIN
+        ? clampPanel(stored, window.innerWidth)
+        : PANEL_DEFAULT;
     } catch {
       return PANEL_DEFAULT;
     }
   });
+  // The width actually shown: the chosen width, narrowed to fit the workspace.
+  const shownPanelWidth = clampPanel(panelWidth, workspaceWidth);
   useEffect(() => {
     try {
       localStorage.setItem(PANEL_WIDTH_KEY, String(panelWidth));
@@ -443,11 +510,16 @@ function App() {
   // Keyboard-first operation: move through the queue without reaching for
   // the mouse between instrument runs. Typing in a field is never hijacked.
   const keyState = useRef({ visible, selected, isQueue, busy, person });
-  keyState.current = { visible, selected, isQueue, busy, person };
+  useLayoutEffect(() => {
+    keyState.current = { visible, selected, isQueue, busy, person };
+  });
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const t = e.target;
+      // A key a focused control already handled (such as the divider's arrow
+      // keys) is not also a register command.
       if (
+        e.defaultPrevented ||
         e.metaKey ||
         e.ctrlKey ||
         e.altKey ||
@@ -644,15 +716,26 @@ function App() {
           </div>
         ) : isQueue ? (
           <div
-            ref={workspaceRef}
+            ref={setWorkspaceEl}
             className={'workspace' + (sample ? ' has-sample' : '')}
             style={
-              { '--panel-width': `${panelWidth}px` } as React.CSSProperties
+              {
+                '--panel-width': `${shownPanelWidth}px`,
+              } as React.CSSProperties
             }
           >
             <section className="register" aria-label="Samples">
               <div className="scroll">
-                <table className="grid">
+                {/* A single-select grid: each row reports whether it is the
+                    open sample, so assistive technology hears the selection
+                    that j/k and the arrow keys move. */}
+                <table
+                  className="grid"
+                  role="grid"
+                  aria-label="Sample register"
+                  aria-readonly="true"
+                  aria-multiselectable="false"
+                >
                   <thead>
                     <tr>
                       <SortHead k="id" sort={sort} onSort={toggleSort}>
@@ -773,9 +856,9 @@ function App() {
             {sample && (
               <>
                 <Splitter
-                  width={panelWidth}
+                  width={shownPanelWidth}
+                  max={panelMax(workspaceWidth)}
                   onChange={setPanelWidth}
-                  containerRef={workspaceRef}
                 />
                 <section className="panel" aria-label="Sample">
                   <SamplePanel
@@ -1074,6 +1157,7 @@ function SamplePanel({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<'Results' | 'History'>('Results');
+  const tabIds = useId();
   const person = data.people.find((p) => p.id === actor)!;
   const canRecord =
     s.assignee === actor && ['In progress', 'Returned'].includes(s.status);
@@ -1169,12 +1253,27 @@ function SamplePanel({
         </dl>
         {s.notes && <p className="note">{s.notes}</p>}
       </header>
-      <div className="tabs" role="tablist" aria-label="Sample details">
+      <div
+        className="tabs"
+        role="tablist"
+        aria-label="Sample details"
+        onKeyDown={(e) => {
+          // Roving focus between the two tabs, per the ARIA tabs pattern.
+          if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+          e.preventDefault();
+          const next = tab === 'Results' ? 'History' : 'Results';
+          setTab(next);
+          document.getElementById(`${tabIds}-tab-${next}`)?.focus();
+        }}
+      >
         {(['Results', 'History'] as const).map((t) => (
           <button
             key={t}
+            id={`${tabIds}-tab-${t}`}
             role="tab"
             aria-selected={tab === t}
+            aria-controls={`${tabIds}-panel`}
+            tabIndex={tab === t ? 0 : -1}
             onClick={() => setTab(t)}
           >
             {t}
@@ -1186,7 +1285,12 @@ function SamplePanel({
           </button>
         ))}
       </div>
-      <div className="sample-body">
+      <div
+        className="sample-body"
+        role="tabpanel"
+        id={`${tabIds}-panel`}
+        aria-labelledby={`${tabIds}-tab-${tab}`}
+      >
         {tab === 'History' ? (
           <ActivityTable events={events} data={data} />
         ) : (
