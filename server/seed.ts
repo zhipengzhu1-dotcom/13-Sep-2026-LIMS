@@ -35,12 +35,21 @@ const passwordOf = (id: string) =>
   demoAccounts.find((a) => a.id === id)!.password;
 
 type Stage =
-  'held' | 'received' | 'progress' | 'awaiting' | 'returned' | 'approved';
+  | 'held'
+  | 'received'
+  | 'progress'
+  | 'awaiting'
+  | 'returned'
+  | 'approved'
+  | 'published';
 type SeedSample = SampleReceipt & {
   stage: Stage;
   values: number[];
   /** A Manager opens an OOS investigation on the first Test's Result. */
   openOos?: true;
+  /** That investigation is concluded as a Confirmed OOS before Approval; a
+   * published Sample also records that the Client was informed. */
+  confirmOos?: true;
   /** The Client's word on a Receipt deviation, recorded before any work. */
   instruction?: { decision: 'proceed' | 'withdraw'; contact: string };
 };
@@ -115,6 +124,23 @@ export function seed(lab: Laboratory) {
           priority: 'Urgent',
           stage: 'awaiting',
           values: [3.1, 12.6],
+        },
+        {
+          ...tablets,
+          clientSampleId: 'NS-LOS-25-01',
+          product: 'Losartan potassium tablets',
+          strength: '25 mg',
+          batch: 'LP-260805',
+          manufacturer: 'Northstar Pharma, Site 2',
+          manufactureDate: '2026-05-26',
+          expiryDate: '2028-05-25',
+          materialType: 'finished product',
+          maximumDailyDose: 100,
+          methodIds: ['NIT-001-v1', 'NIT-003-v1'],
+          dueDate: due(-2),
+          priority: 'Routine',
+          stage: 'published',
+          values: [1.9, 0.6],
         },
       ],
     },
@@ -321,6 +347,27 @@ export function seed(lab: Laboratory) {
           values: [31.4, 4.2],
           openOos: true,
         },
+        {
+          ...tablets,
+          clientSampleId: 'HH-IRB-150-01',
+          product: 'Irbesartan tablets',
+          strength: '150 mg',
+          batch: 'IR-260902',
+          manufacturer: 'Harbor Health Products',
+          manufactureDate: '2026-07-07',
+          expiryDate: '2028-07-06',
+          maximumDailyDose: 300,
+          materialType: 'finished product',
+          methodIds: ['NIT-001-v1', 'NIT-003-v1'],
+          dueDate: due(2),
+          priority: 'Routine',
+          // Approved with a Confirmed OOS: Publishing waits for the record
+          // that the Client was informed.
+          stage: 'approved',
+          values: [28.7, 1.5],
+          openOos: true,
+          confirmOos: true,
+        },
       ],
     },
   ];
@@ -335,6 +382,7 @@ export function seed(lab: Laboratory) {
             stage: _s,
             values: _v,
             openOos: _o,
+            confirmOos: _c,
             instruction: _i,
             ...sample
           }) => sample,
@@ -343,7 +391,7 @@ export function seed(lab: Laboratory) {
       'coordinator',
     );
     receipt.samples.forEach((received, i) => {
-      const { stage, values, openOos, instruction } = samples[i];
+      const { stage, values, openOos, confirmOos, instruction } = samples[i];
       if (instruction)
         received = lab.execute(
           {
@@ -410,11 +458,56 @@ export function seed(lab: Laboratory) {
         { type: 'submitForApproval', password: passwordOf('analyst') },
         'analyst',
       );
-      // Left open: the Analyst's laboratory error check comes next.
+      // Left open, unless confirmed: the Analyst's laboratory error check
+      // comes next.
       if (openOos)
         act({ type: 'openOosInvestigation', testId: s.tests[0].id }, 'manager');
-      if (stage === 'approved')
+      const investigationId = s.investigations[0]?.id;
+      if (confirmOos) {
+        act(
+          {
+            type: 'recordLabErrorCheck',
+            investigationId,
+            findings:
+              'Calculations, standard preparation, system suitability and sample preparation checked; no laboratory error found.',
+            errorIdentified: false,
+          },
+          'analyst',
+        );
+        act(
+          {
+            type: 'concludeOosInvestigation',
+            investigationId,
+            outcome: 'Confirmed',
+            assignableCause: '',
+          },
+          'manager',
+        );
+      }
+      if (stage === 'approved' || stage === 'published')
         act({ type: 'approve', password: passwordOf('manager') }, 'manager');
+      if (stage === 'published') {
+        if (confirmOos)
+          act(
+            {
+              type: 'recordClientOosNotification',
+              investigationId,
+              contact: 'Client QA contact (phone)',
+              notifiedAt: new Date().toISOString(),
+            },
+            'coordinator',
+          );
+        act(
+          {
+            type: 'publish',
+            recipients: ['Dana Whitfield, QA Release, Northstar Pharma'],
+            channel: 'email',
+            channelDetail: 'qa-release@northstar.example',
+            publishedAt: new Date().toISOString(),
+          },
+          'coordinator',
+        );
+      }
       if (stage === 'returned')
         act(
           {

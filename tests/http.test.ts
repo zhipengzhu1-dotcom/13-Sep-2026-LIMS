@@ -553,6 +553,31 @@ test("an approved Sample's Certificate is retrieved by signed-in users", async (
   await act({ type: 'approve', password: 'manager-demo' }, manager);
   assert.equal(sample.status, 'Approved');
 
+  // Publishing is a command like any other, the Coordinator's alone.
+  const { certificate: issued } = await (
+    await get(`${path}/1`, coordinator)
+  ).json();
+  const publication = {
+    type: 'publish',
+    recipients: ['QA Release, Northstar Pharma'],
+    channel: 'print',
+    channelDetail: '',
+    publishedAt: issued.approvedAt,
+  };
+  const refused = await post(
+    '/api/commands',
+    {
+      commandId: newCommandId(),
+      sampleId: sample.id,
+      revision: sample.revision,
+      ...publication,
+    },
+    manager,
+  );
+  assert.equal(refused.status, 403);
+  await act(publication, coordinator);
+  assert.equal(sample.status, 'Published');
+
   for (const session of [coordinator, analyst, manager]) {
     const response = await get(`${path}/1`, session);
     assert.equal(response.status, 200);
@@ -561,6 +586,16 @@ test("an approved Sample's Certificate is retrieved by signed-in users", async (
     assert.equal(certificate.sampleId, sample.id);
     assert.equal(certificate.version, 1);
     assert.equal(certificate.content.results[0].conformity, 'Report');
+    assert.deepEqual(certificate.publication, {
+      sampleId: sample.id,
+      version: 1,
+      recipients: ['QA Release, Northstar Pharma'],
+      channel: 'print',
+      channelDetail: '',
+      publishedAt: issued.approvedAt,
+      publishedBy: 'coordinator',
+      recordedAt: certificate.publication.recordedAt,
+    });
     assert.deepEqual(
       certificate.content.signatures.map(
         (x: { meaning: string; printedName: string }) => [

@@ -15,7 +15,9 @@ import {
   investigationOf,
   methods,
   oosApprovalBlocker,
+  oosPublishBlocker,
   oosRows,
+  publishQueue,
   qualify,
   newCommandId,
   type AuditEntry,
@@ -2283,6 +2285,7 @@ test('a Result over its Limit is flagged and blocks Approval until an investigat
     assignableCause: null,
     closedBy: null,
     closedAt: null,
+    clientNotification: null,
   });
   assert.equal(currentResult(s.tests[0])!.investigationId, 'OOS26-0001');
   assert.throws(
@@ -2623,6 +2626,7 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
         .update(JSON.stringify(certificate.content))
         .digest('hex'),
       content: undefined,
+      publication: null,
     },
   );
   assert.deepEqual(lab.certificate(s.id), certificate);
@@ -2633,6 +2637,7 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
       version: 1,
       approvedAt: NOW,
       sha256: certificate.sha256,
+      publication: null,
     },
   ]);
   t.assert.snapshot(certificate.content);
@@ -2809,4 +2814,312 @@ test('a Certificate stays as issued through replays, reference data changes and 
     () => reopened.certificates('26-99999'),
     (e: Error & { status: number }) => e.status === 404,
   );
+});
+
+/** A Sample taken from receipt through Approval. */
+function throughApproval(lab: Laboratory, s: Sample) {
+  s = run(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'analyst' },
+    'coordinator',
+  );
+  s = entered(lab, s);
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  return run(lab, { type: 'approve', ...target(s) }, 'manager');
+}
+const publish = (s: Sample, fields: object = {}) => ({
+  type: 'publish',
+  ...target(s),
+  recipients: ['Dana Whitfield, QA Release'],
+  channel: 'email',
+  channelDetail: 'qa-release@northstar.example',
+  publishedAt: NOW,
+  ...fields,
+});
+const notifyClient = (s: Sample, investigationId: string, fields = {}) => ({
+  type: 'recordClientOosNotification',
+  ...target(s),
+  investigationId,
+  contact: 'Priya Nair, QA (phone)',
+  notifiedAt: NOW,
+  ...fields,
+});
+/** A finished product approved with a Confirmed OOS (OOS26-0001). */
+function approvedWithConfirmedOos(lab: Laboratory) {
+  let s = outOfSpecification(lab);
+  s = run(lab, openOos(s), 'manager');
+  s = run(
+    lab,
+    {
+      ...labErrorCheck(s, 'OOS26-0001'),
+      findings: 'No laboratory error found.',
+      errorIdentified: false,
+    },
+    'analyst',
+  );
+  s = run(lab, conclude(s, 'OOS26-0001', 'Confirmed'), 'manager');
+  return run(lab, { type: 'approve', ...target(s) }, 'manager');
+}
+
+test('publish moves an approved Sample to Published and records recipients, channel and time', (t) => {
+  const lab = memory(t);
+  let s = submitted(lab);
+  assert.throws(
+    () => run(lab, publish(s), 'coordinator'),
+    /Only approved Samples can be published/,
+  );
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  const issued = lab.certificate(s.id);
+  assert.equal(issued.publication, null);
+
+  for (const [fields, message] of [
+    [{ recipients: [] }, /at least one recipient/],
+    [{ recipients: [' '] }, /Enter the recipient/],
+    [{ recipients: ['QA', 'qa'] }, /each recipient once/],
+    [{ channel: 'fax' }, /email, portal, print or other/],
+    [{ channel: 'other', channelDetail: '' }, /Describe how the Certificate/],
+    [{ publishedAt: 'yesterday' }, /when the Certificate was issued/],
+    [{ publishedAt: '2026-09-10T12:00:01.000Z' }, /later than the time/],
+    [{ publishedAt: '2026-09-10T11:59:59.000Z' }, /before its Approval/],
+  ] as const)
+    assert.throws(() => run(lab, publish(s, fields), 'coordinator'), message);
+  assert.equal(lab.snapshot().samples[0].status, 'Approved');
+
+  const recipients = [
+    'Dana Whitfield, QA Release',
+    'Formulation Development archive',
+  ];
+  const command = {
+    commandId: newCommandId(),
+    ...publish(s, {
+      recipients,
+      channel: 'portal',
+      channelDetail: 'Northstar supplier portal',
+      // Entered with the Coordinator's offset; kept as the same instant.
+      publishedAt: '2026-09-10T08:00:00-04:00',
+    }),
+  };
+  const outcome = lab.execute(command, 'coordinator');
+  s = outcome.samples[0];
+  assert.equal(s.status, 'Published');
+  const certificate = 'Certificate of Analysis 26-00001/v1';
+  assert.deepEqual(
+    lab
+      .auditTrail()
+      .filter((e) => e.commandId === command.commandId)
+      .reverse()
+      .map(change),
+    [
+      ['Sample 26-00001', 'status', 'Approved', 'Published', null],
+      [certificate, 'publication.recipients.0', null, recipients[0], null],
+      [certificate, 'publication.recipients.1', null, recipients[1], null],
+      [certificate, 'publication.channel', null, 'portal', null],
+      [
+        certificate,
+        'publication.channelDetail',
+        null,
+        'Northstar supplier portal',
+        null,
+      ],
+      [certificate, 'publication.publishedAt', null, NOW, null],
+    ],
+  );
+  const publication = {
+    sampleId: s.id,
+    version: 1,
+    recipients,
+    channel: 'portal',
+    channelDetail: 'Northstar supplier portal',
+    publishedAt: NOW,
+    publishedBy: 'coordinator',
+    recordedAt: NOW,
+  };
+  assert.deepEqual(lab.certificate(s.id), { ...issued, publication });
+  assert.deepEqual(lab.certificates(s.id), [{ ...issued, publication }]);
+  assert.deepEqual(
+    lab.snapshot().certificates.map((c) => c.publication),
+    [publication],
+  );
+  assert.equal(
+    lab.certificate(s.id).sha256,
+    issued.sha256,
+    'the locked content is unchanged',
+  );
+
+  assert.equal(lab.execute(command, 'coordinator').outcome, 'replayed');
+  assert.deepEqual(lab.certificate(s.id).publication, publication);
+});
+
+test('only a Coordinator publishes or records that the Client was informed', (t) => {
+  const lab = memory(t);
+  const s = approvedWithConfirmedOos(lab);
+  for (const actor of ['analyst', 'manager']) {
+    assert.throws(
+      () => run(lab, notifyClient(s, 'OOS26-0001'), actor),
+      /requires the coordinator role/,
+    );
+    assert.throws(
+      () => run(lab, publish(s), actor),
+      /requires the coordinator role/,
+    );
+  }
+  assert.throws(() => run(lab, publish(s), 'unknown'), /Unknown user/);
+  assert.equal(lab.snapshot().samples[0].status, 'Approved');
+  assert.equal(
+    lab.snapshot().samples[0].investigations[0].clientNotification,
+    null,
+  );
+});
+
+test('a Confirmed OOS blocks Publishing until the Client notification is recorded', (t) => {
+  const lab = memory(t);
+  let s = approvedWithConfirmedOos(lab);
+  const blocked =
+    /OOS investigation OOS26-0001 confirmed an OOS\. Record that the Client was informed before publishing\./;
+  assert.match(oosPublishBlocker(s)!, blocked);
+  assert.throws(() => run(lab, publish(s), 'coordinator'), blocked);
+  assert.equal(lab.snapshot().samples[0].status, 'Approved');
+
+  for (const [fields, message] of [
+    [{ investigationId: 'OOS26-9999' }, /OOS investigation not found/],
+    [{ contact: ' ' }, /Client contact who was informed/],
+    [{ notifiedAt: '' }, /when the Client was informed/],
+    [{ notifiedAt: '2026-09-10T12:00:01.000Z' }, /later than the time/],
+  ] as const)
+    assert.throws(
+      () => run(lab, notifyClient(s, 'OOS26-0001', fields), 'coordinator'),
+      message,
+    );
+
+  const notified = audited(lab, notifyClient(s, 'OOS26-0001'), 'coordinator');
+  assert.deepEqual(notified.changes, [
+    [
+      'OOS investigation OOS26-0001',
+      'clientNotification.contact',
+      null,
+      'Priya Nair, QA (phone)',
+      null,
+    ],
+    [
+      'OOS investigation OOS26-0001',
+      'clientNotification.notifiedAt',
+      null,
+      NOW,
+      null,
+    ],
+  ]);
+  s = notified.outcome.samples[0];
+  assert.equal(s.status, 'Approved', 'recording it is not a transition');
+  assert.deepEqual(s.investigations[0].clientNotification, {
+    contact: 'Priya Nair, QA (phone)',
+    notifiedAt: NOW,
+    recordedBy: 'coordinator',
+    recordedAt: NOW,
+  });
+  assert.equal(oosPublishBlocker(s), null);
+  assert.throws(
+    () => run(lab, notifyClient(s, 'OOS26-0001'), 'coordinator'),
+    /already recorded/,
+  );
+  s = run(lab, publish(s), 'coordinator');
+  assert.equal(s.status, 'Published');
+  assert.equal(
+    lab.certificate(s.id).content.results[0].conformity,
+    'Does not comply',
+  );
+});
+
+test('Client notification is recorded only for a confirmed OOS', (t) => {
+  const lab = memory(t);
+  let s = outOfSpecification(lab);
+  s = run(lab, openOos(s), 'manager');
+  const onlyConfirmed = /only for a confirmed OOS/;
+  assert.throws(
+    () => run(lab, notifyClient(s, 'OOS26-0001'), 'coordinator'),
+    onlyConfirmed,
+    'not while the investigation is open',
+  );
+  s = run(lab, labErrorCheck(s, 'OOS26-0001'), 'analyst');
+  s = run(
+    lab,
+    conclude(s, 'OOS26-0001', 'Invalidated', 'Dilution error in the standard.'),
+    'manager',
+  );
+  assert.throws(
+    () => run(lab, notifyClient(s, 'OOS26-0001'), 'coordinator'),
+    onlyConfirmed,
+  );
+  s = run(
+    lab,
+    { type: 'return', ...target(s), comment: 'Retest NIT-001 per OOS26-0001.' },
+    'manager',
+  );
+  s = run(lab, result(s, 'NIT-001-v1', 2.5), 'analyst');
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  assert.equal(
+    oosPublishBlocker(s),
+    null,
+    'an Invalidated OOS needs no notice',
+  );
+  assert.equal(run(lab, publish(s), 'coordinator').status, 'Published');
+});
+
+test('a Published Sample is locked against every command', (t) => {
+  const lab = memory(t);
+  let s = approvedWithConfirmedOos(lab);
+  s = run(lab, notifyClient(s, 'OOS26-0001'), 'coordinator');
+  s = run(lab, publish(s), 'coordinator');
+  const before = lab.snapshot();
+  const attempts: [object, string][] = [
+    [{ type: 'assign', ...target(s), assignee: 'analyst-2' }, 'coordinator'],
+    [result(s, 'NIT-003-v1', 1, 'Change'), 'analyst'],
+    [{ type: 'submitForApproval', ...target(s) }, 'analyst'],
+    [{ type: 'approve', ...target(s) }, 'manager'],
+    [{ type: 'return', ...target(s), comment: 'Too late' }, 'manager'],
+    [publish(s), 'coordinator'],
+    [notifyClient(s, 'OOS26-0001'), 'coordinator'],
+    [
+      { type: 'recordReceiptDeviation', ...target(s), ...deviation },
+      'coordinator',
+    ],
+    [instruction(s, 'proceed'), 'coordinator'],
+    [openOos(s, 'NIT-003-v1'), 'manager'],
+    [labErrorCheck(s, 'OOS26-0001'), 'analyst'],
+    [conclude(s, 'OOS26-0001', 'Confirmed'), 'manager'],
+  ];
+  for (const [command, actor] of attempts)
+    assert.throws(
+      () => run(lab, command, actor),
+      /Published Samples are locked/,
+      (command as { type: string }).type,
+    );
+  assert.deepEqual(lab.snapshot(), before, 'nothing changed');
+  assert.equal(lab.certificates(s.id).length, 1);
+});
+
+test('the Publish queue lists approved Samples by Due date', (t) => {
+  const lab = memory(t);
+  const received = execute(
+    lab,
+    {
+      ...receipt,
+      samples: [
+        { ...finishedProduct, dueDate: '2026-10-05' },
+        { ...rawMaterial, dueDate: '2026-10-01' },
+        { ...finishedProduct, dueDate: '2026-10-01', priority: 'Urgent' },
+        { ...finishedProduct, dueDate: '2026-09-20' },
+      ],
+    },
+    'coordinator',
+  ).samples;
+  const approved = received.slice(0, 3).map((s) => throughApproval(lab, s));
+  const queue = () => publishQueue(lab.snapshot().samples).map((s) => s.id);
+  assert.deepEqual(
+    queue(),
+    ['26-00003', '26-00002', '26-00001'],
+    'earliest Due date first, urgent first on the same day; unapproved Samples are not listed',
+  );
+  run(lab, publish(approved[2]), 'coordinator');
+  assert.deepEqual(queue(), ['26-00002', '26-00001']);
 });

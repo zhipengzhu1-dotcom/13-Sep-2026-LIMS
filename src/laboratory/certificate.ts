@@ -4,6 +4,7 @@ import {
   stabilityConditionLabels,
   type ClientDecision,
   type ClientKind,
+  type IssueChannel,
   type MaterialType,
   type Qualifier,
   type ReceiptDeviationKind,
@@ -129,6 +130,25 @@ export type CertificateContent = {
   signatures: CertificateSignature[];
 };
 
+/**
+ * The Coordinator's record that one Certificate version was issued to the
+ * Client. Stored apart from the locked content, append-only, at most one per
+ * version.
+ */
+export type Publication = {
+  sampleId: string;
+  version: number;
+  recipients: string[];
+  channel: IssueChannel;
+  /** Free text describing the channel; required for `other`. */
+  channelDetail: string;
+  /** When the Certificate was issued, as the Coordinator recorded it. */
+  publishedAt: string;
+  publishedBy: string;
+  /** The server time the publication was recorded. */
+  recordedAt: string;
+};
+
 /** A stored, locked Certificate version. */
 export type Certificate = {
   sampleId: string;
@@ -137,6 +157,8 @@ export type Certificate = {
   /** SHA-256 (hex) of the content as stored, so any later copy can be checked. */
   sha256: string;
   content: CertificateContent;
+  /** How and when this version was Published; null until it is. */
+  publication: Publication | null;
 };
 
 /** A Certificate version without its content, as the workspace lists it. */

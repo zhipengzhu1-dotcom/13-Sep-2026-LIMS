@@ -36,6 +36,16 @@ export type OosInvestigation = {
   assignableCause: string | null;
   closedBy: string | null;
   closedAt: string | null;
+  /** For a Confirmed OOS: the Coordinator's record that the Client was
+   * informed, required before Publishing. Null until recorded. */
+  clientNotification: {
+    /** The person at the Client who was informed. */
+    contact: string;
+    /** When the Client was informed; never later than its recording. */
+    notifiedAt: string;
+    recordedBy: string;
+    recordedAt: string;
+  } | null;
 };
 
 /** Whether a Result is out of specification and so needs an investigation. */
@@ -77,6 +87,22 @@ export function oosApprovalBlocker(sample: Sample): string | null {
       return `The ${testLabel(test)} Result does not comply with its Limit. An OOS investigation must be opened and closed before Approval.`;
   }
   return null;
+}
+
+/** Whether an investigation confirmed the OOS and the Client has still to be
+ * told of it. */
+export const awaitingClientNotification = (i: OosInvestigation) =>
+  i.outcome === 'Confirmed' && !i.clientNotification;
+
+/**
+ * Why Publishing is blocked by the OOS gate, or null when it is not: a
+ * Confirmed OOS whose Client notification is not yet recorded.
+ */
+export function oosPublishBlocker(sample: Sample): string | null {
+  const pending = sample.investigations.find(awaitingClientNotification);
+  return pending
+    ? `OOS investigation ${pending.id} confirmed an OOS. Record that the Client was informed before publishing.`
+    : null;
 }
 
 /** One line of the Manager's OOS investigations list. */

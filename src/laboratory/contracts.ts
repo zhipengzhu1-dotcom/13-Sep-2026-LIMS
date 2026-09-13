@@ -146,9 +146,30 @@ export const sampleStatuses = [
   'Awaiting approval',
   'Returned',
   'Approved',
+  'Published',
   'Withdrawn',
 ] as const;
 export type SampleStatus = (typeof sampleStatuses)[number];
+
+/**
+ * The Coordinator's Publish queue: approved Samples waiting to be Published,
+ * earliest Due date first, urgent before routine on the same day.
+ */
+export function publishQueue(samples: readonly Sample[]): Sample[] {
+  return samples
+    .filter((s) => s.status === 'Approved')
+    .sort(
+      (a, b) =>
+        a.dueDate.localeCompare(b.dueDate) ||
+        (a.priority === b.priority ? 0 : a.priority === 'Urgent' ? -1 : 1) ||
+        a.id.localeCompare(b.id),
+    );
+}
+
+/** How a Certificate of Analysis was issued to the Client. The system records
+ * it; it never transmits the document. */
+export const issueChannels = ['email', 'portal', 'print', 'other'] as const;
+export type IssueChannel = (typeof issueChannels)[number];
 
 /** Statuses in which a Receipt deviation stops all work on a Sample: held
  * until the Client instructs the lab, or withdrawn on the Client's word. */
@@ -610,6 +631,36 @@ export const commandSchema = z.discriminatedUnion('type', [
     outcome: z.enum(['Invalidated', 'Confirmed']),
     /** Mandatory for Invalidated; must be empty for Confirmed. */
     assignableCause: z.string().trim().max(2000),
+  }),
+  z.object({
+    commandId,
+    type: z.literal('recordClientOosNotification'),
+    ...target,
+    investigationId: text,
+    contact: required('Client contact who was informed'),
+    notifiedAt: z.iso.datetime({
+      offset: true,
+      error: 'Enter when the Client was informed.',
+    }),
+  }),
+  z.object({
+    commandId,
+    type: z.literal('publish'),
+    ...target,
+    recipients: z
+      .array(required('recipient'), { error: 'Enter the recipients.' })
+      .min(1, 'Enter at least one recipient.')
+      .max(20),
+    channel: z.enum(issueChannels, {
+      error:
+        'Choose how the Certificate was issued: email, portal, print or other.',
+    }),
+    /** Free text; required when the channel is `other`. */
+    channelDetail: optionalText,
+    publishedAt: z.iso.datetime({
+      offset: true,
+      error: 'Enter when the Certificate was issued.',
+    }),
   }),
   z.object({
     commandId,

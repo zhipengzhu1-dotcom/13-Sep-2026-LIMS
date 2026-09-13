@@ -8,7 +8,7 @@ import React, {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import type { Certificate } from './laboratory/certificate';
+import type { Certificate, Publication } from './laboratory/certificate';
 import { renderCertificate } from './laboratory/certificate-renderer';
 import {
   auditsSample,
@@ -20,11 +20,14 @@ import {
   expiryKinds,
   heldStatuses,
   investigationOf,
+  issueChannels,
   limitInForce,
   materialTypes,
   newCommandId,
   oosApprovalBlocker,
+  oosPublishBlocker,
   oosRows,
+  publishQueue,
   outOfSpecification,
   packageConditions,
   priorities,
@@ -64,6 +67,7 @@ import './styles.css';
 type View =
   | 'Receiving'
   | 'Holds'
+  | 'Publish queue'
   | 'Samples'
   | 'My work'
   | 'Approval queue'
@@ -73,6 +77,7 @@ type View =
 const QUEUES: View[] = [
   'Receiving',
   'Holds',
+  'Publish queue',
   'Samples',
   'My work',
   'Approval queue',
@@ -99,7 +104,14 @@ function viewsForRole(role: string | undefined): View[] {
   if (role === 'analyst') return ['My work', 'Methods', 'Audit trail'];
   if (role === 'manager')
     return ['Approval queue', 'OOS investigations', 'Methods', 'Audit trail'];
-  return ['Receiving', 'Holds', 'Samples', 'Methods', 'Audit trail'];
+  return [
+    'Receiving',
+    'Holds',
+    'Publish queue',
+    'Samples',
+    'Methods',
+    'Audit trail',
+  ];
 }
 function defaultViewForRole(role: string | undefined): View {
   return viewsForRole(role)[0];
@@ -112,6 +124,7 @@ function baseSet(view: View, samples: Sample[], actor: string) {
   if (view === 'Receiving')
     return samples.filter((s) => s.status === 'Received');
   if (view === 'Holds') return samples.filter((s) => s.status === 'On hold');
+  if (view === 'Publish queue') return publishQueue(samples);
   if (view === 'My work')
     return samples.filter(
       (s) =>
@@ -131,13 +144,15 @@ const FILTERS = [
   'Returned',
   'Awaiting approval',
   'Approved',
+  'Published',
   'Withdrawn',
   'All',
 ] as const;
 type Filter = (typeof FILTERS)[number];
-/** No further work: approved, or withdrawn by the Client. */
+/** No further work: published, or withdrawn by the Client. An approved Sample
+ * is still waiting to be Published. */
 const closed = (s: Sample) =>
-  s.status === 'Approved' || s.status === 'Withdrawn';
+  s.status === 'Published' || s.status === 'Withdrawn';
 function matches(s: Sample, f: Filter) {
   if (f === 'All') return true;
   if (f === 'Active') return !closed(s);
@@ -166,6 +181,7 @@ const STATUS_ORDER: Sample['status'][] = [
   'Returned',
   'Awaiting approval',
   'Approved',
+  'Published',
   'Withdrawn',
 ];
 type SortKey = 'due' | 'id' | 'status';
@@ -218,6 +234,12 @@ function Icon({ name }: { name: string }) {
       <>
         <rect x="4" y="4" width="16" height="16" rx="2" />
         <path d="M10 9v6m4-6v6" />
+      </>
+    ),
+    'Publish queue': (
+      <>
+        <path d="M14 3H6v18h12V7l-4-4Z" />
+        <path d="M14 3v4h4M9 14l3-3 3 3m-3-3v6" />
       </>
     ),
     Samples: (
@@ -624,6 +646,8 @@ function App() {
 
   function navigate(next: View) {
     setView(next);
+    // The Publish queue is worked in Due date order.
+    if (next === 'Publish queue') setSort({ key: 'due', asc: true });
     setFilter('Active');
     setRefine(NO_REFINE);
     setSearch('');
@@ -741,9 +765,11 @@ function App() {
             <span>
               {v === 'Approval queue'
                 ? 'Approval'
-                : v === 'OOS investigations'
-                  ? 'OOS'
-                  : v}
+                : v === 'Publish queue'
+                  ? 'Publish'
+                  : v === 'OOS investigations'
+                    ? 'OOS'
+                    : v}
             </span>
             {queueCount(v) > 0 && <b className="rail-count">{queueCount(v)}</b>}
           </button>
@@ -1074,7 +1100,9 @@ function App() {
                             ? 'Every received Sample is assigned. Receive a Submission to add more.'
                             : view === 'Holds'
                               ? 'No Samples are on hold for a Receipt deviation.'
-                              : 'No Samples yet. Receive a Submission to start.'}
+                              : view === 'Publish queue'
+                                ? 'No approved Samples are waiting to be Published.'
+                                : 'No Samples yet. Receive a Submission to start.'}
                   </div>
                 )}
               </div>
@@ -2164,7 +2192,10 @@ function SamplePanel({
   const oosBlocker = oosApprovalBlocker(s);
   const canAssign =
     person.role === 'coordinator' &&
-    !['Approved', 'Awaiting approval', ...heldStatuses].includes(s.status);
+    !['Approved', 'Published', 'Awaiting approval', ...heldStatuses].includes(
+      s.status,
+    );
+  const canPublish = person.role === 'coordinator' && s.status === 'Approved';
   const history = data.audit.filter((e) => auditsSample(e, s));
   const recorded = s.tests.filter((t) => currentResult(t)).length;
   return (
@@ -2425,19 +2456,23 @@ function SamplePanel({
                 </button>
               </div>
             </form>
+          ) : canPublish ? (
+            <PublishForm sample={s} data={data} busy={busy} execute={execute} />
           ) : (
             <span className="dim">
-              {s.status === 'Approved'
-                ? 'Approved. This Sample is locked and its Certificate of Analysis is issued.'
-                : s.status === 'On hold'
-                  ? "On hold for a Receipt deviation until the Client's instruction is recorded."
-                  : s.status === 'Withdrawn'
-                    ? 'Withdrawn on the Client’s instruction. No testing will be done.'
-                    : s.status === 'Awaiting approval'
-                      ? 'Awaiting Manager approval.'
-                      : s.assignee
-                        ? `Results are entered by ${personName(data, s.assignee)}.`
-                        : 'Assign an analyst before Results can be entered.'}
+              {s.status === 'Published'
+                ? 'Published. This Sample is locked; its publication is recorded on the Certificate of Analysis.'
+                : s.status === 'Approved'
+                  ? 'Approved. This Sample is locked and its Certificate of Analysis is waiting to be Published by a Coordinator.'
+                  : s.status === 'On hold'
+                    ? "On hold for a Receipt deviation until the Client's instruction is recorded."
+                    : s.status === 'Withdrawn'
+                      ? 'Withdrawn on the Client’s instruction. No testing will be done.'
+                      : s.status === 'Awaiting approval'
+                        ? 'Awaiting Manager approval.'
+                        : s.assignee
+                          ? `Results are entered by ${personName(data, s.assignee)}.`
+                          : 'Assign an analyst before Results can be entered.'}
             </span>
           )}
         </footer>
@@ -2454,6 +2489,118 @@ function SamplePanel({
       )}
     </div>
   );
+}
+
+/** Recipients as a Coordinator types them: one per line, or separated by
+ * commas or semicolons. */
+const recipientList = (value: string) =>
+  value
+    .split(/[\n,;]/)
+    .map((r) => r.trim())
+    .filter(Boolean);
+
+/** Records how and when the approved Certificate was issued to the Client.
+ * The system does not send the document. */
+function PublishForm({
+  sample: s,
+  data,
+  busy,
+  execute,
+}: {
+  sample: Sample;
+  data: Snapshot;
+  busy: boolean;
+  execute: Execute;
+}) {
+  const [channel, setChannel] =
+    useState<(typeof issueChannels)[number]>('email');
+  // The OOS gate, as the core enforces it.
+  const blocker = oosPublishBlocker(s);
+  const version = data.certificates
+    .filter((c) => c.sampleId === s.id)
+    .at(-1)?.version;
+  return (
+    <form
+      className="publish-form"
+      aria-label="Publish the Certificate of Analysis"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const f = new FormData(e.currentTarget);
+        const when = String(f.get('publishedAt') ?? '');
+        void execute({
+          type: 'publish',
+          sampleId: s.id,
+          revision: s.revision,
+          recipients: recipientList(String(f.get('recipients') ?? '')),
+          channel,
+          channelDetail: String(f.get('channelDetail') ?? '').trim(),
+          publishedAt: when ? new Date(when).toISOString() : '',
+        });
+      }}
+    >
+      {blocker && (
+        <p className="flash warn inline" role="status">
+          {blocker}
+        </p>
+      )}
+      <label className="wide">
+        Recipients
+        <textarea
+          name="recipients"
+          required
+          rows={2}
+          maxLength={4000}
+          placeholder="One per line: name and email or department"
+        />
+      </label>
+      <label>
+        Issued by
+        <select
+          name="channel"
+          value={channel}
+          onChange={(e) =>
+            setChannel(e.target.value as (typeof issueChannels)[number])
+          }
+        >
+          {issueChannels.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        {channel === 'other' ? 'How' : 'Details (optional)'}
+        <input
+          name="channelDetail"
+          maxLength={200}
+          required={channel === 'other'}
+          placeholder={
+            channel === 'other' ? 'Required: how it was issued' : undefined
+          }
+        />
+      </label>
+      <label>
+        When
+        <input
+          type="datetime-local"
+          name="publishedAt"
+          required
+          max={localDateTime(new Date())}
+          defaultValue={localDateTime(new Date())}
+        />
+      </label>
+      <button className="btn primary" disabled={busy || !!blocker}>
+        Publish{version ? ` version ${version}` : ''}
+      </button>
+    </form>
+  );
+}
+
+/** A publication as the Certificate list shows it. */
+function publicationLine(data: Snapshot, p: Publication) {
+  const how = p.channelDetail ? `${p.channel} (${p.channelDetail})` : p.channel;
+  return `Published ${signatureStamp(p.publishedAt)} by ${personName(data, p.publishedBy) ?? p.publishedBy}, ${how}, to ${p.recipients.join('; ')}`;
 }
 
 /** A date and time with its UTC offset, as a signature manifestation shows it. */
@@ -2526,6 +2673,11 @@ function CertificateVersions({
             <button className="btn sm" onClick={() => setOpen(c.version)}>
               Open printable view
             </button>
+            <span className={'publication' + (c.publication ? '' : ' pending')}>
+              {c.publication
+                ? publicationLine(data, c.publication)
+                : 'Not yet Published.'}
+            </span>
           </li>
         ))}
       </ul>
@@ -3363,7 +3515,12 @@ function Investigations({
   const rows = oosRows([s]);
   if (!rows.length) return null;
   const person = data.people.find((p) => p.id === actor)!;
-  const manager = person.role === 'manager' && s.status !== 'Approved';
+  const manager =
+    person.role === 'manager' && !['Approved', 'Published'].includes(s.status);
+  // Recording that the Client was informed stays open until Publishing.
+  const coordinator =
+    person.role === 'coordinator' &&
+    !['Published', 'Withdrawn'].includes(s.status);
   const target = { sampleId: s.id, revision: s.revision };
   return (
     <section className="investigations" aria-label="OOS investigations">
@@ -3517,6 +3674,70 @@ function Investigations({
                     )}
                   </dd>
                 </div>
+                {inv.outcome === 'Confirmed' && (
+                  <div>
+                    <dt>Client informed</dt>
+                    <dd>
+                      {inv.clientNotification ? (
+                        <>
+                          {inv.clientNotification.contact},{' '}
+                          {stamp(inv.clientNotification.notifiedAt)}{' '}
+                          <span className="dim">
+                            recorded by{' '}
+                            {personName(
+                              data,
+                              inv.clientNotification.recordedBy,
+                            )}
+                            , {stamp(inv.clientNotification.recordedAt)}
+                          </span>
+                        </>
+                      ) : coordinator ? (
+                        <form
+                          className="inv-form"
+                          aria-label="Record that the Client was informed"
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            const f = new FormData(e.currentTarget);
+                            const when = String(f.get('notifiedAt') ?? '');
+                            void execute({
+                              type: 'recordClientOosNotification',
+                              ...target,
+                              investigationId: inv.id,
+                              contact: String(f.get('contact') ?? '').trim(),
+                              notifiedAt: when
+                                ? new Date(when).toISOString()
+                                : '',
+                            });
+                          }}
+                        >
+                          <input
+                            name="contact"
+                            aria-label="Client contact who was informed"
+                            required
+                            maxLength={200}
+                            placeholder="Name and role at the Client"
+                          />
+                          <input
+                            type="datetime-local"
+                            name="notifiedAt"
+                            aria-label="When the Client was informed"
+                            required
+                            max={localDateTime(new Date())}
+                            defaultValue={localDateTime(new Date())}
+                          />
+                          <button className="btn sm primary" disabled={busy}>
+                            Record Client informed
+                          </button>
+                        </form>
+                      ) : (
+                        <span className="oos-note">
+                          Not yet recorded. The Coordinator records it before
+                          publishing.
+                        </span>
+                      )}
+                    </dd>
+                  </div>
+                )}
               </dl>
             )}
           </li>
@@ -3705,6 +3926,8 @@ const COMMAND_LABELS: Record<string, string> = {
   concludeOosInvestigation: 'OOS investigation concluded',
   recordReceiptDeviation: 'Receipt deviation recorded',
   recordClientInstruction: 'Client instruction recorded',
+  recordClientOosNotification: 'Client informed of confirmed OOS',
+  publish: 'Published',
 };
 
 const auditValue = (value: AuditValue) =>

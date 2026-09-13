@@ -15,6 +15,7 @@ import {
   heldStatuses,
   methods,
   oosApprovalBlocker,
+  oosPublishBlocker,
   outOfSpecification,
   people,
   qualify,
@@ -44,6 +45,7 @@ import {
   type Certificate,
   type CertificateContent,
   type CertificateSummary,
+  type Publication,
 } from './certificate.ts';
 import type { Attachment } from './attachment-contracts.ts';
 import {
@@ -53,7 +55,7 @@ import {
 } from './attachments.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 export class WorkflowError extends Error {
   constructor(
@@ -164,7 +166,8 @@ type Series = 'submission' | 'sample' | 'investigation';
  * attachment record. `submission` loads a Sample's Submission, `signatures`
  * lists a Sample's recorded Electronic signatures (oldest first), and
  * `certificates` / `issueCertificate` read and store locked Certificate
- * versions inside the same transaction.
+ * versions inside the same transaction, and `recordPublication` stores the
+ * publication of one version.
  */
 type Context = {
   at: string;
@@ -178,7 +181,35 @@ type Context = {
   signatures: (sampleId: string) => Signature[];
   certificates: (sampleId: string) => CertificateSummary[];
   issueCertificate: (content: CertificateContent) => Certificate;
+  recordPublication: (publication: Publication) => void;
 };
+
+/**
+ * Statuses that lock a Sample, each with the only commands still allowed on
+ * it: its named transitions. Everything else is refused before any handler
+ * runs.
+ */
+const locks: Partial<
+  Record<SampleStatus, { message: string; allows: Command['type'][] }>
+> = {
+  Approved: {
+    message: 'Approved samples are locked.',
+    // Publishing, and the Client notification a Confirmed OOS requires first.
+    allows: ['publish', 'recordClientOosNotification'],
+  },
+  Published: { message: 'Published Samples are locked.', allows: [] },
+  Withdrawn: {
+    message: 'The Client withdrew this Sample, so it is closed.',
+    allows: [],
+  },
+};
+
+/** An instant a Coordinator entered, which cannot lie after the saving. */
+function recordedInstant(value: string, at: string, message: string) {
+  const instant = new Date(value).toISOString();
+  if (instant > at) throw new WorkflowError(message);
+  return instant;
+}
 
 /**
  * Receipt is the one verb that creates its subjects, so it returns the
@@ -660,6 +691,7 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       assignableCause: null,
       closedBy: null,
       closedAt: null,
+      clientNotification: null,
     };
     audit.compare(
       auditRecord.investigation(sample, investigation),
@@ -743,6 +775,96 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       result.status = 'invalidated';
     }
   },
+
+  recordClientOosNotification(command, actor, sample, { at, audit }) {
+    requireRole(actor, 'coordinator');
+    const investigation = sample.investigations.find(
+      (i) => i.id === command.investigationId,
+    );
+    if (!investigation) throw new WorkflowError('OOS investigation not found.');
+    if (investigation.outcome !== 'Confirmed')
+      throw new WorkflowError(
+        'Client notification is recorded only for a confirmed OOS.',
+      );
+    if (investigation.clientNotification)
+      throw new WorkflowError(
+        `The Client notification for ${investigation.id} is already recorded.`,
+      );
+    const notifiedAt = recordedInstant(
+      command.notifiedAt,
+      at,
+      'The time the Client was informed cannot be later than the time of saving.',
+    );
+    if (notifiedAt < investigation.closedAt!)
+      throw new WorkflowError(
+        'The Client cannot have been informed of a confirmed OOS before the investigation was concluded.',
+      );
+    const notification = { contact: command.contact, notifiedAt };
+    audit.compare(auditRecord.investigation(sample, investigation), null, {
+      clientNotification: notification,
+    });
+    investigation.clientNotification = {
+      ...notification,
+      recordedBy: actor.id,
+      recordedAt: at,
+    };
+  },
+
+  publish(
+    command,
+    actor,
+    sample,
+    { at, audit, certificates, recordPublication },
+  ) {
+    requireRole(actor, 'coordinator');
+    if (sample.status !== 'Approved')
+      throw new WorkflowError('Only approved Samples can be published.');
+    const blocked = oosPublishBlocker(sample);
+    if (blocked) throw new WorkflowError(blocked);
+    // Approval issued the version being published; an Amendment's Approval
+    // issues the next one, which is published the same way.
+    const certificate = certificates(sample.id).at(-1);
+    if (!certificate || certificate.publication)
+      throw new Error(
+        `Sample ${sample.id} has no unpublished Certificate to publish.`,
+      );
+    const recipients = command.recipients;
+    if (
+      new Set(recipients.map((r) => r.toLowerCase())).size !== recipients.length
+    )
+      throw new WorkflowError('List each recipient once.');
+    if (command.channel === 'other' && !command.channelDetail)
+      throw new WorkflowError('Describe how the Certificate was issued.');
+    const publishedAt = recordedInstant(
+      command.publishedAt,
+      at,
+      'The time of publishing cannot be later than the time of saving.',
+    );
+    if (publishedAt < certificate.approvedAt)
+      throw new WorkflowError(
+        'A Certificate cannot have been published before its Approval.',
+      );
+    const publication: Publication = {
+      sampleId: sample.id,
+      version: certificate.version,
+      recipients,
+      channel: command.channel,
+      channelDetail: command.channelDetail,
+      publishedAt,
+      publishedBy: actor.id,
+      recordedAt: at,
+    };
+    audit.set(auditRecord.sample(sample), sample, 'status', 'Published');
+    audit.compare(auditRecord.certificate(sample, certificate.version), null, {
+      publication: {
+        recipients,
+        channel: publication.channel,
+        channelDetail: publication.channelDetail,
+        publishedAt,
+      },
+    });
+    recordPublication(publication);
+  },
 };
 
 export type LaboratoryOptions = {
@@ -792,7 +914,10 @@ export class Laboratory {
       CREATE TRIGGER IF NOT EXISTS acceptableIntakesNoDelete BEFORE DELETE ON acceptableIntakes BEGIN SELECT RAISE(ABORT, 'Acceptable intake entries are append-only.'); END;
       CREATE TABLE IF NOT EXISTS certificates (sampleId TEXT NOT NULL, version INTEGER NOT NULL, approvedAt TEXT NOT NULL, sha256 TEXT NOT NULL, content TEXT NOT NULL, commandId BLOB NOT NULL, PRIMARY KEY (sampleId, version)) WITHOUT ROWID;
       CREATE TRIGGER IF NOT EXISTS certificatesNoUpdate BEFORE UPDATE ON certificates BEGIN SELECT RAISE(ABORT, 'Certificates of Analysis are locked.'); END;
-      CREATE TRIGGER IF NOT EXISTS certificatesNoDelete BEFORE DELETE ON certificates BEGIN SELECT RAISE(ABORT, 'Certificates of Analysis are locked.'); END;`);
+      CREATE TRIGGER IF NOT EXISTS certificatesNoDelete BEFORE DELETE ON certificates BEGIN SELECT RAISE(ABORT, 'Certificates of Analysis are locked.'); END;
+      CREATE TABLE IF NOT EXISTS publications (sampleId TEXT NOT NULL, version INTEGER NOT NULL, recipients TEXT NOT NULL, channel TEXT NOT NULL, channelDetail TEXT NOT NULL, publishedAt TEXT NOT NULL, publishedBy TEXT NOT NULL, recordedAt TEXT NOT NULL, commandId BLOB NOT NULL, PRIMARY KEY (sampleId, version), FOREIGN KEY (sampleId, version) REFERENCES certificates (sampleId, version)) WITHOUT ROWID;
+      CREATE TRIGGER IF NOT EXISTS publicationsNoUpdate BEFORE UPDATE ON publications BEGIN SELECT RAISE(ABORT, 'Publications are append-only.'); END;
+      CREATE TRIGGER IF NOT EXISTS publicationsNoDelete BEFORE DELETE ON publications BEGIN SELECT RAISE(ABORT, 'Publications are append-only.'); END;`);
     // Reference data: a new database starts with the seeded entries, written
     // as one statement so it is never half seeded.
     const { entries } = this.db
@@ -867,38 +992,89 @@ export class Laboratory {
     return rows.map((row) => ({ ...row, command: JSON.parse(row.command) }));
   }
 
-  private certificateSummaries(sampleId?: string): CertificateSummary[] {
-    const columns =
-      'SELECT sampleId, version, approvedAt, sha256 FROM certificates';
+  /** Certificate versions with their publication, by Sample then version:
+   * lab-wide or for one Sample, with or without the locked content. */
+  private certificateRows(
+    sampleId: string | undefined,
+    withContent: boolean,
+  ): (CertificateSummary & { content?: string })[] {
+    const query = `SELECT c.sampleId, c.version, c.approvedAt, c.sha256${withContent ? ', c.content' : ''},
+        p.recipients, p.channel, p.channelDetail, p.publishedAt, p.publishedBy, p.recordedAt
+      FROM certificates c LEFT JOIN publications p ON p.sampleId = c.sampleId AND p.version = c.version
+      ${sampleId === undefined ? '' : 'WHERE c.sampleId = ?'} ORDER BY c.sampleId, c.version`;
     const rows = (
       sampleId === undefined
-        ? this.db.prepare(`${columns} ORDER BY sampleId, version`).all()
-        : this.db
-            .prepare(`${columns} WHERE sampleId=? ORDER BY version`)
-            .all(sampleId)
-    ) as CertificateSummary[];
-    return rows.map((row) => ({ ...row, version: Number(row.version) }));
+        ? this.db.prepare(query).all()
+        : this.db.prepare(query).all(sampleId)
+    ) as (Omit<CertificateSummary, 'publication'> &
+      Omit<
+        Publication,
+        'sampleId' | 'version' | 'recipients' | 'publishedAt'
+      > & {
+        content?: string;
+        recipients: string | null;
+        publishedAt: string | null;
+      })[];
+    return rows.map((row) => {
+      const version = Number(row.version);
+      return {
+        sampleId: row.sampleId,
+        version,
+        approvedAt: row.approvedAt,
+        sha256: row.sha256,
+        ...(withContent ? { content: row.content } : {}),
+        publication:
+          row.publishedAt === null
+            ? null
+            : {
+                sampleId: row.sampleId,
+                version,
+                recipients: JSON.parse(row.recipients!),
+                channel: row.channel,
+                channelDetail: row.channelDetail,
+                publishedAt: row.publishedAt,
+                publishedBy: row.publishedBy,
+                recordedAt: row.recordedAt,
+              },
+      };
+    });
+  }
+
+  private certificateSummaries(sampleId?: string): CertificateSummary[] {
+    return this.certificateRows(sampleId, false);
   }
 
   /**
    * Every Certificate of Analysis version of a Sample, oldest first, each
-   * with its locked content. Empty until the Sample is approved.
+   * with its locked content and its publication, if any. Empty until the
+   * Sample is approved.
    */
   certificates(sampleId: string): Certificate[] {
     this.load(sampleId);
-    return (
-      this.db
-        .prepare(
-          'SELECT sampleId, version, approvedAt, sha256, content FROM certificates WHERE sampleId=? ORDER BY version',
-        )
-        .all(sampleId) as (CertificateSummary & { content: string })[]
-    ).map((row) => ({
-      sampleId: row.sampleId,
-      version: Number(row.version),
-      approvedAt: row.approvedAt,
-      sha256: row.sha256,
-      content: JSON.parse(row.content),
-    }));
+    return this.certificateRows(sampleId, true).map(
+      ({ content, ...summary }) => ({
+        ...summary,
+        content: JSON.parse(content!),
+      }),
+    );
+  }
+
+  private recordPublication(p: Publication, commandId: Uint8Array) {
+    this.db
+      .prepare(
+        'INSERT INTO publications (sampleId, version, recipients, channel, channelDetail, publishedAt, publishedBy, recordedAt, commandId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        p.sampleId,
+        p.version,
+        JSON.stringify(p.recipients),
+        p.channel,
+        p.channelDetail,
+        p.publishedAt,
+        p.publishedBy,
+        p.recordedAt,
+        commandId,
+      );
   }
 
   /** One Certificate version of a Sample, or its latest when no version is
@@ -930,6 +1106,7 @@ export class Laboratory {
       approvedAt: content.approvedAt,
       sha256: createHash('sha256').update(document).digest('hex'),
       content: JSON.parse(document),
+      publication: null,
     };
     this.db
       .prepare(
@@ -1053,6 +1230,8 @@ export class Laboratory {
         signatures: (sampleId) => this.signatures(sampleId),
         certificates: (sampleId) => this.certificateSummaries(sampleId),
         issueCertificate: (content) => this.issueCertificate(content, key),
+        recordPublication: (publication) =>
+          this.recordPublication(publication, key),
       };
       // Verified before the key is claimed or a replay answered, so a wrong
       // password applies nothing, is never reported as an earlier success, and
@@ -1086,12 +1265,9 @@ export class Laboratory {
             'This sample changed. Refresh the workspace before saving again.',
             409,
           );
-        if (sample.status === 'Approved')
-          throw new WorkflowError('Approved samples are locked.');
-        if (sample.status === 'Withdrawn')
-          throw new WorkflowError(
-            'The Client withdrew this Sample, so it is closed.',
-          );
+        const lock = locks[sample.status];
+        if (lock && !lock.allows.includes(command.type))
+          throw new WorkflowError(lock.message);
         // One cast, localised here, because TypeScript cannot correlate the
         // narrowed command with the handler selected by its own discriminant.
         // Each handler in the registry is individually typed to its own verb.
