@@ -5,6 +5,14 @@ import { MAX_ATTACHMENT_BYTES } from '../src/laboratory/attachment-contracts.ts'
 import { HttpError } from './http-error.ts';
 
 /**
+ * The most of a refused upload that is read and discarded before the refusal
+ * is sent. Replying while the client is still sending and then closing resets
+ * the connection under the client's unfinished write, and the client may see
+ * that reset instead of the refusal. Past this the connection is dropped.
+ */
+const DISCARD_LIMIT = 4 * MAX_ATTACHMENT_BYTES;
+
+/**
  * `POST /api/attachments?filename=<name>` with the raw file as the body and
  * its own content type, separate from the 32 KB JSON command route.
  * `GET /api/attachments/<id>` returns the stored bytes.
@@ -24,16 +32,27 @@ export async function handleAttachments(
   if (req.method !== 'POST' || url.pathname !== '/api/attachments')
     throw new HttpError(404, 'Not found');
 
-  // Refusals before the body is read close the connection, so an unread
-  // upload is not left on a kept-alive socket.
-  res.setHeader('Connection', 'close');
-  if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`)
-    throw new HttpError(403, 'Cross-origin writes are not allowed.');
-  const user = currentUser();
-  if (Number(req.headers['content-length']) > MAX_ATTACHMENT_BYTES)
-    throw new HttpError(413, 'Attachments are limited to 10 MB.');
-  const content = await readBody(req);
-  res.removeHeader('Connection');
+  let user: User;
+  try {
+    if (
+      req.headers.origin &&
+      req.headers.origin !== `http://${req.headers.host}`
+    )
+      throw new HttpError(403, 'Cross-origin writes are not allowed.');
+    user = currentUser();
+    if (Number(req.headers['content-length']) > MAX_ATTACHMENT_BYTES)
+      throw new HttpError(413, 'Attachments are limited to 10 MB.');
+  } catch (error) {
+    // Refused before the body is read: it is read to its end and discarded
+    // first, so the refusal is what the client receives.
+    res.setHeader('Connection', 'close');
+    await readBody(req, 0).catch(() => undefined);
+    throw error;
+  }
+  const content = await readBody(req, MAX_ATTACHMENT_BYTES).catch((error) => {
+    res.setHeader('Connection', 'close');
+    throw error;
+  });
   const attachment = lab.storeAttachment(
     {
       filename: url.searchParams.get('filename') ?? '',
@@ -49,16 +68,34 @@ export async function handleAttachments(
   res.end(JSON.stringify({ attachment }));
 }
 
-async function readBody(req: IncomingMessage): Promise<Uint8Array> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req as AsyncIterable<Buffer>) {
-    size += chunk.byteLength;
-    if (size > MAX_ATTACHMENT_BYTES)
-      throw new HttpError(413, 'Attachments are limited to 10 MB.');
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
+/**
+ * The whole body, refused with 413 when it passes `limit` bytes. A body over
+ * the limit is still read to its end, without being kept, so the refusal
+ * reaches the client; one past `DISCARD_LIMIT` is cut off.
+ */
+function readBody(req: IncomingMessage, limit: number): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const tooLarge = () =>
+      new HttpError(413, 'Attachments are limited to 10 MB.');
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.byteLength;
+      if (size <= limit) chunks.push(chunk);
+      else if (size > DISCARD_LIMIT) {
+        req.destroy();
+        reject(tooLarge());
+      }
+    });
+    req.on('end', () =>
+      size > limit ? reject(tooLarge()) : resolve(Buffer.concat(chunks)),
+    );
+    req.on('error', reject);
+    req.on('close', () => {
+      if (!req.complete) reject(new HttpError(400, 'The upload was cut off.'));
+    });
+    if (req.readableEnded) resolve(new Uint8Array(0));
+  });
 }
 
 function sendAttachment(res: ServerResponse, lab: Laboratory, id: string) {
