@@ -1,6 +1,7 @@
 import { decisionRule, type ConformityStatement } from './limits.ts';
 import type { OosOutcome } from './investigations.ts';
 import {
+  isFinishedProduct,
   stabilityConditionLabels,
   type ClientDecision,
   type ClientKind,
@@ -69,8 +70,10 @@ export type CertificateResult = {
     illustrative: boolean;
   } | null;
   conformity: ConformityStatement;
-  /** The closed OOS investigation on the reported Result, if any. */
-  investigation: { id: string; outcome: OosOutcome } | null;
+  /** Every closed OOS investigation on the Test's Results, oldest first: on
+   * the reported Result, on an Invalidated Result it retests, or on a Result
+   * an Amendment corrected. Empty when there was none. */
+  investigations: { id: string; outcome: OosOutcome }[];
 };
 
 export type CertificateContent = {
@@ -126,7 +129,8 @@ export type CertificateContent = {
   results: CertificateResult[];
   decisionRule: string;
   individualJudgement: string;
-  /** Performed by, then approved by. */
+  /** Performed by; for a version issued by an Amendment, amended by; then
+   * approved by. */
   signatures: CertificateSignature[];
 };
 
@@ -187,7 +191,7 @@ export function certificateContent({
   signatures: CertificateSignature[];
   amendment?: CertificateContent['amendment'];
 }): CertificateContent {
-  const finished = sample.materialType === 'finished product';
+  const finished = isFinishedProduct(sample.materialType);
   return {
     sampleId: sample.id,
     version,
@@ -240,9 +244,6 @@ export function certificateContent({
       const r = test.results.find((x) => x.status === 'current');
       if (!r)
         throw new Error(`Test ${test.id} has no current Result to certify.`);
-      const investigation = r.investigationId
-        ? sample.investigations.find((i) => i.id === r.investigationId)
-        : undefined;
       return {
         testId: test.id,
         analyte: test.analyteName,
@@ -265,10 +266,11 @@ export function certificateContent({
           illustrative: r.limit.illustrative,
         },
         conformity: r.conformity,
-        investigation:
-          investigation?.outcome != null
-            ? { id: investigation.id, outcome: investigation.outcome }
-            : null,
+        investigations: sample.investigations.flatMap((i) =>
+          i.testId === test.id && i.status === 'Closed' && i.outcome
+            ? [{ id: i.id, outcome: i.outcome }]
+            : [],
+        ),
       };
     }),
     decisionRule: finished ? decisionRule : rawMaterialDecisionRule,

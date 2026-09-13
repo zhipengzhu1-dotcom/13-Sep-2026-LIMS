@@ -8,8 +8,10 @@ import type { AuditEntry, AuditValue, Sample } from './contracts.ts';
  *
  * An Amendment corrects Results the same way as before the first Approval:
  * each correction is a new Result with a reason, and the Result it replaces
- * stays on record. A Result decided by an OOS investigation is not corrected
- * around it in an Amendment either: a Confirmed OOS stands, and an open
+ * stays on record. An Amendment may also correct a Result an OOS
+ * investigation confirmed: the investigation stays on record, linked to the
+ * Result it decided, and the correction is judged afresh, so one that still
+ * does not comply needs its own investigation before re-approval. An open
  * investigation must be concluded first.
  */
 

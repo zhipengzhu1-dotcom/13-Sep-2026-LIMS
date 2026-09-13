@@ -4,7 +4,7 @@ import type { LodLoq, Qualifier } from './contracts.ts';
 /**
  * Limits and Conformity statements. Pure and browser-safe: the core judges
  * each Result with these functions when it is entered, and the workspace uses
- * the same ones to preview a verdict and to show which entry is in force.
+ * the same ones to preview a Conformity statement and to show which entry is in force.
  */
 
 export const cderSource = {

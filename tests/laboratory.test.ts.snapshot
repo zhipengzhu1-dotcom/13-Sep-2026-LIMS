@@ -84,10 +84,12 @@ exports[`Approval freezes Certificate version 1 for a finished product with a Re
         "illustrative": true
       },
       "conformity": "Does not comply",
-      "investigation": {
-        "id": "OOS26-0001",
-        "outcome": "Confirmed"
-      }
+      "investigations": [
+        {
+          "id": "OOS26-0001",
+          "outcome": "Confirmed"
+        }
+      ]
     },
     {
       "testId": "NIT-003-v1",
@@ -111,7 +113,7 @@ exports[`Approval freezes Certificate version 1 for a finished product with a Re
         "illustrative": true
       },
       "conformity": "Complies",
-      "investigation": null
+      "investigations": []
     }
   ],
   "decisionRule": "The Result is rounded to the decimal places of the Limit and complies when it is at or below the Limit. A Result reported as < LOD or < LOQ complies when that LOD or LOQ is below the Limit. Each Result is judged on its own.",
@@ -193,7 +195,7 @@ exports[`a raw material Certificate reports each Result with Report and no Limit
       "loq": 0.03,
       "limit": null,
       "conformity": "Report",
-      "investigation": null
+      "investigations": []
     },
     {
       "testId": "NIT-005-v1",
@@ -208,7 +210,7 @@ exports[`a raw material Certificate reports each Result with Report and no Limit
       "loq": 0.03,
       "limit": null,
       "conformity": "Report",
-      "investigation": null
+      "investigations": []
     }
   ],
   "decisionRule": "Raw materials have no Limit: each Result is reported as is, with the Conformity statement Report.",

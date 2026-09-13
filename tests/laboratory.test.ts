@@ -5,11 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { Laboratory, SCHEMA_VERSION } from '../src/laboratory/laboratory.ts';
+import { Laboratory } from '../src/laboratory/laboratory.ts';
+import { discardOutdatedDemoDatabase, seed } from '../server/seed.ts';
 import { renderCertificate } from '../src/laboratory/certificate-renderer.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
+  auditEntriesWithin,
   currentResult,
   enteredResultOn,
   investigationOf,
@@ -135,9 +137,15 @@ function submitted(lab: Laboratory) {
   const s = entered(lab, assigned(lab));
   return run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
 }
-/** How many distinct commands the audit trail records. */
+/** How many distinct commands the audit trail records, leaving out worksheet
+ * uploads. */
 const commandsAudited = (lab: Laboratory) =>
-  new Set(lab.snapshot().audit.map((e) => e.commandId)).size;
+  new Set(
+    lab
+      .snapshot()
+      .audit.filter((e) => e.commandType !== 'storeAttachment')
+      .map((e) => e.commandId),
+  ).size;
 /** Runs a command and returns its outcome with the audit entries it wrote, in
  * the order it wrote them, as `[record, field, old, new, reason]`. */
 function audited(lab: Laboratory, command: object, actor: string) {
@@ -901,36 +909,77 @@ test('records and the audit trail survive database reopen', (t) => {
   );
 });
 
-test('the schema version is stamped once and is never stomped by reopening', (t) => {
-  const folder = mkdtempSync(join(tmpdir(), 'lims-schema-version-'));
+test('the demo database is kept across restarts, and one from an older build is discarded and reseeded', (t) => {
+  const folder = mkdtempSync(join(tmpdir(), 'lims-demo-database-'));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
-  const file = join(folder, 'test.sqlite');
-  const schemaVersion = () => {
-    const db = new DatabaseSync(file);
-    const row = db.prepare('PRAGMA user_version').get() as {
-      user_version: number;
-    };
-    db.close();
-    return row.user_version;
+  const file = join(folder, 'prototype.sqlite');
+  /** What the server does on start. */
+  const start = () => {
+    discardOutdatedDemoDatabase(file);
+    const lab = new Laboratory(file, { credentials: accounts });
+    seed(lab);
+    return lab;
   };
-  new Laboratory(file).close();
-  assert.equal(
-    schemaVersion(),
-    SCHEMA_VERSION,
-    'a new database is stamped at the current version',
+  const shape = (lab: Laboratory) =>
+    lab.snapshot().samples.map((x) => [x.id, x.status]);
+
+  let lab = start();
+  const seeded = shape(lab);
+  assert.ok(seeded.length, 'a new database is seeded');
+  const added = execute(lab, receipt, 'coordinator').submission!.id;
+  lab.close();
+  // A database this build wrote is current, however often it is reopened.
+  for (const restart of [1, 2]) {
+    lab = start();
+    assert.ok(
+      lab.snapshot().submissions.some((x) => x.id === added),
+      `restart ${restart} keeps the records`,
+    );
+    lab.close();
+  }
+
+  // A database left by an older build, with its own model of a Sample.
+  for (const suffix of ['', '-wal', '-shm'])
+    rmSync(file + suffix, { force: true });
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`CREATE TABLE samples (id TEXT PRIMARY KEY, status TEXT);
+    INSERT INTO samples VALUES ('26-00001', 'Reviewed');`);
+  legacy.close();
+  lab = start();
+  t.after(() => lab.close());
+  assert.deepEqual(shape(lab), seeded, 'discarded and seeded afresh');
+  assert.ok(!lab.snapshot().submissions.some((x) => x.id === added));
+});
+
+test('the lab-wide audit trail is narrowed to a period of whole UTC days', (t) => {
+  let now = '2026-09-09T23:59:59.999Z';
+  const lab = new Laboratory(':memory:', { clock: () => now });
+  t.after(() => lab.close());
+  let s = run(lab, receipt, 'coordinator');
+  now = '2026-09-10T00:00:00.000Z';
+  s = run(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'analyst' },
+    'coordinator',
   );
-  // A migration runner advances the version on its own connection and closes
-  // before Laboratory is constructed, which is what #32 requires of it.
-  const runner = new DatabaseSync(file);
-  runner.exec(`PRAGMA user_version=${SCHEMA_VERSION + 1}`);
-  runner.close();
-  const reopened = new Laboratory(file);
-  t.after(() => reopened.close());
-  assert.equal(
-    schemaVersion(),
-    SCHEMA_VERSION + 1,
-    'constructing Laboratory must not stomp a migrated schema version',
+  now = '2026-09-11T08:00:00.000Z';
+  run(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'analyst-2' },
+    'coordinator',
   );
+  const days = (from: string, to: string) => [
+    ...new Set(
+      auditEntriesWithin(lab.auditTrail(), { from, to }).map((e) =>
+        e.at.slice(0, 10),
+      ),
+    ),
+  ];
+  assert.deepEqual(days('', ''), ['2026-09-11', '2026-09-10', '2026-09-09']);
+  assert.deepEqual(days('2026-09-10', ''), ['2026-09-11', '2026-09-10']);
+  assert.deepEqual(days('', '2026-09-10'), ['2026-09-10', '2026-09-09']);
+  assert.deepEqual(days('2026-09-10', '2026-09-10'), ['2026-09-10']);
+  assert.deepEqual(days('2026-09-12', ''), []);
 });
 
 test('a retried command is replayed, not applied a second time', () => {
@@ -1773,6 +1822,8 @@ test('submitting, returning and approving audit the status and each signature, w
 
 test('a rejected command writes no audit entry', (t) => {
   const lab = memory(t);
+  // Stored, and audited, before any command is attempted.
+  worksheet(lab);
   const rejected = (command: object, actor: string) => {
     const before = lab.auditTrail();
     assert.throws(() => execute(lab, command, actor));
@@ -2132,6 +2183,37 @@ test('a Result must reference a stored worksheet attachment', (t) => {
   );
   assert.equal(outcome.samples[0].tests[0].results[0].attachmentId, stored.id);
   assert.deepEqual(lab.snapshot().attachments, [stored]);
+  // Storing it is on the audit trail: who uploaded which file, when, and its
+  // SHA-256.
+  assert.deepEqual(
+    lab
+      .auditTrail()
+      .filter((e) => e.commandType === 'storeAttachment')
+      .reverse()
+      .map((e) => [
+        `${e.recordType} ${e.recordId}`,
+        e.sampleId,
+        e.field,
+        e.oldValue,
+        e.newValue,
+        e.actor,
+        e.at,
+      ]),
+    [
+      ['filename', 'NIT-001 worksheet.pdf'],
+      ['contentType', 'application/pdf'],
+      ['size', content.byteLength],
+      ['sha256', stored.sha256],
+    ].map(([field, value]) => [
+      `Attachment ${stored.id}`,
+      null,
+      field,
+      null,
+      value,
+      'analyst',
+      NOW,
+    ]),
+  );
   // The trail names the worksheet; its record holds the filename and hash.
   assert.deepEqual(
     changes.find(([, field]) => field === 'result.attachmentId'),
@@ -2172,6 +2254,7 @@ test('only Analysts store worksheets, of an accepted type and size', (t) => {
       JSON.stringify(Object.keys(patch)),
     );
   assert.equal(lab.snapshot().attachments.length, 0);
+  assert.deepEqual(lab.auditTrail(), [], 'a refused upload is not audited');
   const xlsx = upload({
     filename: 'sheet.XLSX',
     contentType:
@@ -2750,15 +2833,20 @@ test('a Certificate stays as issued through replays, reference data changes and 
   assert.deepEqual(lab.certificates(s.id), [issued], 'nothing issued again');
 
   // A revised Acceptable intake now in force for the certified Analyte.
-  lab.appendAcceptableIntake({
-    analyteId: 'impurity-a',
-    value: 18,
-    sourceTitle: 'CDER Nitrosamine Impurity Acceptable Intake Limits',
-    sourceUrl: 'https://www.fda.gov/example-revision',
-    sourceRevisionDate: '2026-09-01',
-    effectiveFrom: '2026-09-01',
-    illustrative: true,
-  });
+  execute(
+    lab,
+    {
+      type: 'appendAcceptableIntake',
+      analyteId: 'impurity-a',
+      value: 18,
+      sourceTitle: 'CDER Nitrosamine Impurity Acceptable Intake Limits',
+      sourceUrl: 'https://www.fda.gov/example-revision',
+      sourceRevisionDate: '2026-09-01',
+      effectiveFrom: '2026-09-01',
+      illustrative: true,
+    },
+    'manager',
+  );
   assert.deepEqual(lab.certificate(s.id), issued);
   lab.close();
 
@@ -3031,6 +3119,22 @@ test('Client notification is recorded only for a confirmed OOS', (t) => {
     null,
     'an Invalidated OOS needs no notice',
   );
+  // The Certificate still names the investigation behind the retest.
+  const { content } = lab.certificate(s.id);
+  assert.deepEqual(
+    content.results.map((r) => [r.value, r.conformity, r.investigations]),
+    [
+      [2.5, 'Complies', [{ id: 'OOS26-0001', outcome: 'Invalidated' }]],
+      [2.5, 'Complies', []],
+    ],
+  );
+  const table = renderCertificate(content).sections.find(
+    (x) => x.kind === 'table',
+  );
+  assert.deepEqual(
+    table?.kind === 'table' && table.rows.map((row) => row.at(-1)),
+    ['OOS26-0001 (Invalidated)', '—'],
+  );
   assert.equal(run(lab, publish(s), 'coordinator').status, 'Published');
 });
 
@@ -3234,17 +3338,43 @@ test('an Amendment corrects a Published Certificate and issues version n+1 marke
         { ...v1.content.results[0], value: 3.1, qualifier: 'quantified' },
         v1.content.results[1],
       ],
+      signatures: v2.content.signatures,
     },
     'otherwise the same content, with this approval’s signatures',
+  );
+  // The Analyst's Amendment submissions are signed "amended by"; the
+  // re-approval is "approved by".
+  assert.deepEqual(
+    lab
+      .snapshot()
+      .signatures.map((x) => [x.meaning, x.signerId, x.command.type]),
+    [
+      ['performed by', 'analyst', 'submitForApproval'],
+      ['approved by', 'manager', 'approve'],
+      ['amended by', 'analyst', 'submitForApproval'],
+      ['amended by', 'analyst', 'submitForApproval'],
+      ['approved by', 'manager', 'approve'],
+    ],
   );
   assert.deepEqual(
     v2.content.signatures.map((x) => [x.meaning, x.signerId]),
     [
       ['performed by', 'analyst'],
+      ['amended by', 'analyst'],
       ['approved by', 'manager'],
     ],
   );
+  assert.deepEqual(
+    v1.content.signatures.map((x) => x.meaning),
+    ['performed by', 'approved by'],
+  );
   const document = renderCertificate(v2.content);
+  assert.deepEqual(
+    document.sections
+      .flatMap((x) => (x.kind === 'signatures' ? x.signatures : []))
+      .map((x) => x.meaning),
+    ['Performed by', 'Amended by', 'Approved by'],
+  );
   assert.equal(document.reference, 'Sample 26-00001 · Version 2');
   assert.equal(document.marker, 'Amended');
   assert.deepEqual(
@@ -3321,29 +3451,108 @@ test('an Amendment corrects a Published Certificate and issues version n+1 marke
   );
 });
 
-test('an Amendment does not correct a Result decided by an OOS investigation', (t) => {
+test('an Amendment corrects a confirmed OOS Result with a reason, keeping its investigation, and the correction passes the OOS gate afresh', (t) => {
   const lab = memory(t);
-  let s = approvedWithConfirmedOos(lab);
-  s = run(lab, notifyClient(s, 'OOS26-0001'), 'coordinator');
-  s = run(lab, publish(s), 'coordinator');
-  s = run(lab, startAmendment(s), 'coordinator');
-  assert.throws(
-    () => run(lab, result(s, 'NIT-001-v1', 2.5, 'Recalculated.'), 'analyst'),
-    /confirmed OOS \(OOS26-0001\) and cannot be corrected/,
-  );
+  let s = outOfSpecification(lab);
+  s = run(lab, openOos(s), 'manager');
   s = run(
     lab,
-    result(s, 'NIT-003-v1', 0.9, 'Dilution factor corrected.'),
+    {
+      ...labErrorCheck(s, 'OOS26-0001'),
+      findings: 'No laboratory error found.',
+      errorIdentified: false,
+    },
     'analyst',
+  );
+  s = run(lab, conclude(s, 'OOS26-0001', 'Confirmed'), 'manager');
+  s = run(
+    lab,
+    { type: 'return', ...target(s), comment: 'Check the NIT-003 run.' },
+    'manager',
+  );
+  // Before a Certificate is Published, a confirmed OOS stands.
+  const stands = /confirmed OOS \(OOS26-0001\) and cannot be corrected/;
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 2.5, 'Recalculated.'), 'analyst'),
+    stands,
   );
   s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
-  const [confirmed] = lab.certificate(s.id).content.results;
-  assert.equal(confirmed.conformity, 'Does not comply');
-  assert.deepEqual(confirmed.investigation, {
-    id: 'OOS26-0001',
-    outcome: 'Confirmed',
-  });
+  s = run(lab, notifyClient(s, 'OOS26-0001'), 'coordinator');
+  s = run(lab, publish(s), 'coordinator');
+  s = run(lab, startAmendment(s), 'coordinator');
+
+  // In the Amendment it is corrected like any Result: with a reason.
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 28), 'analyst'),
+    /Give a reason for changing the Result/,
+  );
+  const recalculated =
+    'Recalculated with the dilution factor on the worksheet.';
+  s = run(lab, result(s, 'NIT-001-v1', 28, recalculated), 'analyst');
+  assert.deepEqual(
+    s.tests[0].results.map((r) => [
+      r.value,
+      r.status,
+      r.conformity,
+      r.investigationId,
+    ]),
+    [
+      [30, 'superseded', 'Does not comply', 'OOS26-0001'],
+      [28, 'current', 'Does not comply', null],
+    ],
+    'the investigation stays linked to the Result it decided',
+  );
+  assert.deepEqual(
+    s.investigations.map((i) => [i.id, i.status, i.outcome]),
+    [['OOS26-0001', 'Closed', 'Confirmed']],
+  );
+
+  // Still out of specification: re-approval waits for its own investigation,
+  // and an open one blocks a further correction.
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  assert.throws(
+    () => run(lab, { type: 'approve', ...target(s) }, 'manager'),
+    /does not comply with its Limit\. An OOS investigation must be opened and closed before Approval/,
+  );
+  s = run(lab, openOos(s), 'manager');
+  s = run(
+    lab,
+    { type: 'return', ...target(s), comment: 'Retest per OOS26-0002.' },
+    'manager',
+  );
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 2.5, 'Retested.'), 'analyst'),
+    /OOS investigation OOS26-0002 is open on this Result, so it cannot be corrected/,
+  );
+  s = run(lab, labErrorCheck(s, 'OOS26-0002'), 'analyst');
+  s = run(
+    lab,
+    conclude(s, 'OOS26-0002', 'Invalidated', 'Dilution error in the standard.'),
+    'manager',
+  );
+  s = run(lab, result(s, 'NIT-001-v1', 2.5), 'analyst');
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+
+  const v2 = lab.certificate(s.id);
+  assert.equal(v2.version, 2);
+  const [corrected] = v2.content.results;
+  assert.deepEqual(
+    [corrected.value, corrected.conformity, corrected.investigations],
+    [
+      2.5,
+      'Complies',
+      [
+        { id: 'OOS26-0001', outcome: 'Confirmed' },
+        { id: 'OOS26-0002', outcome: 'Invalidated' },
+      ],
+    ],
+  );
+  assert.match(
+    v2.content.amendment!.changeSummary,
+    /^Impurity A \(NIT-001 v1\): Result 30 → 2\.5 ng\/day/,
+  );
   assert.equal(oosPublishBlocker(s), null, 'the Client was already informed');
   assert.equal(run(lab, publish(s), 'coordinator').status, 'Published');
 });
@@ -3437,7 +3646,8 @@ test('a Manager never approves a Sample on which they entered or corrected a Res
       .certificate(amended.id)
       .content.signatures.map((x) => [x.meaning, x.signerId]),
     [
-      ['performed by', 'analyst-2'],
+      ['performed by', 'analyst'],
+      ['amended by', 'analyst-2'],
       ['approved by', 'manager'],
     ],
   );

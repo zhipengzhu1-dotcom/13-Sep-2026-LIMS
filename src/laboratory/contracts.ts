@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import type { AcceptableIntake, ConformityStatement } from './limits.ts';
+import {
+  acceptableIntakeEntrySchema,
+  type AcceptableIntake,
+  type ConformityStatement,
+} from './limits.ts';
 import type { Attachment } from './attachment-contracts.ts';
 import type { CertificateSummary } from './certificate.ts';
 
@@ -29,9 +33,14 @@ export const materialTypes = ['raw material', 'finished product'] as const;
 export type MaterialType = (typeof materialTypes)[number];
 export type ReportingUnit = 'ppm' | 'ng/day';
 
+/** Whether a Material type is a finished product, which takes a Maximum daily
+ * dose, may be a Stability sample and is judged against a Limit. */
+export const isFinishedProduct = (materialType: MaterialType) =>
+  materialType === 'finished product';
+
 /** The reporting unit follows the Material type and is never entered. */
 export function reportingUnit(materialType: MaterialType): ReportingUnit {
-  return materialType === 'finished product' ? 'ng/day' : 'ppm';
+  return isFinishedProduct(materialType) ? 'ng/day' : 'ppm';
 }
 
 /** Illustrative placeholders; the lab's real Analytes replace them. */
@@ -357,7 +366,12 @@ export type AuditRecordType =
   | 'Sample'
   | 'Test'
   | 'OOS investigation'
-  | 'Certificate of Analysis';
+  | 'Certificate of Analysis'
+  | 'Acceptable intake'
+  | 'Attachment';
+/** What an audit entry records the doing of: a command, or the upload of a
+ * worksheet attachment, which is stored outside the command seam. */
+export type AuditedAct = Command['type'] | 'storeAttachment';
 /** A single field's value as the audit trail keeps it. */
 export type AuditValue = string | number | boolean | null;
 
@@ -373,7 +387,8 @@ export type AuditEntry = {
   recordType: AuditRecordType;
   /** A Submission or Sample ID, or `{sampleId}/{testId}` for a Test. */
   recordId: string;
-  /** The Sample the record belongs to; null for a Submission. */
+  /** The Sample the record belongs to; null for a Submission, an Acceptable
+   * intake entry or an attachment. */
   sampleId: string | null;
   /** The field, with dotted paths for nested values (`result.value`). */
   field: string;
@@ -382,9 +397,23 @@ export type AuditEntry = {
   reason: string | null;
   actor: string;
   at: string;
-  commandType: Command['type'];
+  commandType: AuditedAct;
   commandId: string;
 };
+
+/**
+ * The entries made within a period of whole UTC calendar days, `from` and `to`
+ * inclusive (YYYY-MM-DD); an empty bound leaves that side open.
+ */
+export function auditEntriesWithin<E extends Pick<AuditEntry, 'at'>>(
+  entries: readonly E[],
+  { from, to }: { from: string; to: string },
+): E[] {
+  return entries.filter((e) => {
+    const day = new Date(e.at).toISOString().slice(0, 10);
+    return (!from || day >= from) && (!to || day <= to);
+  });
+}
 
 /** Whether an entry is part of a Sample's own history: the Sample, its Tests
  * and Results, and the Submission it was received under. */
@@ -405,7 +434,27 @@ export const signatureMeanings = {
   approve: 'approved by',
 } as const;
 export type SigningCommandType = keyof typeof signatureMeanings;
-export type SignatureMeaning = (typeof signatureMeanings)[SigningCommandType];
+/** In an Amendment the Analyst's submission signs the correction as
+ * "amended by"; its re-approval is still "approved by". */
+export const amendmentSignatureMeanings = {
+  submitForApproval: 'amended by',
+} as const satisfies Partial<Record<SigningCommandType, string>>;
+export type SignatureMeaning =
+  | (typeof signatureMeanings)[SigningCommandType]
+  | (typeof amendmentSignatureMeanings)[keyof typeof amendmentSignatureMeanings];
+
+/** The meaning a signing command is recorded with: in an Amendment (a Sample
+ * that already has a Certificate of Analysis) or not. */
+export function signatureMeaning(
+  type: SigningCommandType,
+  inAmendment: boolean,
+): SignatureMeaning {
+  return inAmendment && Object.hasOwn(amendmentSignatureMeanings, type)
+    ? amendmentSignatureMeanings[
+        type as keyof typeof amendmentSignatureMeanings
+      ]
+    : signatureMeanings[type];
+}
 
 /** An Electronic signature as recorded. It never holds the password. */
 export type Signature = {
@@ -679,6 +728,11 @@ export const commandSchema = z.discriminatedUnion('type', [
       .trim()
       .min(3, 'Give a reason for the Amendment.')
       .max(2000),
+  }),
+  z.object({
+    commandId,
+    type: z.literal('appendAcceptableIntake'),
+    ...acceptableIntakeEntrySchema.shape,
   }),
   z.object({
     commandId,

@@ -1,7 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import {
-  acceptableIntakeEntrySchema,
   analytes,
   clients,
   commandSchema,
@@ -14,13 +13,17 @@ import {
   type Person,
   enteredResultOn,
   heldStatuses,
+  investigationOf,
+  isFinishedProduct,
   methods,
+  newCommandId,
   oosApprovalBlocker,
   oosPublishBlocker,
   outOfSpecification,
   people,
   qualify,
   reportingUnit,
+  signatureMeaning,
   signatureMeanings,
   type Actor,
   type AuditEntry,
@@ -32,9 +35,11 @@ import {
   type OosInvestigation,
   type ReportingUnit,
   type Result,
+  type Role,
   type Sample,
   type SampleStatus,
   type Signature,
+  type SignatureMeaning,
   type SigningCommandType,
   type Snapshot,
   type Submission,
@@ -76,9 +81,13 @@ export interface SignerCredentials {
   checkPassword(userId: string, password: string): boolean;
 }
 
-function requireRole(actor: Actor, role: Actor['role']) {
-  if (actor.role !== role)
-    throw new WorkflowError(`This action requires the ${role} role.`, 403);
+/** Refuses an actor who holds none of the given roles. */
+function requireRole(actor: Actor, ...roles: [Role, ...Role[]]) {
+  if (!roles.includes(actor.role))
+    throw new WorkflowError(
+      `This action requires the ${roles.join(' or ')} role.`,
+      403,
+    );
 }
 
 /** Statuses in which the assigned Analyst may enter Results or submit them. */
@@ -155,7 +164,10 @@ function describeIssue({
 }
 
 type CommandOf<T extends Command['type']> = Extract<Command, { type: T }>;
-type SampleCommandType = Exclude<Command['type'], 'receiveSubmission'>;
+type SampleCommandType = Exclude<
+  Command['type'],
+  'receiveSubmission' | 'appendAcceptableIntake'
+>;
 
 /** A per-year identifier sequence. */
 type Series = 'submission' | 'sample' | 'investigation';
@@ -173,7 +185,8 @@ type Series = 'submission' | 'sample' | 'investigation';
  * lists a Sample's recorded Electronic signatures (oldest first), and
  * `certificates` / `issueCertificate` read and store locked Certificate
  * versions inside the same transaction, and `recordPublication` stores the
- * publication of one version. `people` is the user directory in force, and
+ * publication of one version. `appendAcceptableIntake` stores a new
+ * Acceptable intake entry. `people` is the user directory in force, and
  * `history` a Sample's audit entries so far, this command's included.
  */
 type Context = {
@@ -191,6 +204,7 @@ type Context = {
   certificates: (sampleId: string) => CertificateSummary[];
   issueCertificate: (content: CertificateContent) => Certificate;
   recordPublication: (publication: Publication) => void;
+  appendAcceptableIntake: (entry: AcceptableIntakeEntry) => AcceptableIntake;
 };
 
 /**
@@ -301,7 +315,7 @@ const receiveSubmission: ReceiptHandler = (
   // Every Sample is checked before any identifier is allocated.
   const requested = command.samples.map((receipt, i) => {
     const label = command.samples.length > 1 ? `Sample ${i + 1}: ` : '';
-    const finished = receipt.materialType === 'finished product';
+    const finished = isFinishedProduct(receipt.materialType);
     if (finished && receipt.maximumDailyDose === null)
       throw new WorkflowError(
         `${label}Enter the Maximum daily dose (mg/day) supplied by the Client for a finished product.`,
@@ -428,6 +442,24 @@ function auditDeviation(audit: Audit, sample: Sample, d: ReceiptDeviation) {
   audit.change(record, `${field}.description`, null, d.description);
 }
 
+/**
+ * A changed Acceptable intake is a new entry, appended by a Manager; no entry
+ * is ever edited or removed, so Results keep the Limit they were judged
+ * against. There is no maintenance screen in this release.
+ */
+function appendAcceptableIntake(
+  command: CommandOf<'appendAcceptableIntake'>,
+  actor: Actor,
+  { audit, appendAcceptableIntake }: Context,
+) {
+  requireRole(actor, 'manager');
+  const { commandId: _commandId, type: _type, ...fields } = command;
+  if (!analytes.some((a) => a.id === fields.analyteId))
+    throw new WorkflowError(`Analyte ${fields.analyteId} is not known.`);
+  const entry = appendAcceptableIntake(fields);
+  audit.compare(auditRecord.acceptableIntake(entry), null, fields);
+}
+
 const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
   recordReceiptDeviation(command, actor, sample, { at, audit }) {
     requireRole(actor, 'coordinator');
@@ -505,32 +537,37 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       audit.set(record, sample, 'status', 'In progress');
   },
 
-  enterResult(command, actor, sample, { at, audit, limitInForce, attachment }) {
+  enterResult(
+    command,
+    actor,
+    sample,
+    { at, audit, limitInForce, attachment, certificates },
+  ) {
     requireAssignedAnalyst(actor, sample);
     const test = sample.tests.find((t) => t.id === command.testId);
     if (!test) throw new WorkflowError('Test not found.');
     const previous = currentResult(test);
     // An investigated Result is decided by its investigation, never corrected
-    // around it: an open one must be concluded, and a confirmed OOS stands.
-    // An Amendment is no exception (see amendments.ts).
-    const investigated =
-      previous?.investigationId &&
-      sample.investigations.find((i) => i.id === previous.investigationId);
-    if (investigated)
+    // around it: an open one must be concluded first, and a confirmed OOS
+    // stands until an Amendment of its published Certificate corrects it (see
+    // amendments.ts). The corrected Result is judged afresh and the
+    // investigation stays on record, linked to the Result it decided.
+    const investigated = previous && investigationOf(sample, previous);
+    if (investigated?.status === 'Open')
       throw new WorkflowError(
-        investigated.status === 'Open'
-          ? `OOS investigation ${investigated.id} is open on this Result, so it cannot be corrected.`
-          : `This Result is a confirmed OOS (${investigated.id}) and cannot be corrected.`,
+        `OOS investigation ${investigated.id} is open on this Result, so it cannot be corrected.`,
+      );
+    if (investigated && !certificates(sample.id).length)
+      throw new WorkflowError(
+        `This Result is a confirmed OOS (${investigated.id}) and cannot be corrected.`,
       );
     if (previous && command.reason.length < 3)
       throw new WorkflowError('Give a reason for changing the Result.');
     // Finished products are judged against the entry in force now; raw
     // materials have no Limit.
-    const limit =
-      sample.materialType === 'finished product'
-        ? limitInForce(test.analyteId)
-        : null;
-    if (sample.materialType === 'finished product' && !limit)
+    const finished = isFinishedProduct(sample.materialType);
+    const limit = finished ? limitInForce(test.analyteId) : null;
+    if (finished && !limit)
       throw new WorkflowError(
         `No Acceptable intake is in force for ${test.analyteName}.`,
       );
@@ -645,21 +682,23 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     const blocked = oosApprovalBlocker(sample);
     if (blocked) throw new WorkflowError(blocked);
     audit.set(auditRecord.sample(sample), sample, 'status', 'Approved');
-    // Approval freezes the next Certificate version. The submission that led
-    // here carries the latest "performed by"; this Approval's own signature
-    // is recorded by the entry point with the same signer and time.
-    const performed = signatures(sample.id)
-      .filter((x) => x.meaning === 'performed by')
-      .at(-1);
-    if (!performed)
-      throw new Error(`Sample ${sample.id} has no "performed by" signature.`);
-    const manifestation = (x: Signature) => ({
-      meaning: x.meaning,
-      signerId: x.signerId,
-      printedName: x.printedName,
-      signedAt: x.signedAt,
-    });
+    // Approval freezes the next Certificate version. It carries the latest
+    // "performed by" and, for a version issued by an Amendment, the "amended
+    // by" of the submission that led here; this Approval's own signature is
+    // recorded by the entry point with the same signer and time.
     const version = (certificates(sample.id).at(-1)?.version ?? 0) + 1;
+    const signed = signatures(sample.id);
+    const latest = (meaning: SignatureMeaning) => {
+      const found = signed.filter((x) => x.meaning === meaning).at(-1);
+      if (!found)
+        throw new Error(`Sample ${sample.id} has no "${meaning}" signature.`);
+      return {
+        meaning: found.meaning,
+        signerId: found.signerId,
+        printedName: found.printedName,
+        signedAt: found.signedAt,
+      };
+    };
     // Every version after the first is issued by an Amendment, which states
     // why it was started and, from the audit trail, what it changed.
     let amendment = null;
@@ -679,7 +718,8 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
         amendment,
         approvedAt: at,
         signatures: [
-          manifestation(performed),
+          latest('performed by'),
+          ...(version > 1 ? [latest('amended by')] : []),
           {
             meaning: signatureMeanings.approve,
             signerId: actor.id,
@@ -695,11 +735,7 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
   },
 
   startAmendment(command, actor, sample, { audit }) {
-    if (actor.role !== 'coordinator' && actor.role !== 'manager')
-      throw new WorkflowError(
-        'This action requires the coordinator or manager role.',
-        403,
-      );
+    requireRole(actor, 'coordinator', 'manager');
     if (sample.status !== 'Published')
       throw new WorkflowError(
         'Only a Published Certificate of Analysis can be amended.',
@@ -1014,14 +1050,35 @@ export class Laboratory {
    * Stores a calculation worksheet so a later `enterResult` can reference it.
    * Kept outside `execute`: it creates no laboratory record by itself, and the
    * stored file is immutable, so a retried upload only adds an unused copy.
+   * The upload is still on the audit trail, in the same transaction: who
+   * stored which file, when, and its SHA-256.
    */
   storeAttachment(upload: Upload, actorId: string): Attachment {
     const actor = this.people.find((p) => p.id === actorId);
     if (!actor) throw new WorkflowError('Unknown user.', 403);
     requireRole(actor, 'analyst');
+    this.db.exec('BEGIN IMMEDIATE');
     try {
-      return this.attachments.store(upload, actor.id, this.clock());
+      const at = this.clock();
+      const attachment = this.attachments.store(upload, actor.id, at);
+      const { filename, contentType, size, sha256 } = attachment;
+      this.audit
+        .writer({
+          actor: actor.id,
+          at,
+          commandType: 'storeAttachment',
+          commandId: newCommandId(),
+        })
+        .compare(auditRecord.attachment(attachment), null, {
+          filename,
+          contentType,
+          size,
+          sha256,
+        });
+      this.db.exec('COMMIT');
+      return attachment;
     } catch (error) {
+      this.db.exec('ROLLBACK');
       if (error instanceof AttachmentRejected)
         throw new WorkflowError(error.message, error.status);
       throw error;
@@ -1221,25 +1278,6 @@ export class Laboratory {
     ).map((row) => ({ ...row, illustrative: row.illustrative === 1 }));
   }
 
-  /**
-   * Appends a new Acceptable intake entry. Entries are reference data with no
-   * maintenance screen in this release; a changed Acceptable intake is added
-   * this way and never overwrites an earlier entry, so Results keep the Limit
-   * they were judged against.
-   */
-  appendAcceptableIntake(input: unknown): AcceptableIntake {
-    const parsed = acceptableIntakeEntrySchema.safeParse(input);
-    if (!parsed.success)
-      throw new WorkflowError(
-        parsed.error.issues
-          .map((i) => `${i.path.join('.')}: ${i.message}`)
-          .join('; '),
-      );
-    if (!analytes.some((a) => a.id === parsed.data.analyteId))
-      throw new WorkflowError(`Analyte ${parsed.data.analyteId} is not known.`);
-    return this.insertAcceptableIntakes([parsed.data])[0];
-  }
-
   private insertAcceptableIntakes(
     entries: readonly AcceptableIntakeEntry[],
   ): AcceptableIntake[] {
@@ -1313,11 +1351,13 @@ export class Laboratory {
         issueCertificate: (content) => this.issueCertificate(content, key),
         recordPublication: (publication) =>
           this.recordPublication(publication, key),
+        appendAcceptableIntake: (entry) =>
+          this.insertAcceptableIntakes([entry])[0],
       };
       // Verified before the key is claimed or a replay answered, so a wrong
       // password applies nothing, is never reported as an earlier success, and
       // rolls back with the key released for resubmission.
-      const meaning = this.verifySignature(command.type, actor, password);
+      const signing = this.verifySignature(command.type, actor, password);
       // Claim the key as the first statement inside the transaction, before any
       // validation or domain work. A suppressed insert returns no row, which is
       // the duplicate test — decided inside the transaction, with no separate
@@ -1339,6 +1379,9 @@ export class Laboratory {
         ({ submission, samples } = receiveSubmission(command, actor, context));
         this.save('submissions', submission.id, submission);
         for (const s of samples) this.save('samples', s.id, s);
+      } else if (command.type === 'appendAcceptableIntake') {
+        appendAcceptableIntake(command, actor, context);
+        samples = [];
       } else {
         const sample = this.load(command.sampleId);
         if (sample.revision !== command.revision)
@@ -1355,14 +1398,17 @@ export class Laboratory {
         const handler = sampleHandlers[
           command.type
         ] as SampleHandler<SampleCommandType>;
+        // A Sample that already has a Certificate is in an Amendment, which
+        // some signatures mean differently; decided before Approval issues one.
+        const inAmendment = this.certificateSummaries(sample.id).length > 0;
         handler(command, actor, sample, context);
         sample.revision++;
         this.save('samples', sample.id, sample);
-        if (meaning)
+        if (signing)
           this.recordSignature(
             sample.id,
             actor,
-            meaning,
+            signatureMeaning(signing, inAmendment),
             unsigned as Signature['command'],
             context,
             key,
@@ -1390,9 +1436,9 @@ export class Laboratory {
   }
 
   /**
-   * The Electronic signature a command requires, if any: the meaning it will be
-   * recorded with once the signer's password matches their stored hash.
-   * Anything else rejects the whole command. Every command type listed in
+   * Whether a command requires an Electronic signature, as the signing command
+   * type, once the signer's password matches their stored hash. Anything else
+   * rejects the whole command. Every command type listed in
    * `signatureMeanings` is signed this way, with no per-handler code.
    */
   private verifySignature(
@@ -1411,7 +1457,7 @@ export class Laboratory {
         'The password is incorrect. Nothing was signed or saved.',
         403,
       );
-    return signatureMeanings[type as SigningCommandType];
+    return type as SigningCommandType;
   }
 
   private recordSignature(

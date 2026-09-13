@@ -3,12 +3,9 @@ import assert from 'node:assert/strict';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
 import {
   cderSource,
-  conformity,
   currentResult,
-  decimalPlaces,
-  limitInForce,
+  methods,
   newCommandId,
-  type AcceptableIntake,
   type Sample,
 } from '../src/laboratory/contracts.ts';
 
@@ -89,9 +86,15 @@ const result = (s: Sample, testId: string, value: number, reason = '') => ({
   reason,
 });
 /** A lab whose clock the test moves. */
-function clocked(t: { after: (fn: () => void) => void }) {
+function clocked(
+  t: { after: (fn: () => void) => void },
+  options: ConstructorParameters<typeof Laboratory>[1] = {},
+) {
   const clock = { now: '2026-09-10T12:00:00.000Z' };
-  const lab = new Laboratory(':memory:', { clock: () => clock.now });
+  const lab = new Laboratory(':memory:', {
+    clock: () => clock.now,
+    ...options,
+  });
   t.after(() => lab.close());
   return { lab, clock };
 }
@@ -103,20 +106,47 @@ const entry = (analyteId: string, value: number, effectiveFrom: string) => ({
   effectiveFrom,
   illustrative: true,
 });
+/** A Manager appends an Acceptable intake entry. */
+function append(
+  lab: Laboratory,
+  fields: object,
+  actor = 'manager',
+  commandId = newCommandId(),
+) {
+  return lab.execute(
+    { commandId, type: 'appendAcceptableIntake', ...fields },
+    actor,
+  );
+}
+/**
+ * Judges each `[value, limit]` by entering the value as the Test's Result
+ * while an entry with that Limit is in force, appended the same day so the
+ * latest appended wins. Returns each Result's qualifier and Conformity
+ * statement.
+ */
+function judged(
+  lab: Laboratory,
+  cases: readonly (readonly [number, number])[],
+): [string, string][] {
+  let s = assigned(lab);
+  return cases.map(([value, limit], i) => {
+    append(lab, entry('impurity-a', limit, '2026-09-10'));
+    s = run(lab, result(s, 'NIT-001-v1', value, i ? 'Re-read' : ''), 'analyst');
+    const r = currentResult(s.tests[0])!;
+    assert.equal(r.limit?.value, limit);
+    return [r.qualifier, r.conformity];
+  });
+}
 
-test('decimal places follow the Limit as written', () => {
-  assert.equal(decimalPlaces(26.5), 1);
-  assert.equal(decimalPlaces(96), 0);
-  assert.equal(decimalPlaces(1500), 0);
-  assert.equal(decimalPlaces(0.03), 2);
-  assert.equal(decimalPlaces(1e-7), 7);
-});
-
-test('a quantified Result is rounded to the Limit and complies at or below it', () => {
-  const lodLoq = { lod: 1, loq: 3 };
-  const judge = (value: number, limit: number) =>
-    conformity({ value, qualifier: 'quantified' }, lodLoq, { value: limit });
-  const cases: [number, number, string][] = [
+test('a quantified Result is rounded to the decimal places of its Limit and complies at or below it', (t) => {
+  // LOD and LOQ far below every value, so each Result is quantified.
+  const { lab } = clocked(t, {
+    methods: methods.map((m) => ({
+      ...m,
+      lodLoq: { ...m.lodLoq, 'ng/day': { lod: 1e-9, loq: 2e-9 } },
+    })),
+  });
+  const cases = [
     [26.4, 26.5, 'Complies'],
     [26.5, 26.5, 'Complies'],
     [26.54, 26.5, 'Complies'],
@@ -128,58 +158,86 @@ test('a quantified Result is rounded to the Limit and complies at or below it', 
     [96.5, 96, 'Does not comply'],
     [1500.49, 1500, 'Complies'],
     [1500.5, 1500, 'Does not comply'],
+    // Two decimal places, and seven written in exponent notation.
+    [0.034, 0.03, 'Complies'],
+    [0.035, 0.03, 'Does not comply'],
+    [1.4e-7, 1e-7, 'Complies'],
+    [1.5e-7, 1e-7, 'Does not comply'],
     // Half-up on the decimal value, not on its binary approximation.
     [1.45, 1.4, 'Does not comply'],
     [1.015, 1.01, 'Does not comply'],
     [1.005, 1.01, 'Complies'],
     [1.0049, 1, 'Complies'],
-  ];
-  for (const [value, limit, expected] of cases)
-    assert.equal(judge(value, limit), expected, `${value} against ${limit}`);
-});
-
-test('a < LOD or < LOQ Result complies only when that LOD or LOQ is below the Limit', () => {
-  const lodLoq = { lod: 1, loq: 3 };
-  const judge = (qualifier: '< LOD' | '< LOQ', value: number, limit: number) =>
-    conformity({ value, qualifier }, lodLoq, { value: limit });
-  assert.equal(judge('< LOQ', 2.9, 26.5), 'Complies', 'LOQ below the Limit');
-  assert.equal(judge('< LOQ', 2.9, 3), 'Does not comply', 'LOQ equals Limit');
-  assert.equal(judge('< LOQ', 1, 2.5), 'Does not comply', 'LOQ above Limit');
-  assert.equal(judge('< LOD', 0.2, 2.5), 'Complies', 'LOD below the Limit');
-  assert.equal(judge('< LOD', 0.2, 1), 'Does not comply', 'LOD equals Limit');
-  assert.equal(
-    conformity({ value: 0.2, qualifier: '< LOD' }, lodLoq, null),
-    'Report',
+  ] as const;
+  const outcomes = judged(
+    lab,
+    cases.map(([value, limit]) => [value, limit]),
+  );
+  cases.forEach(([value, limit, expected], i) =>
+    assert.deepEqual(
+      outcomes[i],
+      ['quantified', expected],
+      `${value} against ${limit}`,
+    ),
   );
 });
 
-test('the entry in force is the latest effective on or before the evaluation time', () => {
-  const entries = [
-    { ...entry('impurity-a', 26.5, '2023-08-04'), id: 1 },
-    { ...entry('impurity-b', 96, '2023-08-04'), id: 2 },
-    { ...entry('impurity-a', 18, '2026-10-01'), id: 3 },
-    { ...entry('impurity-a', 30, '2025-01-01'), id: 4 },
-    { ...entry('impurity-a', 31, '2025-01-01'), id: 5 },
-  ] satisfies AcceptableIntake[];
-  const valueAt = (at: string) =>
-    limitInForce(entries, 'impurity-a', at)?.value;
-  assert.equal(valueAt('2023-08-03T23:59:59.999Z'), undefined);
-  assert.equal(valueAt('2023-08-04T00:00:00.000Z'), 26.5);
-  assert.equal(valueAt('2024-12-31T12:00:00.000Z'), 26.5);
-  assert.equal(valueAt('2025-01-01T00:00:00.000Z'), 31, 'the later appended');
-  assert.equal(valueAt('2026-09-30T23:59:59.999Z'), 31);
-  assert.equal(valueAt('2026-10-01T00:00:00.000Z'), 18, 'effective that day');
-  assert.equal(limitInForce(entries, 'impurity-c', '2026-10-01'), null);
+test('a < LOD or < LOQ Result complies only when that LOD or LOQ is below the Limit', (t) => {
+  // The seeded Methods: LOD 1, LOQ 3 ng/day.
+  const { lab } = clocked(t);
+  const cases = [
+    [2.9, 26.5, '< LOQ', 'Complies', 'LOQ below the Limit'],
+    [2.9, 3, '< LOQ', 'Does not comply', 'LOQ equals the Limit'],
+    [1, 2.5, '< LOQ', 'Does not comply', 'LOQ above the Limit'],
+    [0.2, 2.5, '< LOD', 'Complies', 'LOD below the Limit'],
+    [0.2, 1, '< LOD', 'Does not comply', 'LOD equals the Limit'],
+  ] as const;
+  const outcomes = judged(
+    lab,
+    cases.map(([value, limit]) => [value, limit]),
+  );
+  cases.forEach(([, , qualifier, expected, why], i) =>
+    assert.deepEqual(outcomes[i], [qualifier, expected], why),
+  );
 });
 
-test('Acceptable intake entries are seeded, marked illustrative and only ever appended', (t) => {
+test('the entry in force is the latest effective on or before the day the Result is entered', (t) => {
+  const { lab, clock } = clocked(t);
+  let s = assigned(lab);
+  append(lab, entry('impurity-a', 18, '2026-10-01'));
+  append(lab, entry('impurity-a', 30, '2025-01-01'));
+  append(lab, entry('impurity-a', 31, '2025-01-01'));
+  // Seeded: 26.5 ng/day from 2023-08-04.
+  clock.now = '2023-08-03T23:59:59.999Z';
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 20), 'analyst'),
+    /No Acceptable intake is in force for Impurity A/,
+  );
+  const cases = [
+    ['2023-08-04T00:00:00.000Z', 26.5, 'effective that day'],
+    ['2024-12-31T12:00:00.000Z', 26.5, 'the only one in force'],
+    ['2025-01-01T00:00:00.000Z', 31, 'of equal dates, the later appended'],
+    ['2026-09-30T23:59:59.999Z', 31, 'a future entry is not yet in force'],
+    ['2026-10-01T00:00:00.000Z', 18, 'effective that day'],
+  ] as const;
+  cases.forEach(([at, expected, why], i) => {
+    clock.now = at;
+    s = run(lab, result(s, 'NIT-001-v1', 20, i ? 'Re-read' : ''), 'analyst');
+    assert.equal(currentResult(s.tests[0])?.limit?.value, expected, why);
+  });
+});
+
+test('Acceptable intake entries are seeded, marked illustrative and only ever appended, by a Manager, on the audit trail', (t) => {
   const { lab } = clocked(t);
   const seeded = lab.snapshot().acceptableIntakes;
-  const inForce = (analyteId: string) =>
-    limitInForce(seeded, analyteId, '2026-09-10')?.value;
   assert.deepEqual(
-    ['impurity-a', 'impurity-b', 'impurity-c'].map(inForce),
-    [26.5, 96, 1500],
+    seeded.map((e) => [e.id, e.analyteId, e.value, e.effectiveFrom]),
+    [
+      [1, 'impurity-a', 26.5, '2023-08-04'],
+      [2, 'impurity-b', 26.5, '2023-08-04'],
+      [3, 'impurity-b', 96, '2025-07-01'],
+      [4, 'impurity-c', 1500, '2023-08-04'],
+    ],
   );
   assert.ok(seeded.every((e) => e.illustrative));
   assert.ok(
@@ -191,20 +249,65 @@ test('Acceptable intake entries are seeded, marked illustrative and only ever ap
         /^\d{4}-\d{2}-\d{2}$/.test(e.sourceRevisionDate),
     ),
   );
-  const added = lab.appendAcceptableIntake(
-    entry('impurity-a', 18, '2026-10-01'),
-  );
-  assert.equal(added.id, seeded.length + 1);
-  const after = lab.snapshot().acceptableIntakes;
-  assert.deepEqual(after.slice(0, seeded.length), seeded, 'nothing rewritten');
-  assert.deepEqual(after.at(-1), added);
+
+  const revised = entry('impurity-a', 18, '2026-10-01');
+  for (const actor of ['coordinator', 'analyst'])
+    assert.throws(
+      () => append(lab, revised, actor),
+      (e: Error & { status: number }) =>
+        e.status === 403 && /manager role/.test(e.message),
+    );
+  assert.throws(() => append(lab, revised, 'unknown'), /Unknown user/);
   for (const bad of [
     entry('impurity-x', 18, '2026-10-01'),
     entry('impurity-a', 0, '2026-10-01'),
     entry('impurity-a', 18, '2026-02-30'),
-    { ...entry('impurity-a', 18, '2026-10-01'), sourceUrl: 'not a url' },
+    { ...revised, sourceUrl: 'not a url' },
   ])
-    assert.throws(() => lab.appendAcceptableIntake(bad));
+    assert.throws(() => append(lab, bad));
+  assert.deepEqual(lab.snapshot().acceptableIntakes, seeded);
+  assert.deepEqual(lab.auditTrail(), [], 'nothing refused is recorded');
+
+  const commandId = newCommandId();
+  const outcome = append(lab, revised, 'manager', commandId);
+  assert.deepEqual(
+    [outcome.outcome, outcome.submission, outcome.samples],
+    ['applied', null, []],
+  );
+  const after = lab.snapshot().acceptableIntakes;
+  assert.deepEqual(after.slice(0, seeded.length), seeded, 'nothing rewritten');
+  assert.deepEqual(after.at(-1), { ...revised, id: 5 });
+  assert.deepEqual(
+    lab
+      .auditTrail()
+      .reverse()
+      .map((e) => [
+        e.recordType,
+        e.recordId,
+        e.sampleId,
+        e.field,
+        e.oldValue,
+        e.newValue,
+        e.actor,
+        e.at,
+        e.commandType,
+        e.commandId,
+      ]),
+    Object.entries(revised).map(([field, value]) => [
+      'Acceptable intake',
+      '5',
+      null,
+      field,
+      null,
+      value,
+      'manager',
+      '2026-09-10T12:00:00.000Z',
+      'appendAcceptableIntake',
+      commandId,
+    ]),
+  );
+  // A retry is not a second entry.
+  assert.equal(append(lab, revised, 'manager', commandId).outcome, 'replayed');
   assert.equal(lab.snapshot().acceptableIntakes.length, after.length);
 });
 
@@ -218,7 +321,7 @@ test('a finished product Result links the Limit in force and keeps it after a ne
   assert.equal(first.conformity, 'Complies');
   const seededEntry = first.limit;
 
-  lab.appendAcceptableIntake(entry('impurity-a', 18, '2026-09-11'));
+  append(lab, entry('impurity-a', 18, '2026-09-11'));
   // Entered before the new entry takes effect: still the old Limit.
   s = run(lab, result(s, 'NIT-003-v1', 20), 'analyst');
   assert.equal(currentResult(s.tests[1])?.limit?.value, 96);
@@ -293,8 +396,8 @@ test('a < LOQ Result complies when the LOQ is below the Limit and not otherwise'
     ['< LOQ', 26.5, 'Complies'],
   );
   // An illustrative Limit at the LOQ (3 ng/day), then below it.
-  lab.appendAcceptableIntake(entry('impurity-a', 3, '2026-09-11'));
-  lab.appendAcceptableIntake(entry('impurity-a', 2.5, '2026-09-12'));
+  append(lab, entry('impurity-a', 3, '2026-09-11'));
+  append(lab, entry('impurity-a', 2.5, '2026-09-12'));
   clock.now = '2026-09-11T09:00:00.000Z';
   s = run(lab, result(s, 'NIT-001-v1', 2, 'Re-injected'), 'analyst');
   r = currentResult(s.tests[0])!;

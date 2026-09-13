@@ -9,9 +9,10 @@ import React, {
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import type { Certificate, Publication } from './laboratory/certificate';
-import { renderCertificate } from './laboratory/certificate-renderer';
+import { renderCertificate, utcStamp } from './laboratory/certificate-renderer';
 import { amendmentOf, changeSummary } from './laboratory/amendments';
 import {
+  auditEntriesWithin,
   auditsSample,
   conformity,
   containerTypes,
@@ -21,6 +22,7 @@ import {
   expiryKinds,
   heldStatuses,
   investigationOf,
+  isFinishedProduct,
   issueChannels,
   limitInForce,
   materialTypes,
@@ -37,7 +39,7 @@ import {
   receiptDeviationKinds,
   reportingUnit,
   shippingConditions,
-  signatureMeanings,
+  signatureMeaning,
   stabilityConditionLabels,
   stabilityConditions,
   stabilityTimePoints,
@@ -1185,9 +1187,7 @@ function App() {
             <AcceptableIntakeTable data={data} />
           </div>
         ) : (
-          <div className="scroll page">
-            <AuditTable entries={data.audit} data={data} showSample />
-          </div>
+          <LabAuditTrail data={data} />
         )}
         <footer className="statusbar">
           <span className="demo">Demo</span>
@@ -1357,7 +1357,7 @@ function Intake({
         const dateOrNull = (name: string) => text(name) || null;
         const samples = rows.map((key): SampleDraft => {
           const materialType = typeOf(key);
-          const finished = materialType === 'finished product';
+          const finished = isFinishedProduct(materialType);
           return {
             clientSampleId: text(`clientSampleId-${key}`),
             materialType,
@@ -1561,7 +1561,7 @@ function Intake({
       </fieldset>
       {rows.map((key, i) => {
         const materialType = typeOf(key);
-        const finished = materialType === 'finished product';
+        const finished = isFinishedProduct(materialType);
         const unit = reportingUnit(materialType);
         return (
           <fieldset key={key} className="intake-sample">
@@ -1978,7 +1978,7 @@ function ReceiptRecord({
             ['Condition on receipt', s.conditionOnReceipt],
             ['Storage condition', s.storageCondition],
             ['Storage location', s.storageLocation],
-            ...(s.materialType === 'finished product'
+            ...(isFinishedProduct(s.materialType)
               ? ([
                   [
                     'Maximum daily dose',
@@ -2527,6 +2527,7 @@ function SamplePanel({
           type={signing}
           sample={s}
           signerName={person.name}
+          inAmendment={versions.length > 0}
           busy={busy}
           execute={execute}
           onClose={() => setSigning(null)}
@@ -2697,22 +2698,10 @@ function publicationLine(data: Snapshot, p: Publication) {
   return `Published ${signatureStamp(p.publishedAt)} by ${personName(data, p.publishedBy) ?? p.publishedBy}, ${how}, to ${p.recipients.join('; ')}`;
 }
 
-/** A date and time with its UTC offset, as a signature manifestation shows it. */
-function signatureStamp(value: string) {
-  const d = new Date(value);
-  const offset = -d.getTimezoneOffset();
-  const hhmm = (n: number) => String(n).padStart(2, '0');
-  const local = d.toLocaleString('en-GB', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-  return `${local} UTC${offset < 0 ? '-' : '+'}${hhmm(Math.floor(Math.abs(offset) / 60))}:${hhmm(Math.abs(offset) % 60)}`;
-}
+/** A date and time as a signature manifestation shows it: in UTC with the
+ * zone named, exactly as the Certificate of Analysis prints it, so every
+ * viewer reads the same stamp wherever they are. */
+const signatureStamp = utcStamp;
 
 /** Signature manifestations: who signed, when, and what the signature means. */
 function Signatures({ signatures }: { signatures: Signature[] }) {
@@ -2883,27 +2872,29 @@ function CertificateView({
         </p>
       ) : (
         doc && (
-          <article className="coa">
-            <header className="coa-head">
+          <article className="certificate-document">
+            <header className="certificate-head">
               <div>
-                <p className="coa-lab">{doc.laboratory.name}</p>
+                <p className="certificate-lab">{doc.laboratory.name}</p>
                 {doc.laboratory.lines.map((line) => (
-                  <p key={line} className="coa-lab-line">
+                  <p key={line} className="certificate-lab-line">
                     {line}
                   </p>
                 ))}
               </div>
-              <div className="coa-title">
+              <div className="certificate-title">
                 <h1>{doc.title}</h1>
                 <p>{doc.reference}</p>
-                {doc.marker && <p className="coa-marker">{doc.marker}</p>}
+                {doc.marker && (
+                  <p className="certificate-marker">{doc.marker}</p>
+                )}
               </div>
             </header>
             {doc.sections.map((section) => (
-              <section key={section.heading} className="coa-section">
+              <section key={section.heading} className="certificate-section">
                 <h2>{section.heading}</h2>
                 {section.kind === 'fields' ? (
-                  <dl className="coa-fields">
+                  <dl className="certificate-fields">
                     {section.fields.map((f) => (
                       <div key={f.label}>
                         <dt>{f.label}</dt>
@@ -2913,7 +2904,7 @@ function CertificateView({
                   </dl>
                 ) : section.kind === 'table' ? (
                   <>
-                    <table className="coa-table">
+                    <table className="certificate-table">
                       <thead>
                         <tr>
                           {section.columns.map((c) => (
@@ -2934,7 +2925,7 @@ function CertificateView({
                       </tbody>
                     </table>
                     {section.notes.length > 0 && (
-                      <ul className="coa-notes">
+                      <ul className="certificate-notes">
                         {section.notes.map((note, i) => (
                           <li key={i}>{note}</li>
                         ))}
@@ -2943,12 +2934,12 @@ function CertificateView({
                   </>
                 ) : section.kind === 'text' ? (
                   section.paragraphs.map((p, i) => (
-                    <p key={i} className="coa-text">
+                    <p key={i} className="certificate-text">
                       {p}
                     </p>
                   ))
                 ) : (
-                  <table className="coa-table">
+                  <table className="certificate-table">
                     <thead>
                       <tr>
                         <th scope="col">Meaning</th>
@@ -2969,9 +2960,9 @@ function CertificateView({
                 )}
               </section>
             ))}
-            <footer className="coa-foot">
+            <footer className="certificate-foot">
               <p>{doc.footer}</p>
-              <p className="coa-hash">SHA-256 {certificate!.sha256}</p>
+              <p className="certificate-hash">SHA-256 {certificate!.sha256}</p>
             </footer>
           </article>
         )
@@ -2987,6 +2978,7 @@ function SignDialog({
   type,
   sample: s,
   signerName,
+  inAmendment,
   busy,
   execute,
   onClose,
@@ -2994,6 +2986,9 @@ function SignDialog({
   type: SigningCommandType;
   sample: Sample;
   signerName: string;
+  /** The Sample already has a Certificate, so a submission signs its
+   * Amendment. */
+  inAmendment: boolean;
   busy: boolean;
   execute: Execute;
   onClose: () => void;
@@ -3031,10 +3026,12 @@ function SignDialog({
         <p className="sign-statement">
           {approving
             ? `I give Approval to the Results of Sample ${s.id}.`
-            : `I performed the Tests on Sample ${s.id} and submit their Results for approval.`}{' '}
+            : inAmendment
+              ? `I corrected the Results of Sample ${s.id} in its Amendment and submit them for approval.`
+              : `I performed the Tests on Sample ${s.id} and submit their Results for approval.`}{' '}
           This Electronic signature records{' '}
           <strong>
-            {signatureMeanings[type]} {signerName}
+            {signatureMeaning(type, inAmendment)} {signerName}
           </strong>{' '}
           with the date and time.
         </p>
@@ -3237,15 +3234,14 @@ function ResultEntry({
   const preview =
     Number.isFinite(value) && value >= 0 ? qualify(value, t) : null;
   // A preview only: the core judges against the entry in force when it saves.
-  const limit =
-    s.materialType === 'finished product'
-      ? limitInForce(
-          data.acceptableIntakes,
-          t.analyteId,
-          new Date().toISOString(),
-        )
-      : null;
-  const verdict =
+  const limit = isFinishedProduct(s.materialType)
+    ? limitInForce(
+        data.acceptableIntakes,
+        t.analyteId,
+        new Date().toISOString(),
+      )
+    : null;
+  const conformityPreview =
     preview === null
       ? null
       : conformity({ value, qualifier: preview }, t, limit);
@@ -3335,7 +3331,13 @@ function ResultEntry({
         <span className="dim">
           {limit ? `Limit ${limit.value} ng/day` : 'No Limit'}
         </span>
-        <b>{verdict === null ? '—' : <ConformityTag statement={verdict} />}</b>
+        <b>
+          {conformityPreview === null ? (
+            '—'
+          ) : (
+            <ConformityTag statement={conformityPreview} />
+          )}
+        </b>
       </output>
       <label>
         <span>Instrument reading, ng/mL</span>
@@ -4040,7 +4042,59 @@ const COMMAND_LABELS: Record<string, string> = {
   recordClientOosNotification: 'Client informed of confirmed OOS',
   publish: 'Published',
   startAmendment: 'Amendment started',
+  appendAcceptableIntake: 'Acceptable intake entry added',
+  storeAttachment: 'Worksheet uploaded',
 };
+
+/** The lab-wide audit trail, narrowed to a period of UTC calendar days. */
+function LabAuditTrail({ data }: { data: Snapshot }) {
+  const [period, setPeriod] = useState({ from: '', to: '' });
+  const entries = auditEntriesWithin(data.audit, period);
+  return (
+    <>
+      <div
+        className="refine"
+        role="group"
+        aria-label="Filter the audit trail by period"
+      >
+        <label>
+          From (UTC)
+          <input
+            type="date"
+            value={period.from}
+            max={period.to || undefined}
+            onChange={(e) => setPeriod({ ...period, from: e.target.value })}
+          />
+        </label>
+        <label>
+          To (UTC)
+          <input
+            type="date"
+            value={period.to}
+            min={period.from || undefined}
+            onChange={(e) => setPeriod({ ...period, to: e.target.value })}
+          />
+        </label>
+        {(period.from || period.to) && (
+          <>
+            <span className="dim">
+              {entries.length} of {data.audit.length} entries
+            </span>
+            <button
+              className="btn sm"
+              onClick={() => setPeriod({ from: '', to: '' })}
+            >
+              Clear period
+            </button>
+          </>
+        )}
+      </div>
+      <div className="scroll page">
+        <AuditTable entries={entries} data={data} showSample />
+      </div>
+    </>
+  );
+}
 
 const auditValue = (value: AuditValue) =>
   value === null ? <span className="none">empty</span> : String(value);

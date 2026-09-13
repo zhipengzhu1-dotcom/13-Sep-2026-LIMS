@@ -1,14 +1,16 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type {
+  AcceptableIntake,
+  AuditedAct,
   AuditEntry,
   AuditRecordType,
   AuditValue,
-  Command,
   OosInvestigation,
   Sample,
   Submission,
   Test,
 } from './contracts.ts';
+import type { Attachment } from './attachment-contracts.ts';
 
 /** The record an entry describes, and the Sample whose history it joins. */
 export type AuditRecord = {
@@ -42,6 +44,16 @@ export const auditRecord = {
     type: 'Certificate of Analysis',
     id: `${s.id}/v${version}`,
     sampleId: s.id,
+  }),
+  acceptableIntake: (e: AcceptableIntake): AuditRecord => ({
+    type: 'Acceptable intake',
+    id: String(e.id),
+    sampleId: null,
+  }),
+  attachment: (a: Attachment): AuditRecord => ({
+    type: 'Attachment',
+    id: a.id,
+    sampleId: null,
   }),
 };
 
@@ -136,7 +148,7 @@ export class AuditTrail {
   writer(command: {
     actor: string;
     at: string;
-    commandType: Command['type'];
+    commandType: AuditedAct;
     commandId: string;
   }): Audit & { readonly written: number } {
     const insert = this.db.prepare(

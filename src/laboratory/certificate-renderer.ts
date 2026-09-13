@@ -1,4 +1,5 @@
 import type { CertificateContent, CertificateResult } from './certificate.ts';
+import { isFinishedProduct } from './contracts.ts';
 
 /**
  * The Certificate renderer: a pure projection from a locked Certificate
@@ -61,39 +62,44 @@ function limitSource(limit: NonNullable<CertificateResult['limit']>) {
   return `${limit.sourceTitle}, revision ${limit.sourceRevisionDate}, in force from ${limit.effectiveFrom}${limit.illustrative ? ' (illustrative value)' : ''}`;
 }
 
-export function renderCertificate(c: CertificateContent): CertificateDocument {
-  const finished = c.materialType === 'finished product';
-  const s = c.sample;
+export function renderCertificate(
+  content: CertificateContent,
+): CertificateDocument {
+  const finished = isFinishedProduct(content.materialType);
+  const sample = content.sample;
   const sampleFields: DocumentField[] = [
-    { label: 'Lab Sample ID', value: s.id },
-    { label: 'Client sample ID', value: text(s.clientSampleId) },
-    { label: 'Product', value: s.product },
-    { label: 'Strength', value: text(s.strength) },
-    { label: 'Batch / lot', value: s.batch },
-    { label: 'Manufacturer', value: text(s.manufacturer) },
-    { label: 'Manufacture date', value: text(s.manufactureDate) },
-    { label: `${capital(s.expiryKind)} date`, value: text(s.expiryDate) },
-    { label: 'Material type', value: capital(c.materialType) },
+    { label: 'Lab Sample ID', value: sample.id },
+    { label: 'Client sample ID', value: text(sample.clientSampleId) },
+    { label: 'Product', value: sample.product },
+    { label: 'Strength', value: text(sample.strength) },
+    { label: 'Batch / lot', value: sample.batch },
+    { label: 'Manufacturer', value: text(sample.manufacturer) },
+    { label: 'Manufacture date', value: text(sample.manufactureDate) },
+    {
+      label: `${capital(sample.expiryKind)} date`,
+      value: text(sample.expiryDate),
+    },
+    { label: 'Material type', value: capital(content.materialType) },
     ...(finished
       ? [
           {
             label: 'Maximum daily dose',
             value:
-              c.maximumDailyDose === null
+              content.maximumDailyDose === null
                 ? none
-                : `${c.maximumDailyDose} mg/day`,
+                : `${content.maximumDailyDose} mg/day`,
           },
         ]
       : []),
     {
       label: 'Quantity received',
-      value: `${s.quantity.value} ${s.quantity.unit}`,
+      value: `${sample.quantity.value} ${sample.quantity.unit}`,
     },
     {
       label: 'Containers',
-      value: `${s.containers.count} × ${s.containers.type}`,
+      value: `${sample.containers.count} × ${sample.containers.type}`,
     },
-    { label: 'Condition on receipt', value: s.conditionOnReceipt },
+    { label: 'Condition on receipt', value: sample.conditionOnReceipt },
   ];
   const sections: DocumentSection[] = [
     {
@@ -102,43 +108,43 @@ export function renderCertificate(c: CertificateContent): CertificateDocument {
       fields: [
         {
           label: 'Client',
-          value: `${c.client.name}${c.client.kind === 'internal' ? ' (internal)' : ''}`,
+          value: `${content.client.name}${content.client.kind === 'internal' ? ' (internal)' : ''}`,
         },
         {
           label: 'Client reference',
-          value: text(c.submission.clientReference),
+          value: text(content.submission.clientReference),
         },
-        { label: 'Submission', value: c.submission.id },
-        { label: 'Received', value: utcStamp(c.submission.receivedAt) },
+        { label: 'Submission', value: content.submission.id },
+        { label: 'Received', value: utcStamp(content.submission.receivedAt) },
       ],
     },
     { kind: 'fields', heading: 'Sample', fields: sampleFields },
   ];
-  if (c.stability)
+  if (content.stability)
     sections.push({
       kind: 'fields',
       heading: 'Stability study',
       fields: [
-        { label: 'Study ID', value: c.stability.studyId },
-        { label: 'Time point', value: c.stability.timePoint },
+        { label: 'Study ID', value: content.stability.studyId },
+        { label: 'Time point', value: content.stability.timePoint },
         {
           label: 'Storage condition',
-          value: `${c.stability.condition} (${c.stability.conditionLabel})`,
+          value: `${content.stability.condition} (${content.stability.conditionLabel})`,
         },
       ],
     });
-  if (c.deviations.length)
+  if (content.deviations.length)
     sections.push({
       kind: 'text',
       heading: 'Receipt deviations',
-      paragraphs: c.deviations.map((d) => {
+      paragraphs: content.deviations.map((d) => {
         const instruction = d.instruction
           ? ` Client instruction: ${d.instruction.decision}, given by ${d.instruction.contact} on ${utcStamp(d.instruction.instructedAt)}.`
           : '';
         return `${d.sequence}. ${capital(d.kind)}: ${d.description} (recorded ${utcStamp(d.recordedAt)}).${instruction}`;
       }),
     });
-  const notes = c.results.flatMap((r) =>
+  const notes = content.results.flatMap((r) =>
     r.limit ? [`${r.analyte}: Limit source ${limitSource(r.limit)}.`] : [],
   );
   sections.push({
@@ -153,7 +159,7 @@ export function renderCertificate(c: CertificateContent): CertificateDocument {
       'Conformity statement',
       'OOS investigation',
     ],
-    rows: c.results.map((r) => [
+    rows: content.results.map((r) => [
       r.analyte,
       `${r.methodCode} v${r.methodVersion} (${r.technique})`,
       reportedResult(r),
@@ -162,8 +168,8 @@ export function renderCertificate(c: CertificateContent): CertificateDocument {
         ? [r.limit ? `${r.limit.value} ${r.limit.unit}` : none]
         : []),
       r.conformity,
-      r.investigation
-        ? `${r.investigation.id} (${r.investigation.outcome})`
+      r.investigations.length
+        ? r.investigations.map((i) => `${i.id} (${i.outcome})`).join('; ')
         : none,
     ]),
     notes,
@@ -171,35 +177,35 @@ export function renderCertificate(c: CertificateContent): CertificateDocument {
   sections.push({
     kind: 'text',
     heading: 'Decision rule',
-    paragraphs: [c.decisionRule, c.individualJudgement],
+    paragraphs: [content.decisionRule, content.individualJudgement],
   });
-  if (c.amendment)
+  if (content.amendment)
     sections.push({
       kind: 'text',
       heading: 'Amendment',
       paragraphs: [
-        `Reason: ${c.amendment.reason}`,
-        `Changes: ${c.amendment.changeSummary}`,
+        `Reason: ${content.amendment.reason}`,
+        `Changes: ${content.amendment.changeSummary}`,
       ],
     });
   sections.push({
     kind: 'signatures',
     heading: 'Electronic signatures',
-    signatures: c.signatures.map((x) => ({
-      meaning: capital(x.meaning),
-      name: x.printedName,
-      signedAt: utcStamp(x.signedAt),
+    signatures: content.signatures.map((signature) => ({
+      meaning: capital(signature.meaning),
+      name: signature.printedName,
+      signedAt: utcStamp(signature.signedAt),
     })),
   });
   return {
     title: 'Certificate of Analysis',
-    reference: `Sample ${c.sampleId} · Version ${c.version}`,
-    marker: c.amendment ? 'Amended' : null,
+    reference: `Sample ${content.sampleId} · Version ${content.version}`,
+    marker: content.amendment ? 'Amended' : null,
     laboratory: {
-      name: c.laboratory.name,
-      lines: [c.laboratory.address, c.laboratory.accreditation],
+      name: content.laboratory.name,
+      lines: [content.laboratory.address, content.laboratory.accreditation],
     },
     sections,
-    footer: `Certificate of Analysis for Sample ${c.sampleId}, version ${c.version}, approved ${utcStamp(c.approvedAt)}. Electronically signed; valid without a handwritten signature.`,
+    footer: `Certificate of Analysis for Sample ${content.sampleId}, version ${content.version}, approved ${utcStamp(content.approvedAt)}. Electronically signed; valid without a handwritten signature.`,
   };
 }

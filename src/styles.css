@@ -2025,7 +2025,7 @@ body.resizing {
 .certificate-view > .flash {
   margin: 16px;
 }
-.coa {
+.certificate-document {
   margin: 16px;
   padding: 28px 32px;
   background: #ffffff;
@@ -2034,7 +2034,7 @@ body.resizing {
   line-height: 1.45;
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.2);
 }
-.coa-head {
+.certificate-head {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
@@ -2042,22 +2042,22 @@ body.resizing {
   padding-bottom: 12px;
   border-bottom: 2px solid #111614;
 }
-.coa-lab {
+.certificate-lab {
   font-size: 15px;
   font-weight: 700;
 }
-.coa-lab-line {
+.certificate-lab-line {
   color: #4a5550;
 }
-.coa-title {
+.certificate-title {
   text-align: right;
 }
-.coa-title h1 {
+.certificate-title h1 {
   margin: 0;
   font-size: 20px;
   letter-spacing: 0.01em;
 }
-.coa-marker {
+.certificate-marker {
   display: inline-block;
   margin-top: 4px;
   padding: 1px 8px;
@@ -2067,61 +2067,61 @@ body.resizing {
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
-.coa-section {
+.certificate-section {
   margin-top: 16px;
   break-inside: avoid;
 }
-.coa-section h2 {
+.certificate-section h2 {
   margin: 0 0 6px;
   padding-bottom: 3px;
   border-bottom: 1px solid #b9c2be;
   font-size: 13px;
 }
-.coa-fields {
+.certificate-fields {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 4px 20px;
 }
-.coa-fields div {
+.certificate-fields div {
   display: grid;
   grid-template-columns: 11em minmax(0, 1fr);
   gap: 8px;
 }
-.coa-fields dt {
+.certificate-fields dt {
   color: #4a5550;
 }
-.coa-table {
+.certificate-table {
   width: 100%;
   border-collapse: collapse;
   font-variant-numeric: tabular-nums;
 }
-.coa-table th,
-.coa-table td {
+.certificate-table th,
+.certificate-table td {
   padding: 4px 6px;
   border: 1px solid #b9c2be;
   text-align: left;
   vertical-align: top;
 }
-.coa-table th {
+.certificate-table th {
   background: #eef1ef;
   font-weight: 600;
 }
-.coa-notes {
+.certificate-notes {
   margin: 6px 0 0;
   padding-left: 18px;
   color: #4a5550;
 }
-.coa-text {
+.certificate-text {
   margin: 0 0 4px;
 }
-.coa-foot {
+.certificate-foot {
   margin-top: 20px;
   padding-top: 8px;
   border-top: 1px solid #b9c2be;
   color: #4a5550;
   font-size: 11px;
 }
-.coa-hash {
+.certificate-hash {
   overflow-wrap: anywhere;
 }
 @page {
@@ -2149,7 +2149,7 @@ body.resizing {
   .certificate-toolbar {
     display: none;
   }
-  .coa {
+  .certificate-document {
     margin: 0;
     padding: 0;
     box-shadow: none;
