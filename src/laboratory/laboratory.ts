@@ -9,6 +9,7 @@ import {
   people,
   qualify,
   reportingUnit,
+  signatureMeanings,
   type Actor,
   type AuditEntry,
   type Command,
@@ -17,6 +18,8 @@ import {
   type ReportingUnit,
   type Sample,
   type SampleStatus,
+  type Signature,
+  type SigningCommandType,
   type Snapshot,
   type Submission,
   type Test,
@@ -24,7 +27,7 @@ import {
 import { AuditTrail, auditRecord, type Audit } from './audit.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export class WorkflowError extends Error {
   constructor(
@@ -33,6 +36,14 @@ export class WorkflowError extends Error {
   ) {
     super(message);
   }
+}
+
+/**
+ * Verifies a signer's password against their stored hash. The accounts store
+ * implements it; the core asks it once per signing command, inside the command.
+ */
+export interface SignerCredentials {
+  checkPassword(userId: string, password: string): boolean;
 }
 
 function requireRole(actor: Actor, role: Actor['role']) {
@@ -69,7 +80,7 @@ function keyOf(commandId: string): Uint8Array {
 
 /** A hash of the command body with its key removed, so a retry of the same act
  * matches and a different body under a reused key is detected. */
-function fingerprintOf(command: Command): Uint8Array {
+function fingerprintOf(command: { commandId: string }): Uint8Array {
   const { commandId: _ignored, ...body } = command;
   const canonical = JSON.stringify(
     Object.fromEntries(
@@ -329,12 +340,15 @@ export class Laboratory {
   constructor(
     path: string,
     private clock = () => new Date().toISOString(),
+    /** Absent, every Electronic signature is refused. */
+    private credentials: SignerCredentials | null = null,
   ) {
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, document TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS samples (id TEXT PRIMARY KEY, document TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sequences (series TEXT NOT NULL, year INTEGER NOT NULL, value INTEGER NOT NULL, PRIMARY KEY (series, year)) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS signatures (id INTEGER PRIMARY KEY, sampleId TEXT NOT NULL, signerId TEXT NOT NULL, printedName TEXT NOT NULL, signedAt TEXT NOT NULL, meaning TEXT NOT NULL, command TEXT NOT NULL, commandId BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS commands (commandId BLOB PRIMARY KEY, actorId TEXT NOT NULL, commandType TEXT NOT NULL, fingerprint BLOB NOT NULL, receivedAt TEXT NOT NULL, subject TEXT) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS commandReplays (id INTEGER PRIMARY KEY, commandId BLOB NOT NULL REFERENCES commands(commandId), at TEXT NOT NULL, actorId TEXT NOT NULL);`);
     // Stamp the schema version only on a database that has none. A migration
@@ -356,6 +370,13 @@ export class Laboratory {
       submissions: this.documents('submissions'),
       samples: this.documents('samples'),
       audit: this.audit.entries(),
+      signatures: (
+        this.db
+          .prepare(
+            'SELECT sampleId, signerId, printedName, signedAt, meaning, command FROM signatures ORDER BY signedAt, id',
+          )
+          .all() as (Omit<Signature, 'command'> & { command: string })[]
+      ).map((row) => ({ ...row, command: JSON.parse(row.command) })),
       people,
       analytes,
       methods,
@@ -387,8 +408,13 @@ export class Laboratory {
           .join('; '),
       );
     const command = parsed.data;
+    // The password is taken out once, here. Only the unsigned command is
+    // fingerprinted, stored with a signature or handed on.
+    const { password, ...unsigned } = command as Command & {
+      password?: string;
+    };
     const key = keyOf(command.commandId);
-    const fingerprint = fingerprintOf(command);
+    const fingerprint = fingerprintOf(unsigned);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const at = this.clock();
@@ -403,6 +429,10 @@ export class Laboratory {
         allocate: (series) => this.allocate(series, at),
         audit,
       };
+      // Verified before the key is claimed or a replay answered, so a wrong
+      // password applies nothing, is never reported as an earlier success, and
+      // rolls back with the key released for resubmission.
+      const meaning = this.verifySignature(command.type, actor, password);
       // Claim the key as the first statement inside the transaction, before any
       // validation or domain work. A suppressed insert returns no row, which is
       // the duplicate test — decided inside the transaction, with no separate
@@ -442,6 +472,15 @@ export class Laboratory {
         handler(command, actor, sample, context);
         sample.revision++;
         this.save('samples', sample.id, sample);
+        if (meaning)
+          this.recordSignature(
+            sample.id,
+            actor,
+            meaning,
+            unsigned as Signature['command'],
+            context,
+            key,
+          );
         samples = [sample];
       }
       // A command that changed nothing on the record must not pass silently.
@@ -462,6 +501,59 @@ export class Laboratory {
       this.db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  /**
+   * The Electronic signature a command requires, if any: the meaning it will be
+   * recorded with once the signer's password matches their stored hash.
+   * Anything else rejects the whole command. Every command type listed in
+   * `signatureMeanings` is signed this way, with no per-handler code.
+   */
+  private verifySignature(
+    type: Command['type'],
+    actor: Actor,
+    password: string | undefined,
+  ) {
+    if (!Object.hasOwn(signatureMeanings, type)) return null;
+    if (!this.credentials)
+      throw new WorkflowError(
+        'Electronic signatures cannot be verified on this server.',
+        503,
+      );
+    if (!password || !this.credentials.checkPassword(actor.id, password))
+      throw new WorkflowError(
+        'The password is incorrect. Nothing was signed or saved.',
+        403,
+      );
+    return signatureMeanings[type as SigningCommandType];
+  }
+
+  private recordSignature(
+    sampleId: string,
+    signer: Actor,
+    meaning: Signature['meaning'],
+    command: Signature['command'],
+    { at, audit }: Context,
+    commandId: Uint8Array,
+  ) {
+    // The signature joins the Sample's history beside the change it signs.
+    // Only its manifestation is audited: never the password.
+    const record = { type: 'Sample', id: sampleId, sampleId } as const;
+    audit.change(record, 'signature.meaning', null, meaning);
+    audit.change(record, 'signature.signer', null, signer.id);
+    this.db
+      .prepare(
+        'INSERT INTO signatures (sampleId, signerId, printedName, signedAt, meaning, command, commandId) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        sampleId,
+        signer.id,
+        signer.name,
+        at,
+        meaning,
+        JSON.stringify(command),
+        commandId,
+      );
   }
 
   /**

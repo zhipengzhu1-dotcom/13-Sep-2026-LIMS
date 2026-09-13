@@ -35,17 +35,39 @@ export function hashPassword(password: string): string {
   ].join('$');
 }
 
+/** The salt, expected hash and cost parameters of a stored hash, or null. */
+function parse(stored: string) {
+  const [scheme, n, r, p, salt, hash] = stored.split('$');
+  if (scheme !== 'scrypt' || !salt || !hash) return null;
+  return {
+    salt: Buffer.from(salt, 'base64url'),
+    expected: Buffer.from(hash, 'base64url'),
+    options: { N: Number(n), r: Number(r), p: Number(p) },
+  };
+}
+
+const same = (actual: Buffer, expected: Buffer) =>
+  actual.length === expected.length && timingSafeEqual(actual, expected);
+
 export async function verifyPassword(
   password: string,
   stored: string,
 ): Promise<boolean> {
-  const [scheme, n, r, p, salt, hash] = stored.split('$');
-  if (scheme !== 'scrypt' || !salt || !hash) return false;
-  const expected = Buffer.from(hash, 'base64url');
-  const actual = await scrypt(password, Buffer.from(salt, 'base64url'), {
-    N: Number(n),
-    r: Number(r),
-    p: Number(p),
-  });
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
+  const parsed = parse(stored);
+  if (!parsed) return false;
+  return same(
+    await scrypt(password, parsed.salt, parsed.options),
+    parsed.expected,
+  );
+}
+
+/** The blocking form, for the laboratory core, which verifies an Electronic
+ * signature inside its synchronous command transaction. */
+export function verifyPasswordSync(password: string, stored: string): boolean {
+  const parsed = parse(stored);
+  if (!parsed) return false;
+  return same(
+    scryptSync(password, parsed.salt, KEY_LENGTH, parsed.options),
+    parsed.expected,
+  );
 }

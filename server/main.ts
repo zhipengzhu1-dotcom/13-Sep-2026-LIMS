@@ -12,9 +12,10 @@ mkdirSync('data', { recursive: true });
 const database = resolve('data/prototype.sqlite');
 // Discard before either store opens the file, so old accounts go with it.
 discardOutdatedDemoDatabase(database);
-const lab = new Laboratory(database);
 const accounts = new Accounts(database);
 accounts.seed(demoAccounts);
+// The core verifies Electronic signatures against these accounts' hashes.
+const lab = new Laboratory(database, undefined, accounts);
 seed(lab);
 const handleApi = api(lab, { accounts, sessions: new Sessions() });
 const development = process.env.NODE_ENV !== 'production';
@@ -68,6 +69,7 @@ async function shutdown() {
   await vite?.close();
   server.close(() => {
     lab.close();
+    accounts.close();
     process.exit(0);
   });
 }

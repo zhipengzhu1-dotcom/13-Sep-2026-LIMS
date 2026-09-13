@@ -195,11 +195,43 @@ export function auditsSample(entry: AuditEntry, sample: Sample) {
     : entry.sampleId === sample.id;
 }
 
+/**
+ * The meaning of each Electronic signature, by the command that applies it.
+ * A signing command carries its signer's password; the core verifies it, and
+ * writes this record, for every command type listed here.
+ */
+export const signatureMeanings = {
+  submitForApproval: 'performed by',
+  approve: 'approved by',
+} as const;
+export type SigningCommandType = keyof typeof signatureMeanings;
+export type SignatureMeaning = (typeof signatureMeanings)[SigningCommandType];
+
+/** An Electronic signature as recorded. It never holds the password. */
+export type Signature = {
+  sampleId: string;
+  signerId: string;
+  /** The signer's printed name at the moment of signing. */
+  printedName: string;
+  /** ISO 8601 with offset; the command's own timestamp. */
+  signedAt: string;
+  meaning: SignatureMeaning;
+  /** The command that was signed, exactly as applied, without the password. */
+  command: {
+    commandId: string;
+    type: SigningCommandType;
+    sampleId: string;
+    revision: number;
+  };
+};
+
 export type Snapshot = {
   submissions: Submission[];
   samples: Sample[];
   /** The lab-wide audit trail, newest first. */
   audit: AuditEntry[];
+  /** Every Electronic signature, oldest first. */
+  signatures: Signature[];
   people: typeof people;
   analytes: typeof analytes;
   methods: typeof methods;
@@ -225,6 +257,10 @@ export function newCommandId(): string {
 const text = z.string().trim().min(1).max(200);
 const commandId = z.string().uuid();
 const target = { sampleId: text, revision: z.number().int().positive() };
+/** The signer's password, re-entered for an Electronic signature. It is never
+ * trimmed, stored, logged or part of the command fingerprint. */
+const signPrompt = 'Enter your password to sign.';
+const password = z.string({ error: signPrompt }).min(1, signPrompt).max(200);
 const date = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -261,8 +297,13 @@ export const commandSchema = z.discriminatedUnion('type', [
     sequenceId: text,
     reason: z.string().trim().max(1000),
   }),
-  z.object({ commandId, type: z.literal('submitForApproval'), ...target }),
-  z.object({ commandId, type: z.literal('approve'), ...target }),
+  z.object({
+    commandId,
+    type: z.literal('submitForApproval'),
+    ...target,
+    password,
+  }),
+  z.object({ commandId, type: z.literal('approve'), ...target, password }),
   z.object({
     commandId,
     type: z.literal('return'),
@@ -271,6 +312,14 @@ export const commandSchema = z.discriminatedUnion('type', [
   }),
 ]);
 export type Command = z.infer<typeof commandSchema>;
+
+// Compile-time check: the commands that carry a password are exactly those
+// with a signature meaning.
+type PasswordCommandType = Extract<Command, { password: string }>['type'];
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+export type SigningCommandsCarryPasswords<
+  T extends true = Same<PasswordCommandType, SigningCommandType>,
+> = T;
 
 /**
  * A replay is surfaced as a replay, never as a fresh save. If a client wrongly

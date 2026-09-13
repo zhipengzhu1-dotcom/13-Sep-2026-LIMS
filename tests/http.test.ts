@@ -29,9 +29,9 @@ const receipt = () => ({
 /** A real server on an ephemeral port over an in-memory core, with a clock
  * the test can move to exercise session inactivity. */
 async function serve(t: TestContext) {
-  const lab = new Laboratory(':memory:');
   const accounts = new Accounts(':memory:');
   accounts.seed(demoAccounts);
+  const lab = new Laboratory(':memory:', undefined, accounts);
   const clock = { now: Date.parse('2026-09-13T09:00:00Z') };
   const server = createServer(
     api(lab, { accounts, sessions: new Sessions(() => clock.now) }),
@@ -209,4 +209,61 @@ test('an inactive session expires, and activity keeps it alive', async (t) => {
   clock.now += IDLE_TIMEOUT_MS;
   assert.equal(await check(), 401);
   assert.equal((await post('/api/commands', receipt(), session)).status, 401);
+});
+
+test('a wrong signing password is refused without ending the session', async (t) => {
+  const { url, post, signIn } = await serve(t);
+  const coordinator = await signIn('coordinator', 'coordinator-demo');
+  const analyst = await signIn('analyst', 'analyst-demo');
+  const command = async (body: object, session: object) => {
+    const response = await post(
+      '/api/commands',
+      { commandId: newCommandId(), ...body },
+      session,
+    );
+    return { status: response.status, body: await response.json() };
+  };
+  let sample = (await command(receipt(), coordinator)).body.samples[0];
+  const act = async (body: object, session: object) => {
+    const response = await command(
+      { sampleId: sample.id, revision: sample.revision, ...body },
+      session,
+    );
+    if (response.status === 200) sample = response.body.samples[0];
+    return response;
+  };
+  await act({ type: 'assign', assignee: 'analyst' }, coordinator);
+  await act(
+    {
+      type: 'enterResult',
+      testId: 'NIT-001-v1',
+      value: 0.02,
+      instrumentReading: 0.2,
+      sequenceId: 'SEQ-0001',
+      reason: '',
+    },
+    analyst,
+  );
+  const wrong = await act(
+    { type: 'submitForApproval', password: 'coordinator-demo' },
+    analyst,
+  );
+  // 403, not 401: the signer stays signed in and can re-enter the password.
+  assert.equal(wrong.status, 403);
+  assert.match(wrong.body.error, /password is incorrect/);
+  assert.equal(
+    (await fetch(url + '/api/session', { headers: analyst })).status,
+    200,
+  );
+  const signed = await act(
+    { type: 'submitForApproval', password: 'analyst-demo' },
+    analyst,
+  );
+  assert.equal(signed.status, 200);
+  assert.equal(signed.body.samples[0].status, 'Awaiting approval');
+  const workspace = await (
+    await fetch(url + '/api/workspace', { headers: analyst })
+  ).text();
+  assert.equal(JSON.parse(workspace).signatures[0].printedName, 'Alex Chen');
+  assert.ok(!workspace.includes('analyst-demo'));
 });
