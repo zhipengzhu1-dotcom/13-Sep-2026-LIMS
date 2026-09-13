@@ -34,12 +34,15 @@ const pad = (n: number) => String(n).padStart(2, '0');
 const passwordOf = (id: string) =>
   demoAccounts.find((a) => a.id === id)!.password;
 
-type Stage = 'received' | 'progress' | 'awaiting' | 'returned' | 'approved';
+type Stage =
+  'held' | 'received' | 'progress' | 'awaiting' | 'returned' | 'approved';
 type SeedSample = SampleReceipt & {
   stage: Stage;
   values: number[];
   /** A Manager opens an OOS investigation on the first Test's Result. */
   openOos?: true;
+  /** The Client's word on a Receipt deviation, recorded before any work. */
+  instruction?: { decision: 'proceed' | 'withdraw'; contact: string };
 };
 type SeedSubmission = Omit<
   SubmissionReceipt,
@@ -190,6 +193,73 @@ export function seed(lab: Laboratory) {
       ],
     },
     {
+      clientId: 'aster',
+      clientReference: 'AL-2026-318',
+      courier: 'UPS',
+      trackingNumber: '1Z-99A-331-0418',
+      shippingCondition: 'refrigerated',
+      temperatureOnArrival: 14.2,
+      packageCondition: 'damaged',
+      chainOfCustodyReference: 'COC-AL-318',
+      samples: [
+        {
+          ...tablets,
+          clientSampleId: 'AL-AML-05-02',
+          product: 'Amlodipine besylate tablets',
+          strength: '5 mg',
+          batch: 'AM-260821',
+          manufacturer: 'Aster Laboratories',
+          materialType: 'finished product',
+          maximumDailyDose: 10,
+          conditionOnReceipt: 'Outer carton crushed; one bottle seal broken',
+          methodIds: ['NIT-001-v1', 'NIT-003-v1'],
+          dueDate: due(5),
+          priority: 'Routine',
+          deviations: [
+            {
+              kind: 'broken seal',
+              description:
+                'Induction seal on bottle 2 of 2 broken; tablets loose in the carton.',
+            },
+            {
+              kind: 'temperature excursion',
+              description:
+                'Shipped refrigerated, 14.2 °C on arrival; no data logger in the box.',
+            },
+          ],
+          stage: 'held',
+          values: [],
+        },
+        {
+          ...tablets,
+          clientSampleId: 'AL-AML-10-02',
+          product: 'Amlodipine besylate tablets',
+          strength: '10 mg',
+          batch: 'AM-260822',
+          manufacturer: 'Aster Laboratories',
+          materialType: 'finished product',
+          maximumDailyDose: 10,
+          conditionOnReceipt: 'Outer carton crushed; bottles intact',
+          methodIds: ['NIT-001-v1'],
+          dueDate: due(5),
+          priority: 'Routine',
+          deviations: [
+            {
+              kind: 'damaged package',
+              description:
+                'Outer carton crushed in transit; inner bottles and seals intact.',
+            },
+          ],
+          instruction: {
+            decision: 'proceed',
+            contact: 'Priya Nair, QA Aster Laboratories (phone)',
+          },
+          stage: 'received',
+          values: [],
+        },
+      ],
+    },
+    {
       clientId: 'formulation-development',
       clientReference: 'FD-STAB-014',
       shippingCondition: 'ambient',
@@ -261,14 +331,32 @@ export function seed(lab: Laboratory) {
         type: 'receiveSubmission',
         ...submission,
         samples: samples.map(
-          ({ stage: _s, values: _v, openOos: _o, ...sample }) => sample,
+          ({
+            stage: _s,
+            values: _v,
+            openOos: _o,
+            instruction: _i,
+            ...sample
+          }) => sample,
         ),
       },
       'coordinator',
     );
     receipt.samples.forEach((received, i) => {
-      const { stage, values, openOos } = samples[i];
-      if (stage === 'received') return;
+      const { stage, values, openOos, instruction } = samples[i];
+      if (instruction)
+        received = lab.execute(
+          {
+            commandId: newCommandId(),
+            type: 'recordClientInstruction',
+            sampleId: received.id,
+            revision: received.revision,
+            ...instruction,
+            instructedAt: new Date(Date.now() - 3600000).toISOString(),
+          },
+          'coordinator',
+        ).samples[0];
+      if (stage === 'received' || stage === 'held') return;
       let s = received;
       const act = (command: object, actor: string) => {
         s = lab.execute(

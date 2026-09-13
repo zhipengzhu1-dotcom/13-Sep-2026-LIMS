@@ -139,13 +139,57 @@ export function currentResult(test: Test): Result | undefined {
 }
 
 export const sampleStatuses = [
+  'On hold',
   'Received',
   'In progress',
   'Awaiting approval',
   'Returned',
   'Approved',
+  'Withdrawn',
 ] as const;
 export type SampleStatus = (typeof sampleStatuses)[number];
+
+/** Statuses in which a Receipt deviation stops all work on a Sample: held
+ * until the Client instructs the lab, or withdrawn on the Client's word. */
+export const heldStatuses: readonly SampleStatus[] = ['On hold', 'Withdrawn'];
+
+/** Fixed list, seeded and illustrative like the rest of the reference data. */
+export const receiptDeviationKinds = [
+  'damaged package',
+  'broken seal',
+  'temperature excursion',
+  'insufficient quantity',
+  'other',
+] as const;
+export type ReceiptDeviationKind = (typeof receiptDeviationKinds)[number];
+export const clientDecisions = ['proceed', 'withdraw'] as const;
+export type ClientDecision = (typeof clientDecisions)[number];
+
+/** What the Client told the lab about a held Sample, and who recorded it. */
+export type ClientInstruction = {
+  decision: ClientDecision;
+  /** The person at the Client who gave the instruction. */
+  contact: string;
+  /** When the Client gave the instruction; never later than its recording. */
+  instructedAt: string;
+  recordedBy: string;
+  recordedAt: string;
+};
+
+/**
+ * A problem found when a Sample arrived. It stays on the Sample for good: a
+ * Sample that proceeds carries it to its Certificate of Analysis.
+ */
+export type ReceiptDeviation = {
+  /** 1 for the first deviation on the Sample, counting up. */
+  sequence: number;
+  kind: ReceiptDeviationKind;
+  description: string;
+  recordedBy: string;
+  recordedAt: string;
+  /** The instruction that released or withdrew the Sample; null while held. */
+  instruction: ClientInstruction | null;
+};
 
 /** Seeded, illustrative Clients. There is no maintenance screen in this
  * release; a Submission copies the Client's name and kind at receipt. */
@@ -267,6 +311,8 @@ export type Sample = {
   receivedBy: string;
   assignee: string | null;
   status: SampleStatus;
+  /** Every Receipt deviation, oldest first, kept after the Sample is released. */
+  deviations: ReceiptDeviation[];
   /** The Manager's latest return, shown to the Analyst until resubmission. */
   lastReturn: { comment: string; by: string; at: string } | null;
   tests: Test[];
@@ -403,6 +449,17 @@ const required = (label: string) =>
 const optionalText = z.string().trim().max(200).default('');
 const optionalDate = date.nullable().default(null);
 
+const receiptDeviation = {
+  kind: z.enum(receiptDeviationKinds, {
+    error: 'Choose the kind of Receipt deviation from the list.',
+  }),
+  description: z
+    .string({ error: 'Describe the Receipt deviation.' })
+    .trim()
+    .min(3, 'Describe the Receipt deviation.')
+    .max(1000),
+};
+
 export const sampleReceiptSchema = z.object({
   clientSampleId: optionalText,
   materialType: z.enum(materialTypes),
@@ -457,6 +514,8 @@ export const sampleReceiptSchema = z.object({
     })
     .nullable()
     .default(null),
+  /** Problems found on arrival; any at all put the Sample on hold. */
+  deviations: z.array(z.object(receiptDeviation)).max(10).default([]),
 });
 /** A Sample as a receipt supplies it; optional fields may be omitted. */
 export type SampleReceipt = z.input<typeof sampleReceiptSchema>;
@@ -543,6 +602,25 @@ export const commandSchema = z.discriminatedUnion('type', [
     outcome: z.enum(['Invalidated', 'Confirmed']),
     /** Mandatory for Invalidated; must be empty for Confirmed. */
     assignableCause: z.string().trim().max(2000),
+  }),
+  z.object({
+    commandId,
+    type: z.literal('recordReceiptDeviation'),
+    ...target,
+    ...receiptDeviation,
+  }),
+  z.object({
+    commandId,
+    type: z.literal('recordClientInstruction'),
+    ...target,
+    decision: z.enum(clientDecisions, {
+      error: 'Choose whether the Client says to proceed or withdraw.',
+    }),
+    contact: required('Client contact who gave the instruction'),
+    instructedAt: z.iso.datetime({
+      offset: true,
+      error: 'Enter when the Client gave the instruction.',
+    }),
   }),
 ]);
 export type Command = z.infer<typeof commandSchema>;

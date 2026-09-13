@@ -12,6 +12,7 @@ import {
   type AcceptableIntake,
   type AcceptableIntakeEntry,
   enteredResultOn,
+  heldStatuses,
   methods,
   oosApprovalBlocker,
   outOfSpecification,
@@ -21,7 +22,9 @@ import {
   signatureMeanings,
   type Actor,
   type AuditEntry,
+  type ClientInstruction,
   type Command,
+  type ReceiptDeviation,
   type CommandOutcome,
   type Method,
   type OosInvestigation,
@@ -44,7 +47,7 @@ import {
 } from './attachments.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 export class WorkflowError extends Error {
   constructor(
@@ -71,8 +74,20 @@ function requireRole(actor: Actor, role: Actor['role']) {
 /** Statuses in which the assigned Analyst may enter Results or submit them. */
 const editableStatuses: readonly SampleStatus[] = ['In progress', 'Returned'];
 
+/** No one assigns or tests a Sample held for a Receipt deviation, or one the
+ * Client withdrew. */
+function requireNotHeld(sample: Sample) {
+  if (sample.status === 'On hold')
+    throw new WorkflowError(
+      "This Sample is on hold for a Receipt deviation. Record the Client's instruction first.",
+    );
+  if (sample.status === 'Withdrawn')
+    throw new WorkflowError('The Client withdrew this Sample.');
+}
+
 function requireAssignedAnalyst(actor: Actor, sample: Sample) {
   requireRole(actor, 'analyst');
+  requireNotHeld(sample);
   if (sample.assignee !== actor.id)
     throw new WorkflowError(
       'Only the assigned analyst can enter or submit Results.',
@@ -282,7 +297,7 @@ const receiveSubmission: ReceiptHandler = (
   };
   const samples = command.samples.map((receipt, i): Sample => {
     const unit = reportingUnit(receipt.materialType);
-    const { methodIds: _methodIds, ...record } = receipt;
+    const { methodIds: _methodIds, deviations, ...record } = receipt;
     const sample: Sample = {
       id: `${yy}-${pad(allocate('sample'), 5)}`,
       submissionId: submission.id,
@@ -292,7 +307,15 @@ const receiveSubmission: ReceiptHandler = (
       receivedAt: received.receivedAt,
       receivedBy: actor.id,
       assignee: null,
-      status: 'Received',
+      // A deviation found at receipt holds the Sample from the start.
+      status: deviations.length ? 'On hold' : 'Received',
+      deviations: deviations.map((d, j) => ({
+        sequence: j + 1,
+        ...d,
+        recordedBy: actor.id,
+        recordedAt: at,
+        instruction: null,
+      })),
       lastReturn: null,
       tests: requested[i].map((m) => testOf(m, unit)),
       investigations: [],
@@ -320,8 +343,17 @@ const receiveSubmission: ReceiptHandler = (
     );
   for (const sample of samples) {
     audit.compare(auditRecord.sample(sample), null, sample, {
-      omit: ['id', 'tests', 'investigations', 'revision', 'lastReturn'],
+      omit: [
+        'id',
+        'tests',
+        'investigations',
+        'revision',
+        'lastReturn',
+        'deviations',
+      ],
     });
+    for (const deviation of sample.deviations)
+      auditDeviation(audit, sample, deviation);
     for (const test of sample.tests)
       audit.compare(auditRecord.test(sample, test), null, test, {
         omit: ['id', 'results'],
@@ -330,9 +362,74 @@ const receiveSubmission: ReceiptHandler = (
   return { submission, samples };
 };
 
+/** A new Receipt deviation's content; who recorded it and when are the
+ * entry's own columns. */
+function auditDeviation(audit: Audit, sample: Sample, d: ReceiptDeviation) {
+  const record = auditRecord.sample(sample);
+  const field = `deviations.${d.sequence}`;
+  audit.change(record, `${field}.kind`, null, d.kind);
+  audit.change(record, `${field}.description`, null, d.description);
+}
+
 const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
+  recordReceiptDeviation(command, actor, sample, { at, audit }) {
+    requireRole(actor, 'coordinator');
+    if (sample.status !== 'Received' && sample.status !== 'On hold')
+      throw new WorkflowError(
+        'A Receipt deviation can only be recorded before the Sample is assigned.',
+      );
+    const deviation: ReceiptDeviation = {
+      sequence: sample.deviations.length + 1,
+      kind: command.kind,
+      description: command.description,
+      recordedBy: actor.id,
+      recordedAt: at,
+      instruction: null,
+    };
+    sample.deviations.push(deviation);
+    auditDeviation(audit, sample, deviation);
+    audit.set(auditRecord.sample(sample), sample, 'status', 'On hold');
+  },
+
+  recordClientInstruction(command, actor, sample, { at, audit }) {
+    requireRole(actor, 'coordinator');
+    if (sample.status !== 'On hold')
+      throw new WorkflowError(
+        "A Client's instruction is recorded only for a Sample on hold.",
+      );
+    const instructedAt = new Date(command.instructedAt).toISOString();
+    if (instructedAt > at)
+      throw new WorkflowError(
+        "The time of the Client's instruction cannot be later than the time of saving.",
+      );
+    const instruction: ClientInstruction = {
+      decision: command.decision,
+      contact: command.contact,
+      instructedAt,
+      recordedBy: actor.id,
+      recordedAt: at,
+    };
+    const record = auditRecord.sample(sample);
+    // One instruction answers every deviation the Sample is held for.
+    for (const deviation of sample.deviations) {
+      if (deviation.instruction) continue;
+      deviation.instruction = instruction;
+      const field = `deviations.${deviation.sequence}.instruction`;
+      audit.change(record, `${field}.decision`, null, instruction.decision);
+      audit.change(record, `${field}.contact`, null, instruction.contact);
+      audit.change(record, `${field}.instructedAt`, null, instructedAt);
+    }
+    audit.set(
+      record,
+      sample,
+      'status',
+      command.decision === 'proceed' ? 'Received' : 'Withdrawn',
+    );
+  },
+
   assign(command, actor, sample, { audit }) {
     requireRole(actor, 'coordinator');
+    requireNotHeld(sample);
     if (sample.status === 'Awaiting approval')
       throw new WorkflowError(
         'Return the Sample before changing its assignment.',
@@ -485,6 +582,8 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
 
   openOosInvestigation(command, actor, sample, { at, allocate, audit }) {
     requireRole(actor, 'manager');
+    // A held Sample has no Results in play; Withdrawn is refused in execute.
+    requireNotHeld(sample);
     const test = sample.tests.find((t) => t.id === command.testId);
     if (!test) throw new WorkflowError('Test not found.');
     const result = currentResult(test);
@@ -837,6 +936,10 @@ export class Laboratory {
           );
         if (sample.status === 'Approved')
           throw new WorkflowError('Approved samples are locked.');
+        if (sample.status === 'Withdrawn')
+          throw new WorkflowError(
+            'The Client withdrew this Sample, so it is closed.',
+          );
         // One cast, localised here, because TypeScript cannot correlate the
         // narrowed command with the handler selected by its own discriminant.
         // Each handler in the registry is individually typed to its own verb.

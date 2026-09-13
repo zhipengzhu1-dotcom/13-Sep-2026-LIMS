@@ -15,6 +15,7 @@ import {
   decisionRule,
   enteredResultOn,
   expiryKinds,
+  heldStatuses,
   investigationOf,
   limitInForce,
   materialTypes,
@@ -26,6 +27,7 @@ import {
   priorities,
   qualify,
   quantityUnits,
+  receiptDeviationKinds,
   reportingUnit,
   shippingConditions,
   signatureMeanings,
@@ -58,13 +60,20 @@ import './styles.css';
 
 type View =
   | 'Receiving'
+  | 'Holds'
   | 'Samples'
   | 'My work'
   | 'Approval queue'
   | 'OOS investigations'
   | 'Methods'
   | 'Audit trail';
-const QUEUES: View[] = ['Receiving', 'Samples', 'My work', 'Approval queue'];
+const QUEUES: View[] = [
+  'Receiving',
+  'Holds',
+  'Samples',
+  'My work',
+  'Approval queue',
+];
 
 /** A command as a screen writes it. The key is minted by `execute`, not by the
  * caller, so no screen can reuse one across two separate laboratory acts. */
@@ -87,7 +96,7 @@ function viewsForRole(role: string | undefined): View[] {
   if (role === 'analyst') return ['My work', 'Methods', 'Audit trail'];
   if (role === 'manager')
     return ['Approval queue', 'OOS investigations', 'Methods', 'Audit trail'];
-  return ['Receiving', 'Samples', 'Methods', 'Audit trail'];
+  return ['Receiving', 'Holds', 'Samples', 'Methods', 'Audit trail'];
 }
 function defaultViewForRole(role: string | undefined): View {
   return viewsForRole(role)[0];
@@ -99,6 +108,7 @@ function defaultViewForRole(role: string | undefined): View {
 function baseSet(view: View, samples: Sample[], actor: string) {
   if (view === 'Receiving')
     return samples.filter((s) => s.status === 'Received');
+  if (view === 'Holds') return samples.filter((s) => s.status === 'On hold');
   if (view === 'My work')
     return samples.filter(
       (s) =>
@@ -112,17 +122,22 @@ function baseSet(view: View, samples: Sample[], actor: string) {
 
 const FILTERS = [
   'Active',
+  'On hold',
   'Received',
   'In progress',
   'Returned',
   'Awaiting approval',
   'Approved',
+  'Withdrawn',
   'All',
 ] as const;
 type Filter = (typeof FILTERS)[number];
+/** No further work: approved, or withdrawn by the Client. */
+const closed = (s: Sample) =>
+  s.status === 'Approved' || s.status === 'Withdrawn';
 function matches(s: Sample, f: Filter) {
   if (f === 'All') return true;
-  if (f === 'Active') return s.status !== 'Approved';
+  if (f === 'Active') return !closed(s);
   // A returned sample is back at the analytical bench, so it is still work in
   // progress; "Returned" narrows to just those.
   if (f === 'In progress')
@@ -142,11 +157,13 @@ function refines(s: Sample, r: Refine) {
 }
 
 const STATUS_ORDER: Sample['status'][] = [
+  'On hold',
   'Received',
   'In progress',
   'Returned',
   'Awaiting approval',
   'Approved',
+  'Withdrawn',
 ];
 type SortKey = 'due' | 'id' | 'status';
 
@@ -192,6 +209,12 @@ function Icon({ name }: { name: string }) {
       <>
         <path d="M3 13h5l1.5 3h5L16 13h5" />
         <path d="M5 13 7 5h10l2 8v6H5v-6Z" />
+      </>
+    ),
+    Holds: (
+      <>
+        <rect x="4" y="4" width="16" height="16" rx="2" />
+        <path d="M10 9v6m4-6v6" />
       </>
     ),
     Samples: (
@@ -256,7 +279,7 @@ function Status({ sample }: { sample: Sample }) {
 
 function Due({ sample }: { sample: Sample }) {
   const days = daysUntil(sample.dueDate);
-  const open = sample.status !== 'Approved';
+  const open = !closed(sample);
   const tone = !open ? '' : days < 0 ? 'late' : days === 0 ? 'today' : '';
   const label = !open
     ? ''
@@ -1046,7 +1069,9 @@ function App() {
                           ? 'No Samples are awaiting approval.'
                           : view === 'Receiving'
                             ? 'Every received Sample is assigned. Receive a Submission to add more.'
-                            : 'No Samples yet. Receive a Submission to start.'}
+                            : view === 'Holds'
+                              ? 'No Samples are on hold for a Receipt deviation.'
+                              : 'No Samples yet. Receive a Submission to start.'}
                   </div>
                 )}
               </div>
@@ -1325,6 +1350,17 @@ function Intake({
             priority: text(`priority-${key}`) as Sample['priority'],
             remarks: text(`remarks-${key}`),
             retentionInstruction: text(`retention-${key}`),
+            // Any deviation found on arrival holds the Sample from receipt.
+            deviations: text(`deviationKind-${key}`)
+              ? [
+                  {
+                    kind: text(
+                      `deviationKind-${key}`,
+                    ) as (typeof receiptDeviationKinds)[number],
+                    description: text(`deviationDescription-${key}`),
+                  },
+                ]
+              : [],
             maximumDailyDose: finished
               ? numberOrNull(`maximumDailyDose-${key}`)
               : null,
@@ -1751,6 +1787,25 @@ function Intake({
                   placeholder="Retain 12 months after publishing, then destroy"
                 />
               </label>
+              <label>
+                Receipt deviation
+                <select name={`deviationKind-${key}`} defaultValue="">
+                  <option value="">None</option>
+                  {receiptDeviationKinds.map((k) => (
+                    <option key={k} value={k}>
+                      {k}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Deviation details
+                <input
+                  name={`deviationDescription-${key}`}
+                  maxLength={1000}
+                  placeholder="Puts the Sample on hold until the Client instructs"
+                />
+              </label>
             </div>
           </fieldset>
         );
@@ -1914,6 +1969,168 @@ function ReceiptRecord({
   );
 }
 
+/**
+ * A Sample's Receipt deviations, each with the Client's instruction that
+ * answered it. A Coordinator records further deviations before work starts
+ * and records the instruction that releases or withdraws a held Sample.
+ */
+function ReceiptDeviations({
+  sample: s,
+  data,
+  canAct,
+  busy,
+  execute,
+}: {
+  sample: Sample;
+  data: Snapshot;
+  canAct: boolean;
+  busy: boolean;
+  execute?: Execute;
+}) {
+  const canRecord =
+    canAct && !!execute && ['Received', 'On hold'].includes(s.status);
+  const canInstruct = canAct && !!execute && s.status === 'On hold';
+  if (!s.deviations.length && !canRecord) return null;
+  const submit =
+    (draft: (f: FormData) => Draft) =>
+    async (e: React.FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      const form = e.currentTarget;
+      if (await execute!(draft(new FormData(form)))) form.reset();
+    };
+  const text = (f: FormData, name: string) => String(f.get(name) ?? '').trim();
+  return (
+    <section
+      className={'deviations' + (s.status === 'On hold' ? ' held' : '')}
+      aria-label="Receipt deviations"
+    >
+      <h3>Receipt deviations</h3>
+      {s.deviations.length > 0 && (
+        <ol>
+          {s.deviations.map((d) => (
+            <li key={d.sequence}>
+              <div>
+                <b>{d.kind}</b> {d.description}
+              </div>
+              <div className="dim">
+                Recorded by {personName(data, d.recordedBy) ?? d.recordedBy},{' '}
+                {fullStamp(d.recordedAt)}
+              </div>
+              {d.instruction ? (
+                <div className="instruction">
+                  Client instructed{' '}
+                  <b>
+                    {d.instruction.decision === 'proceed'
+                      ? 'proceed'
+                      : 'withdraw'}
+                  </b>
+                  : {d.instruction.contact},{' '}
+                  {fullStamp(d.instruction.instructedAt)}
+                  <span className="dim">
+                    {' '}
+                    · recorded by{' '}
+                    {personName(data, d.instruction.recordedBy) ??
+                      d.instruction.recordedBy}
+                    , {fullStamp(d.instruction.recordedAt)}
+                  </span>
+                </div>
+              ) : (
+                <div className="instruction pending">
+                  Awaiting the Client's instruction.
+                </div>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+      {canInstruct && (
+        <form
+          className="deviation-form"
+          aria-label="Record the Client's instruction"
+          onSubmit={submit((f) => ({
+            type: 'recordClientInstruction',
+            sampleId: s.id,
+            revision: s.revision,
+            decision: text(f, 'decision') as 'proceed' | 'withdraw',
+            contact: text(f, 'contact'),
+            instructedAt: text(f, 'instructedAt')
+              ? new Date(text(f, 'instructedAt')).toISOString()
+              : '',
+          }))}
+        >
+          <label>
+            Client instruction
+            <select name="decision" defaultValue="proceed">
+              <option value="proceed">Proceed with testing</option>
+              <option value="withdraw">Withdraw the Sample</option>
+            </select>
+          </label>
+          <label>
+            Given by
+            <input
+              name="contact"
+              required
+              maxLength={200}
+              placeholder="Name and role at the Client"
+            />
+          </label>
+          <label>
+            When
+            <input
+              type="datetime-local"
+              name="instructedAt"
+              required
+              max={localDateTime(new Date())}
+              defaultValue={localDateTime(new Date())}
+            />
+          </label>
+          <button className="btn primary sm" disabled={busy}>
+            Record instruction
+          </button>
+        </form>
+      )}
+      {canRecord && (
+        <details>
+          <summary>Record a Receipt deviation</summary>
+          <form
+            className="deviation-form"
+            onSubmit={submit((f) => ({
+              type: 'recordReceiptDeviation',
+              sampleId: s.id,
+              revision: s.revision,
+              kind: text(f, 'kind') as (typeof receiptDeviationKinds)[number],
+              description: text(f, 'description'),
+            }))}
+          >
+            <label>
+              Kind
+              <select name="kind" defaultValue="damaged package">
+                {receiptDeviationKinds.map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="wide">
+              What was found
+              <input
+                name="description"
+                required
+                minLength={3}
+                maxLength={1000}
+              />
+            </label>
+            <button className="btn sm" disabled={busy}>
+              Record and hold
+            </button>
+          </form>
+        </details>
+      )}
+    </section>
+  );
+}
+
 function SamplePanel({
   sample: s,
   data,
@@ -1944,7 +2161,7 @@ function SamplePanel({
   const oosBlocker = oosApprovalBlocker(s);
   const canAssign =
     person.role === 'coordinator' &&
-    !['Approved', 'Awaiting approval'].includes(s.status);
+    !['Approved', 'Awaiting approval', ...heldStatuses].includes(s.status);
   const history = data.audit.filter((e) => auditsSample(e, s));
   const recorded = s.tests.filter((t) => currentResult(t)).length;
   return (
@@ -2087,9 +2304,24 @@ function SamplePanel({
         {tab === 'History' ? (
           <AuditTable entries={history} data={data} />
         ) : tab === 'Receipt' ? (
-          <ReceiptRecord sample={s} data={data} />
+          <>
+            <ReceiptDeviations
+              sample={s}
+              data={data}
+              canAct={false}
+              busy={busy}
+            />
+            <ReceiptRecord sample={s} data={data} />
+          </>
         ) : (
           <>
+            <ReceiptDeviations
+              sample={s}
+              data={data}
+              canAct={person.role === 'coordinator'}
+              busy={busy}
+              execute={execute}
+            />
             {s.status === 'Returned' && s.lastReturn && (
               <div className="flash returned inline">
                 <strong>
@@ -2193,11 +2425,15 @@ function SamplePanel({
             <span className="dim">
               {s.status === 'Approved'
                 ? 'Approved. This Sample is locked.'
-                : s.status === 'Awaiting approval'
-                  ? 'Awaiting Manager approval.'
-                  : s.assignee
-                    ? `Results are entered by ${personName(data, s.assignee)}.`
-                    : 'Assign an analyst before Results can be entered.'}
+                : s.status === 'On hold'
+                  ? "On hold for a Receipt deviation until the Client's instruction is recorded."
+                  : s.status === 'Withdrawn'
+                    ? 'Withdrawn on the Client’s instruction. No testing will be done.'
+                    : s.status === 'Awaiting approval'
+                      ? 'Awaiting Manager approval.'
+                      : s.assignee
+                        ? `Results are entered by ${personName(data, s.assignee)}.`
+                        : 'Assign an analyst before Results can be entered.'}
             </span>
           )}
         </footer>
@@ -3239,6 +3475,8 @@ const COMMAND_LABELS: Record<string, string> = {
   openOosInvestigation: 'OOS investigation opened',
   recordLabErrorCheck: 'Lab error check recorded',
   concludeOosInvestigation: 'OOS investigation concluded',
+  recordReceiptDeviation: 'Receipt deviation recorded',
+  recordClientInstruction: 'Client instruction recorded',
 };
 
 const auditValue = (value: AuditValue) =>

@@ -1345,6 +1345,313 @@ test('receipt audits every field of the new Submission, Sample and Test', (t) =>
   );
 });
 
+const deviation = {
+  kind: 'broken seal',
+  description: 'Tamper seal on bottle 2 broken on arrival.',
+};
+const instruction = (
+  s: Sample,
+  decision: 'proceed' | 'withdraw',
+  instructedAt = '2026-09-10T11:30:00+01:00',
+) => ({
+  type: 'recordClientInstruction',
+  ...target(s),
+  decision,
+  contact: 'Dana Wells, QA Northstar',
+  instructedAt,
+});
+function held(lab: Laboratory) {
+  const s = run(lab, receipt, 'coordinator');
+  return run(
+    lab,
+    { type: 'recordReceiptDeviation', ...target(s), ...deviation },
+    'coordinator',
+  );
+}
+
+test('a Receipt deviation recorded at receipt puts only that Sample on hold', (t) => {
+  const lab = memory(t);
+  const { outcome, changes } = audited(
+    lab,
+    {
+      ...receipt,
+      samples: [{ ...finishedProduct, deviations: [deviation] }, rawMaterial],
+    },
+    'coordinator',
+  );
+  const [heldSample, clean] = outcome.samples;
+  assert.equal(heldSample.status, 'On hold');
+  assert.deepEqual(heldSample.deviations, [
+    {
+      sequence: 1,
+      ...deviation,
+      recordedBy: 'coordinator',
+      recordedAt: NOW,
+      instruction: null,
+    },
+  ]);
+  assert.equal(clean.status, 'Received');
+  assert.deepEqual(clean.deviations, []);
+  assert.deepEqual(
+    changes.filter(([record]) => record === 'Sample 26-00001').slice(-3),
+    [
+      ['Sample 26-00001', 'status', null, 'On hold', null],
+      ['Sample 26-00001', 'deviations.1.kind', null, 'broken seal', null],
+      [
+        'Sample 26-00001',
+        'deviations.1.description',
+        null,
+        deviation.description,
+        null,
+      ],
+    ],
+  );
+  assert.throws(
+    () =>
+      run(
+        lab,
+        {
+          ...receipt,
+          samples: [
+            {
+              ...finishedProduct,
+              deviations: [{ kind: 'lost', description: 'x' }],
+            },
+          ],
+        },
+        'coordinator',
+      ),
+    /Receipt deviation/,
+  );
+});
+
+test('recordReceiptDeviation holds a received Sample and is audited', (t) => {
+  const lab = memory(t);
+  let s = run(lab, receipt, 'coordinator');
+  const command = {
+    type: 'recordReceiptDeviation',
+    ...target(s),
+    ...deviation,
+  };
+  for (const actor of ['analyst', 'manager'])
+    assert.throws(() => run(lab, command, actor), /coordinator/);
+  assert.throws(
+    () => run(lab, { ...command, description: ' ' }, 'coordinator'),
+    /Describe the Receipt deviation/,
+  );
+  const first = audited(lab, command, 'coordinator');
+  assert.deepEqual(first.changes, [
+    ['Sample 26-00001', 'deviations.1.kind', null, 'broken seal', null],
+    [
+      'Sample 26-00001',
+      'deviations.1.description',
+      null,
+      deviation.description,
+      null,
+    ],
+    ['Sample 26-00001', 'status', 'Received', 'On hold', null],
+  ]);
+  s = first.outcome.samples[0];
+  // A second problem on a held Sample is added; the Sample stays on hold.
+  s = run(
+    lab,
+    {
+      type: 'recordReceiptDeviation',
+      ...target(s),
+      kind: 'insufficient quantity',
+      description: 'Only 20 of the 60 units stated were received.',
+    },
+    'coordinator',
+  );
+  assert.equal(s.status, 'On hold');
+  assert.deepEqual(
+    s.deviations.map((d) => [d.sequence, d.kind]),
+    [
+      [1, 'broken seal'],
+      [2, 'insufficient quantity'],
+    ],
+  );
+  // Once work has started, a deviation is no longer a receipt matter.
+  const busy = assigned(lab);
+  assert.throws(
+    () =>
+      run(
+        lab,
+        { type: 'recordReceiptDeviation', ...target(busy), ...deviation },
+        'coordinator',
+      ),
+    /before the Sample is assigned/,
+  );
+});
+
+test('no one can assign or enter Results on a held or withdrawn Sample', (t) => {
+  const lab = memory(t);
+  const s = held(lab);
+  // Store the worksheet up front so the snapshots compare only the commands.
+  worksheet(lab);
+  const blocked = (sample: Sample, pattern: RegExp) => {
+    const before = lab.snapshot();
+    assert.throws(
+      () =>
+        run(
+          lab,
+          { type: 'assign', ...target(sample), assignee: 'analyst' },
+          'coordinator',
+        ),
+      pattern,
+    );
+    assert.throws(
+      () => run(lab, result(sample, sample.tests[0].id, 2.5), 'analyst'),
+      pattern,
+    );
+    assert.throws(
+      () =>
+        run(lab, { type: 'submitForApproval', ...target(sample) }, 'analyst'),
+      pattern,
+    );
+    assert.deepEqual(lab.snapshot(), before);
+  };
+  blocked(s, /on hold/);
+  const withdrawn = run(lab, instruction(s, 'withdraw'), 'coordinator');
+  assert.equal(withdrawn.status, 'Withdrawn');
+  blocked(withdrawn, /withdrew/);
+  assert.throws(
+    () =>
+      run(
+        lab,
+        { type: 'recordReceiptDeviation', ...target(withdrawn), ...deviation },
+        'coordinator',
+      ),
+    /withdrew/,
+  );
+  assert.throws(
+    () => run(lab, instruction(withdrawn, 'proceed'), 'coordinator'),
+    /withdrew/,
+  );
+});
+
+test("the Client's instruction to proceed releases the Sample and keeps its deviations", (t) => {
+  const lab = memory(t);
+  let s = held(lab);
+  const { outcome, changes } = audited(
+    lab,
+    instruction(s, 'proceed'),
+    'coordinator',
+  );
+  s = outcome.samples[0];
+  assert.equal(s.status, 'Received');
+  assert.deepEqual(s.deviations[0].instruction, {
+    decision: 'proceed',
+    contact: 'Dana Wells, QA Northstar',
+    instructedAt: '2026-09-10T10:30:00.000Z',
+    recordedBy: 'coordinator',
+    recordedAt: NOW,
+  });
+  assert.deepEqual(changes, [
+    [
+      'Sample 26-00001',
+      'deviations.1.instruction.decision',
+      null,
+      'proceed',
+      null,
+    ],
+    [
+      'Sample 26-00001',
+      'deviations.1.instruction.contact',
+      null,
+      'Dana Wells, QA Northstar',
+      null,
+    ],
+    [
+      'Sample 26-00001',
+      'deviations.1.instruction.instructedAt',
+      null,
+      '2026-09-10T10:30:00.000Z',
+      null,
+    ],
+    ['Sample 26-00001', 'status', 'On hold', 'Received', null],
+  ]);
+  // Released, it goes through the normal workflow with the deviation kept.
+  s = run(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'analyst' },
+    'coordinator',
+  );
+  s = entered(lab, s);
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  assert.equal(s.status, 'Approved');
+  assert.equal(s.deviations.length, 1);
+  assert.equal(s.deviations[0].kind, 'broken seal');
+  assert.equal(s.deviations[0].instruction?.decision, 'proceed');
+});
+
+test("recordClientInstruction is the Coordinator's, needs contact and time, and only answers a hold", (t) => {
+  const lab = memory(t);
+  const s = held(lab);
+  for (const actor of ['analyst', 'manager'])
+    assert.throws(
+      () => run(lab, instruction(s, 'proceed'), actor),
+      /coordinator/,
+    );
+  const { contact: _c, ...noContact } = instruction(s, 'proceed');
+  const { instructedAt: _i, ...noTime } = instruction(s, 'proceed');
+  assert.throws(
+    () => run(lab, noContact, 'coordinator'),
+    /Client contact who gave the instruction/,
+  );
+  assert.throws(
+    () =>
+      run(lab, { ...instruction(s, 'proceed'), contact: ' ' }, 'coordinator'),
+    /Client contact/,
+  );
+  assert.throws(
+    () => run(lab, noTime, 'coordinator'),
+    /when the Client gave the instruction/,
+  );
+  assert.throws(
+    () =>
+      run(
+        lab,
+        { ...instruction(s, 'proceed'), decision: 'retest' },
+        'coordinator',
+      ),
+    /proceed or withdraw/,
+  );
+  assert.throws(
+    () =>
+      run(
+        lab,
+        instruction(s, 'proceed', '2026-09-10T12:00:01Z'),
+        'coordinator',
+      ),
+    /cannot be later than the time of saving/,
+  );
+  assert.equal(lab.snapshot().samples[0].status, 'On hold');
+  const plain = run(lab, receipt, 'coordinator');
+  assert.throws(
+    () => run(lab, instruction(plain, 'proceed'), 'coordinator'),
+    /only for a Sample on hold/,
+  );
+  // Withdrawing answers every open deviation and closes the Sample.
+  let two = run(
+    lab,
+    {
+      type: 'recordReceiptDeviation',
+      ...target(s),
+      kind: 'temperature excursion',
+      description: 'Logger shows 31 °C for 6 hours in transit.',
+    },
+    'coordinator',
+  );
+  two = run(lab, instruction(two, 'withdraw'), 'coordinator');
+  assert.equal(two.status, 'Withdrawn');
+  assert.deepEqual(
+    two.deviations.map((d) => d.instruction?.decision),
+    ['withdraw', 'withdraw'],
+  );
+});
+
 test('assign audits the assignee and the status it starts', (t) => {
   const lab = memory(t);
   let s = run(lab, receipt, 'coordinator');

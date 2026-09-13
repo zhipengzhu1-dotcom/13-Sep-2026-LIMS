@@ -458,6 +458,12 @@ kbd {
 .seg-approved {
   --c: var(--approved);
 }
+.seg-on-hold {
+  --c: var(--alert);
+}
+.seg-withdrawn {
+  --c: var(--muted);
+}
 .seg-n {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
@@ -708,6 +714,15 @@ body.resizing {
 .row.approved td {
   color: var(--muted);
 }
+.row.on-hold {
+  --c: var(--alert);
+}
+.row.withdrawn {
+  --c: var(--muted);
+}
+.row.withdrawn td {
+  color: var(--muted);
+}
 .c-id {
   display: flex;
   align-items: center;
@@ -779,6 +794,77 @@ body.resizing {
   --c: var(--returned);
   --w: var(--returned-wash);
 }
+.status.on-hold {
+  --c: var(--alert);
+  --w: var(--alert-wash);
+}
+.status.withdrawn {
+  --c: var(--muted);
+  --w: var(--rule-soft);
+}
+
+/* ---------- receipt deviations ---------- */
+.deviations {
+  margin: 10px 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--rule);
+  border-radius: 0 4px 4px 0;
+  background: var(--sunk);
+  overflow-wrap: anywhere;
+}
+.deviations.held {
+  border-left-color: var(--alert);
+  background: var(--alert-wash);
+}
+.deviations h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+.deviations ol {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+.deviations .instruction {
+  margin-top: 2px;
+}
+.deviations .instruction.pending {
+  color: var(--alert);
+  font-weight: 600;
+}
+.deviations details {
+  margin-top: 8px;
+}
+.deviations summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+.deviation-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.deviation-form label {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--ink-2);
+  min-width: 0;
+}
+.deviation-form label.wide {
+  flex: 1 1 200px;
+}
+.deviation-form input,
+.deviation-form select {
+  max-width: 100%;
+}
+
 .status.awaiting-approval {
   --c: var(--awaiting);
   --w: var(--awaiting-wash);
