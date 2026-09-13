@@ -8,13 +8,18 @@ import React, {
 } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
+  conformity,
   currentResult,
+  decisionRule,
   enteredResultOn,
+  limitInForce,
   materialTypes,
   newCommandId,
   qualify,
   reportingUnit,
+  type AcceptableIntake,
   type Command,
+  type ConformityStatement,
   type MaterialType,
   type Qualifier,
   type Result,
@@ -953,6 +958,7 @@ function App() {
               but not including the LOQ as {'< LOQ'}. Illustrative Methods and
               values only.
             </p>
+            <AcceptableIntakeTable data={data} />
           </div>
         ) : (
           <div className="scroll page">
@@ -1550,6 +1556,107 @@ function resultDraft(s: Sample, t: Test, f: FormData): Draft {
   };
 }
 
+/** Every Acceptable intake entry, newest first within each Analyte, marked
+ * in force, historical or not yet effective as of today. */
+function AcceptableIntakeTable({ data }: { data: Snapshot }) {
+  const now = new Date().toISOString();
+  const rows = data.analytes.flatMap((a) =>
+    data.acceptableIntakes
+      .filter((e) => e.analyteId === a.id)
+      .sort(
+        (x, y) => y.effectiveFrom.localeCompare(x.effectiveFrom) || y.id - x.id,
+      )
+      .map((e) => ({ analyte: a, entry: e })),
+  );
+  const standing = (e: AcceptableIntake) =>
+    limitInForce(data.acceptableIntakes, e.analyteId, now)?.id === e.id
+      ? 'In force'
+      : e.effectiveFrom > now.slice(0, 10)
+        ? 'Not yet effective'
+        : 'Historical';
+  return (
+    <>
+      <h2 className="page-heading">Acceptable intake · Limits</h2>
+      <table className="grid">
+        <thead>
+          <tr>
+            <th>Analyte</th>
+            <th className="r">Limit, ng/day</th>
+            <th>Effective from</th>
+            <th>Standing</th>
+            <th>Source</th>
+            <th>Revision date</th>
+            <th>Entry</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ analyte, entry: e }) => {
+            const s = standing(e);
+            return (
+              <tr
+                key={e.id}
+                className={s === 'In force' ? undefined : 'historical'}
+              >
+                <td className="strong">{analyte.name}</td>
+                <td className="r num strong">{e.value}</td>
+                <td className="num">{e.effectiveFrom}</td>
+                <td>
+                  <span
+                    className={
+                      'standing ' + s.toLowerCase().replace(/\s+/g, '-')
+                    }
+                  >
+                    {s}
+                  </span>
+                  {e.illustrative && (
+                    <span className="illustrative">Illustrative</span>
+                  )}
+                </td>
+                <td>
+                  <a href={e.sourceUrl} target="_blank" rel="noreferrer">
+                    {e.sourceTitle}
+                  </a>
+                </td>
+                <td className="num">{e.sourceRevisionDate}</td>
+                <td className="num dim">#{e.id}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="footnote">
+        Entries are only ever added. A finished product Result is judged against
+        the entry in force when it is entered and keeps that Limit; raw
+        materials have no Limit and are reported as is. {decisionRule}{' '}
+        Illustrative values only, to be checked against the CDER list.
+      </p>
+    </>
+  );
+}
+
+function ConformityTag({ statement }: { statement: ConformityStatement }) {
+  return (
+    <span
+      className={'conformity ' + statement.toLowerCase().replace(/\s+/g, '-')}
+    >
+      {statement}
+    </span>
+  );
+}
+
+function LimitCell({ result: r }: { result: Result }) {
+  return (
+    <>
+      <ConformityTag statement={r.conformity} />
+      <span className="sub num">
+        {r.limit
+          ? `Limit ${r.limit.value} ng/day · from ${r.limit.effectiveFrom}`
+          : 'No Limit'}
+      </span>
+    </>
+  );
+}
+
 function QualifierTag({ qualifier }: { qualifier: Qualifier }) {
   return qualifier === 'quantified' ? null : (
     <span className="qualifier">{qualifier}</span>
@@ -1572,6 +1679,7 @@ function ResultEntry({
   sample: s,
   test: t,
   current,
+  data,
   busy,
   execute,
   onSaved,
@@ -1579,6 +1687,7 @@ function ResultEntry({
   sample: Sample;
   test: Test;
   current: Result | undefined;
+  data: Snapshot;
   busy: boolean;
   execute: Execute;
   onSaved: () => void;
@@ -1587,6 +1696,19 @@ function ResultEntry({
   const value = typed.trim() === '' ? NaN : Number(typed);
   const preview =
     Number.isFinite(value) && value >= 0 ? qualify(value, t) : null;
+  // A preview only: the core judges against the entry in force when it saves.
+  const limit =
+    s.materialType === 'finished product'
+      ? limitInForce(
+          data.acceptableIntakes,
+          t.analyteId,
+          new Date().toISOString(),
+        )
+      : null;
+  const verdict =
+    preview === null
+      ? null
+      : conformity({ value, qualifier: preview }, t, limit);
   return (
     <form
       onSubmit={async (e) => {
@@ -1619,6 +1741,12 @@ function ResultEntry({
               ? 'Quantified'
               : preview}
         </b>
+      </output>
+      <output className="preview" aria-live="polite">
+        <span className="dim">
+          {limit ? `Limit ${limit.value} ng/day` : 'No Limit'}
+        </span>
+        <b>{verdict === null ? '—' : <ConformityTag statement={verdict} />}</b>
       </output>
       <label>
         <span>Instrument reading, ng/mL</span>
@@ -1672,6 +1800,7 @@ function TestSheet({
         <tr>
           <th>Test</th>
           <th className="r">Result</th>
+          <th>Conformity</th>
           <th>Entered</th>
         </tr>
       </thead>
@@ -1699,6 +1828,13 @@ function TestSheet({
                   </>
                 ) : (
                   <span className="dim">— {t.unit}</span>
+                )}
+              </td>
+              <td>
+                {current ? (
+                  <LimitCell result={current} />
+                ) : (
+                  <span className="dim">—</span>
                 )}
               </td>
               <td>
@@ -1739,12 +1875,13 @@ function TestSheet({
             </tr>
             {editing && (
               <tr className="entry">
-                <td colSpan={3}>
+                <td colSpan={4}>
                   <ResultEntry
                     key={current?.sequence ?? 0}
                     sample={s}
                     test={t}
                     current={current}
+                    data={data}
                     busy={busy}
                     execute={execute}
                     onSaved={() => setEditingId(null)}
@@ -1754,7 +1891,7 @@ function TestSheet({
             )}
             {history && (
               <tr className="revisions">
-                <td colSpan={3}>
+                <td colSpan={4}>
                   <ol>
                     {[...t.results].reverse().map((r) => (
                       <li key={r.sequence} className={r.status}>
@@ -1763,7 +1900,9 @@ function TestSheet({
                           {r.status === 'current' ? 'Current' : 'Superseded'}
                         </span>
                         <ResultValue result={r} />
+                        <ConformityTag statement={r.conformity} />
                         <span className="dim num">
+                          {r.limit ? `Limit ${r.limit.value} ng/day · ` : ''}
                           {r.instrumentReading} ng/mL · {r.sequenceId}
                         </span>
                         <span>{personName(data, r.enteredBy)}</span>

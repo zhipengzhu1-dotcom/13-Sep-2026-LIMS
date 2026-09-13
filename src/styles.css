@@ -1134,6 +1134,52 @@ body.resizing {
 .value.below {
   color: var(--ink-2);
 }
+.conformity {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  padding: 0 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  color: var(--approved);
+  background: var(--approved-wash);
+}
+.conformity.does-not-comply {
+  color: var(--alert);
+  background: var(--alert-wash);
+}
+.conformity.report {
+  color: var(--received);
+  background: var(--received-wash);
+}
+.revisions li.superseded .conformity {
+  opacity: 0.6;
+}
+
+/* Methods & Limits: Acceptable intake entries */
+.page-heading {
+  margin: 20px 16px 8px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.grid tr.historical td {
+  color: var(--muted);
+}
+.standing {
+  font-weight: 600;
+}
+.standing.in-force {
+  color: var(--approved);
+}
+.illustrative {
+  margin-left: 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--returned);
+}
 .entry .preview {
   display: grid;
   gap: 2px;
