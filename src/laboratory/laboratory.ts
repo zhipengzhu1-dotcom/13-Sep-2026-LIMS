@@ -12,6 +12,8 @@ import {
   type AcceptableIntakeEntry,
   enteredResultOn,
   methods,
+  oosApprovalBlocker,
+  outOfSpecification,
   people,
   qualify,
   reportingUnit,
@@ -21,6 +23,7 @@ import {
   type Command,
   type CommandOutcome,
   type Method,
+  type OosInvestigation,
   type ReportingUnit,
   type Result,
   type Sample,
@@ -34,7 +37,7 @@ import {
 import { AuditTrail, auditRecord, type Audit } from './audit.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export class WorkflowError extends Error {
   constructor(
@@ -103,7 +106,7 @@ type CommandOf<T extends Command['type']> = Extract<Command, { type: T }>;
 type SampleCommandType = Exclude<Command['type'], 'receiveSubmission'>;
 
 /** A per-year identifier sequence. */
-type Series = 'submission' | 'sample';
+type Series = 'submission' | 'sample' | 'investigation';
 
 /**
  * What a handler is given. The entry point has already opened the transaction,
@@ -208,6 +211,7 @@ const receiveSubmission: ReceiptHandler = (
       status: 'Received',
       lastReturn: null,
       tests: requested[i].map((m) => testOf(m, unit)),
+      investigations: [],
       revision: 1,
     };
     submission.sampleIds.push(sample.id);
@@ -218,7 +222,7 @@ const receiveSubmission: ReceiptHandler = (
   });
   for (const sample of samples) {
     audit.compare(auditRecord.sample(sample), null, sample, {
-      omit: ['id', 'tests', 'revision', 'lastReturn'],
+      omit: ['id', 'tests', 'investigations', 'revision', 'lastReturn'],
     });
     for (const test of sample.tests)
       audit.compare(auditRecord.test(sample, test), null, test, {
@@ -254,6 +258,17 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     const test = sample.tests.find((t) => t.id === command.testId);
     if (!test) throw new WorkflowError('Test not found.');
     const previous = currentResult(test);
+    // An investigated Result is decided by its investigation, never corrected
+    // around it: an open one must be concluded, and a confirmed OOS stands.
+    const investigated =
+      previous?.investigationId &&
+      sample.investigations.find((i) => i.id === previous.investigationId);
+    if (investigated)
+      throw new WorkflowError(
+        investigated.status === 'Open'
+          ? `OOS investigation ${investigated.id} is open on this Result, so it cannot be corrected.`
+          : `This Result is a confirmed OOS (${investigated.id}) and cannot be corrected.`,
+      );
     if (previous && command.reason.length < 3)
       throw new WorkflowError('Give a reason for changing the Result.');
     // Finished products are judged against the entry in force now; raw
@@ -282,6 +297,7 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       reason: command.reason,
       limit,
       conformity: conformity({ value: command.value, qualifier }, test, limit),
+      investigationId: null,
     };
     // The actor, time and reason are the entry's own columns, and the sequence
     // and status only say which Result is current, so only the Result's
@@ -308,6 +324,7 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
           'result.enteredBy',
           'result.enteredAt',
           'result.reason',
+          'result.investigationId',
         ],
       },
     );
@@ -341,6 +358,8 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
         'A Manager cannot approve a Sample on which they entered a Result.',
         403,
       );
+    const blocked = oosApprovalBlocker(sample);
+    if (blocked) throw new WorkflowError(blocked);
     audit.set(auditRecord.sample(sample), sample, 'status', 'Approved');
   },
 
@@ -357,7 +376,124 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     );
     sample.lastReturn = { comment: command.comment, by: actor.id, at };
   },
+
+  openOosInvestigation(command, actor, sample, { at, allocate, audit }) {
+    requireRole(actor, 'manager');
+    const test = sample.tests.find((t) => t.id === command.testId);
+    if (!test) throw new WorkflowError('Test not found.');
+    const result = currentResult(test);
+    if (!result || !outOfSpecification(result))
+      throw new WorkflowError(
+        'Only a current Result that does not comply with its Limit needs an OOS investigation.',
+      );
+    if (result.investigationId)
+      throw new WorkflowError(
+        `This Result already has OOS investigation ${result.investigationId}.`,
+      );
+    const investigation: OosInvestigation = {
+      id: `OOS${at.slice(2, 4)}-${pad(allocate('investigation'), 4)}`,
+      testId: test.id,
+      resultSequence: result.sequence,
+      status: 'Open',
+      openedBy: actor.id,
+      openedAt: at,
+      labErrorCheck: null,
+      outcome: null,
+      assignableCause: null,
+      closedBy: null,
+      closedAt: null,
+    };
+    audit.compare(
+      auditRecord.investigation(sample, investigation),
+      null,
+      {
+        ...investigation,
+      },
+      { omit: ['id'] },
+    );
+    audit.change(
+      auditRecord.test(sample, test),
+      'result.investigationId',
+      null,
+      investigation.id,
+    );
+    result.investigationId = investigation.id;
+    sample.investigations.push(investigation);
+  },
+
+  recordLabErrorCheck(command, actor, sample, { at, audit }) {
+    requireRole(actor, 'analyst');
+    if (sample.assignee !== actor.id)
+      throw new WorkflowError(
+        'Only the assigned analyst can record the laboratory error check.',
+        403,
+      );
+    const investigation = openInvestigation(sample, command.investigationId);
+    if (investigation.labErrorCheck)
+      throw new WorkflowError(
+        'The laboratory error check is already recorded for this investigation.',
+      );
+    const check = {
+      findings: command.findings,
+      errorIdentified: command.errorIdentified,
+      by: actor.id,
+      at,
+    };
+    audit.compare(auditRecord.investigation(sample, investigation), null, {
+      labErrorCheck: check,
+    });
+    investigation.labErrorCheck = check;
+  },
+
+  concludeOosInvestigation(command, actor, sample, { at, audit }) {
+    requireRole(actor, 'manager');
+    const investigation = openInvestigation(sample, command.investigationId);
+    if (!investigation.labErrorCheck)
+      throw new WorkflowError(
+        'The assigned analyst must record the laboratory error check before the investigation is concluded.',
+      );
+    const invalidated = command.outcome === 'Invalidated';
+    if (invalidated && command.assignableCause.length < 3)
+      throw new WorkflowError(
+        'Give the assignable cause for invalidating the Result.',
+      );
+    if (!invalidated && command.assignableCause)
+      throw new WorkflowError(
+        'A confirmed OOS has no assignable cause. Choose Invalidated to record one.',
+      );
+    const record = auditRecord.investigation(sample, investigation);
+    const cause = invalidated ? command.assignableCause : null;
+    audit.set(record, investigation, 'outcome', command.outcome);
+    audit.set(record, investigation, 'assignableCause', cause);
+    audit.set(record, investigation, 'status', 'Closed');
+    audit.set(record, investigation, 'closedBy', actor.id);
+    audit.set(record, investigation, 'closedAt', at);
+    if (invalidated) {
+      // The Result stays on record, marked by its investigation; the Test now
+      // needs a retest Result.
+      const test = sample.tests.find((t) => t.id === investigation.testId)!;
+      const result = test.results.find(
+        (r) => r.sequence === investigation.resultSequence,
+      )!;
+      audit.change(
+        auditRecord.test(sample, test),
+        'result.status',
+        result.status,
+        'invalidated',
+        cause!,
+      );
+      result.status = 'invalidated';
+    }
+  },
 };
+
+function openInvestigation(sample: Sample, id: string) {
+  const investigation = sample.investigations.find((i) => i.id === id);
+  if (!investigation) throw new WorkflowError('OOS investigation not found.');
+  if (investigation.status !== 'Open')
+    throw new WorkflowError(`OOS investigation ${id} is already closed.`);
+  return investigation;
+}
 
 /** The Submission and Samples a command acted on, kept with its key so a
  * replay returns the same subjects. */

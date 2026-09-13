@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { AcceptableIntake, ConformityStatement } from './limits.ts';
 
 export * from './limits.ts';
+export * from './investigations.ts';
+import type { OosInvestigation } from './investigations.ts';
 
 /** Lab users as the workspace shows them. Sign-in accounts (with password
  * hashes, server side only) are seeded from this list in src/accounts. */
@@ -76,9 +78,11 @@ export function qualify(value: number, { lod, loq }: LodLoq): Qualifier {
 
 /**
  * `current` is the Result a Test reports; `superseded` was replaced by a
- * correction. Results are never deleted, only moved out of `current`.
+ * correction; `invalidated` was found by an OOS investigation to have an
+ * assignable laboratory cause, and a retest Result is then required. Results
+ * are never deleted, only moved out of `current`.
  */
-export type ResultStatus = 'current' | 'superseded';
+export type ResultStatus = 'current' | 'superseded' | 'invalidated';
 
 export type Result = {
   /** Unique within its Test: 1 for the first Result, counting up. */
@@ -102,6 +106,9 @@ export type Result = {
   limit: AcceptableIntake | null;
   /** Decided by the core when the Result is entered; never entered. */
   conformity: ConformityStatement;
+  /** The OOS investigation opened on this Result, kept once it is closed
+   * (its outcome and any assignable cause are on the investigation). */
+  investigationId: string | null;
 };
 
 /** One Method applied to one Sample. The Method's identity and Analyte are
@@ -161,11 +168,14 @@ export type Sample = {
   /** The Manager's latest return, shown to the Analyst until resubmission. */
   lastReturn: { comment: string; by: string; at: string } | null;
   tests: Test[];
+  /** Every OOS investigation on the Sample's Results, oldest first. */
+  investigations: OosInvestigation[];
   revision: number;
 };
 
 /** The kinds of record an audit entry can describe. */
-export type AuditRecordType = 'Submission' | 'Sample' | 'Test';
+export type AuditRecordType =
+  'Submission' | 'Sample' | 'Test' | 'OOS investigation';
 /** A single field's value as the audit trail keeps it. */
 export type AuditValue = string | number | boolean | null;
 
@@ -319,6 +329,29 @@ export const commandSchema = z.discriminatedUnion('type', [
     type: z.literal('return'),
     ...target,
     comment: z.string().trim().min(3).max(2000),
+  }),
+  z.object({
+    commandId,
+    type: z.literal('openOosInvestigation'),
+    ...target,
+    testId: text,
+  }),
+  z.object({
+    commandId,
+    type: z.literal('recordLabErrorCheck'),
+    ...target,
+    investigationId: text,
+    findings: z.string().trim().min(3).max(2000),
+    errorIdentified: z.boolean(),
+  }),
+  z.object({
+    commandId,
+    type: z.literal('concludeOosInvestigation'),
+    ...target,
+    investigationId: text,
+    outcome: z.enum(['Invalidated', 'Confirmed']),
+    /** Mandatory for Invalidated; must be empty for Confirmed. */
+    assignableCause: z.string().trim().max(2000),
   }),
 ]);
 export type Command = z.infer<typeof commandSchema>;

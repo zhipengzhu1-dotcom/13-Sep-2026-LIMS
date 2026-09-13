@@ -4,6 +4,7 @@ import type {
   AuditRecordType,
   AuditValue,
   Command,
+  OosInvestigation,
   Sample,
   Submission,
   Test,
@@ -30,6 +31,11 @@ export const auditRecord = {
   test: (s: Sample, t: Test): AuditRecord => ({
     type: 'Test',
     id: `${s.id}/${t.id}`,
+    sampleId: s.id,
+  }),
+  investigation: (s: Sample, i: OosInvestigation): AuditRecord => ({
+    type: 'OOS investigation',
+    id: i.id,
     sampleId: s.id,
   }),
 };

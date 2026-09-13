@@ -43,7 +43,12 @@ export function seed(lab: Laboratory) {
     new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
   const submissions: {
     client: string;
-    samples: (SampleReceipt & { stage: Stage; values: number[] })[];
+    samples: (SampleReceipt & {
+      stage: Stage;
+      values: number[];
+      /** A Manager opens an OOS investigation on the first Test's Result. */
+      openOos?: true;
+    })[];
   }[] = [
     {
       client: 'Northstar Pharma',
@@ -120,6 +125,23 @@ export function seed(lab: Laboratory) {
         },
       ],
     },
+    {
+      client: 'Harbor Health Products',
+      samples: [
+        {
+          product: 'Irbesartan tablets 300 mg',
+          batch: 'IR-260909',
+          materialType: 'finished product',
+          methodIds: ['NIT-001-v1', 'NIT-003-v1'],
+          dueDate: due(5),
+          priority: 'Urgent',
+          stage: 'awaiting',
+          // Impurity A over its illustrative 26.5 ng/day Limit.
+          values: [31.4, 4.2],
+          openOos: true,
+        },
+      ],
+    },
   ];
   for (const { client, samples } of submissions) {
     const receipt = lab.execute(
@@ -127,12 +149,14 @@ export function seed(lab: Laboratory) {
         commandId: newCommandId(),
         type: 'receiveSubmission',
         client,
-        samples: samples.map(({ stage: _s, values: _v, ...sample }) => sample),
+        samples: samples.map(
+          ({ stage: _s, values: _v, openOos: _o, ...sample }) => sample,
+        ),
       },
       'coordinator',
     );
     receipt.samples.forEach((received, i) => {
-      const { stage, values } = samples[i];
+      const { stage, values, openOos } = samples[i];
       if (stage === 'received') return;
       let s = received;
       const act = (command: object, actor: string) => {
@@ -162,7 +186,7 @@ export function seed(lab: Laboratory) {
             },
             'analyst',
           );
-        if (stage === 'awaiting' && j === 0) {
+        if (stage === 'awaiting' && j === 0 && !openOos) {
           // One corrected Result, so the demo shows a superseded entry.
           entry(values[j] - 0.5, 1);
           entry(values[j], 2, 'Wrong injection selected; re-read sequence.');
@@ -173,6 +197,9 @@ export function seed(lab: Laboratory) {
         { type: 'submitForApproval', password: passwordOf('analyst') },
         'analyst',
       );
+      // Left open: the Analyst's laboratory error check comes next.
+      if (openOos)
+        act({ type: 'openOosInvestigation', testId: s.tests[0].id }, 'manager');
       if (stage === 'approved')
         act({ type: 'approve', password: passwordOf('manager') }, 'manager');
       if (stage === 'returned')

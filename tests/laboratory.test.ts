@@ -10,6 +10,9 @@ import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
   currentResult,
   enteredResultOn,
+  investigationOf,
+  oosApprovalBlocker,
+  oosRows,
   qualify,
   newCommandId,
   type AuditEntry,
@@ -1351,4 +1354,346 @@ test('a laboratory without credentials refuses every signature', () => {
   );
   assert.equal(lab.snapshot().samples[0].status, 'In progress');
   lab.close();
+});
+
+/** A finished product Sample whose Impurity A Result (NIT-001, Limit 26.5
+ * ng/day) does not comply, submitted for approval. */
+function outOfSpecification(lab: Laboratory) {
+  let s = assigned(lab);
+  s = run(lab, result(s, 'NIT-001-v1', 30), 'analyst');
+  s = run(lab, result(s, 'NIT-003-v1', 2.5), 'analyst');
+  return run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+}
+const openOos = (s: Sample, testId = 'NIT-001-v1') => ({
+  type: 'openOosInvestigation',
+  ...target(s),
+  testId,
+});
+const labErrorCheck = (s: Sample, investigationId: string) => ({
+  type: 'recordLabErrorCheck',
+  ...target(s),
+  investigationId,
+  findings: 'Standard preparation log shows a dilution error.',
+  errorIdentified: true,
+});
+const conclude = (
+  s: Sample,
+  investigationId: string,
+  outcome: 'Invalidated' | 'Confirmed',
+  assignableCause = '',
+) => ({
+  type: 'concludeOosInvestigation',
+  ...target(s),
+  investigationId,
+  outcome,
+  assignableCause,
+});
+
+test('a Result over its Limit is flagged and blocks Approval until an investigation is opened and closed', (t) => {
+  const lab = memory(t);
+  let s = outOfSpecification(lab);
+  const flagged = currentResult(s.tests[0])!;
+  assert.equal(flagged.conformity, 'Does not comply');
+  assert.equal(flagged.investigationId, null);
+  assert.deepEqual(
+    oosRows(lab.snapshot().samples).map((r) => [
+      r.sample.id,
+      r.test.id,
+      r.investigation?.status,
+    ]),
+    [[s.id, 'NIT-001-v1', undefined]],
+    'the Manager list shows the Result still needing an investigation',
+  );
+  const before = lab.snapshot();
+  assert.throws(
+    () => run(lab, { type: 'approve', ...target(s) }, 'manager'),
+    /Impurity A \(NIT-001\) Result does not comply.*opened and closed before Approval/,
+  );
+  assert.deepEqual(lab.snapshot(), before, 'nothing signed or saved');
+
+  s = run(lab, openOos(s), 'manager');
+  const [investigation] = s.investigations;
+  assert.deepEqual(investigation, {
+    id: 'OOS26-0001',
+    testId: 'NIT-001-v1',
+    resultSequence: 1,
+    status: 'Open',
+    openedBy: 'manager',
+    openedAt: '2026-09-10T12:00:00.000Z',
+    labErrorCheck: null,
+    outcome: null,
+    assignableCause: null,
+    closedBy: null,
+    closedAt: null,
+  });
+  assert.equal(currentResult(s.tests[0])!.investigationId, 'OOS26-0001');
+  assert.throws(
+    () => run(lab, { type: 'approve', ...target(s) }, 'manager'),
+    /OOS investigation OOS26-0001 is open/,
+  );
+  s = run(lab, labErrorCheck(s, investigation.id), 'analyst');
+  assert.throws(
+    () => run(lab, { type: 'approve', ...target(s) }, 'manager'),
+    /is open/,
+    'a recorded error check does not close the investigation',
+  );
+  assert.equal(lab.snapshot().samples[0].status, 'Awaiting approval');
+});
+
+test('Invalidated: the Result stays on record with its cause and reference, and a retest allows Approval', (t) => {
+  const lab = memory(t);
+  let s = outOfSpecification(lab);
+  s = run(lab, openOos(s), 'manager');
+  const id = s.investigations[0].id;
+  s = run(lab, labErrorCheck(s, id), 'analyst');
+  assert.deepEqual(s.investigations[0].labErrorCheck, {
+    findings: 'Standard preparation log shows a dilution error.',
+    errorIdentified: true,
+    by: 'analyst',
+    at: '2026-09-10T12:00:00.000Z',
+  });
+  for (const cause of ['', '  ', 'no'])
+    assert.throws(
+      () => run(lab, conclude(s, id, 'Invalidated', cause), 'manager'),
+      /assignable cause/,
+    );
+  s = run(
+    lab,
+    conclude(s, id, 'Invalidated', 'Standard diluted twice (prep log p. 14).'),
+    'manager',
+  );
+  assert.deepEqual(
+    [
+      s.investigations[0].status,
+      s.investigations[0].outcome,
+      s.investigations[0].assignableCause,
+      s.investigations[0].closedBy,
+    ],
+    [
+      'Closed',
+      'Invalidated',
+      'Standard diluted twice (prep log p. 14).',
+      'manager',
+    ],
+  );
+  const invalidated = s.tests[0].results[0];
+  assert.equal(invalidated.status, 'invalidated');
+  assert.equal(invalidated.value, 30);
+  assert.equal(
+    investigationOf(s, invalidated)?.assignableCause,
+    'Standard diluted twice (prep log p. 14).',
+  );
+  assert.equal(currentResult(s.tests[0]), undefined, 'a retest is required');
+  assert.throws(
+    () => run(lab, { type: 'approve', ...target(s) }, 'manager'),
+    /retest Result is required on Impurity A \(NIT-001\)/,
+  );
+  assert.throws(
+    () => run(lab, openOos(s), 'manager'),
+    /current Result/,
+    'an invalidated Result is not investigated again',
+  );
+
+  s = run(
+    lab,
+    { type: 'return', ...target(s), comment: 'Retest NIT-001 per OOS26-0001.' },
+    'manager',
+  );
+  // The retest is a new Result on the same Test; no correction reason is
+  // needed because nothing current is being replaced.
+  s = run(lab, result(s, 'NIT-001-v1', 12.4), 'analyst');
+  assert.deepEqual(
+    s.tests[0].results.map((r) => [
+      r.sequence,
+      r.status,
+      r.value,
+      r.conformity,
+      r.investigationId,
+    ]),
+    [
+      [1, 'invalidated', 30, 'Does not comply', 'OOS26-0001'],
+      [2, 'current', 12.4, 'Complies', null],
+    ],
+  );
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  assert.equal(s.status, 'Approved');
+  // Never deleted: the Invalidated result is still in the approved record.
+  const approved = lab.snapshot().samples[0];
+  assert.equal(approved.tests[0].results[0].status, 'invalidated');
+  assert.equal(approved.investigations.length, 1);
+  assert.deepEqual(
+    oosRows(lab.snapshot().samples).map((r) => [
+      r.result.sequence,
+      r.investigation?.outcome,
+    ]),
+    [[1, 'Invalidated']],
+  );
+});
+
+test('Confirmed: Approval is allowed with the Result still Does not comply and linked to its investigation', (t) => {
+  const lab = memory(t);
+  let s = outOfSpecification(lab);
+  s = run(lab, openOos(s), 'manager');
+  const id = s.investigations[0].id;
+  s = run(
+    lab,
+    {
+      ...labErrorCheck(s, id),
+      findings: 'No laboratory error found.',
+      errorIdentified: false,
+    },
+    'analyst',
+  );
+  assert.throws(
+    () => run(lab, conclude(s, id, 'Confirmed', 'Some cause'), 'manager'),
+    /confirmed OOS has no assignable cause/,
+  );
+  s = run(lab, conclude(s, id, 'Confirmed'), 'manager');
+  assert.deepEqual(
+    [
+      s.investigations[0].status,
+      s.investigations[0].outcome,
+      s.investigations[0].assignableCause,
+    ],
+    ['Closed', 'Confirmed', null],
+  );
+  assert.equal(oosApprovalBlocker(s), null);
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  assert.equal(s.status, 'Approved');
+  const current = currentResult(s.tests[0])!;
+  assert.equal(current.conformity, 'Does not comply');
+  assert.equal(current.investigationId, id);
+  assert.equal(investigationOf(s, current)?.outcome, 'Confirmed');
+});
+
+test('OOS commands check roles, the assigned analyst and the order of the investigation', (t) => {
+  const lab = memory(t);
+  let s = outOfSpecification(lab);
+  const refused = (command: object, actor: string, pattern: RegExp) => {
+    const before = lab.snapshot();
+    assert.throws(() => run(lab, command, actor), pattern);
+    assert.deepEqual(lab.snapshot(), before, 'nothing applied or audited');
+  };
+  for (const actor of ['coordinator', 'analyst'])
+    refused(openOos(s), actor, /requires the manager role/);
+  refused(openOos(s, 'NIT-003-v1'), 'manager', /does not comply/);
+  refused(openOos(s, 'NIT-999'), 'manager', /Test not found/);
+  s = run(lab, openOos(s), 'manager');
+  const id = s.investigations[0].id;
+  refused(openOos(s), 'manager', /already has OOS investigation OOS26-0001/);
+  refused(
+    conclude(s, id, 'Confirmed'),
+    'manager',
+    /laboratory error check before/,
+  );
+  refused(labErrorCheck(s, id), 'manager', /requires the analyst role/);
+  refused(labErrorCheck(s, id), 'analyst-2', /assigned analyst/);
+  refused(labErrorCheck(s, 'OOS26-0099'), 'analyst', /not found/);
+  refused({ ...labErrorCheck(s, id), findings: ' ' }, 'analyst', /findings/);
+  s = run(lab, labErrorCheck(s, id), 'analyst');
+  refused(labErrorCheck(s, id), 'analyst', /already recorded/);
+  for (const actor of ['coordinator', 'analyst'])
+    refused(conclude(s, id, 'Confirmed'), actor, /requires the manager role/);
+  refused(
+    { ...conclude(s, id, 'Confirmed'), outcome: 'Withdrawn' },
+    'manager',
+    /outcome/,
+  );
+  s = run(lab, conclude(s, id, 'Confirmed'), 'manager');
+  refused(
+    conclude(s, id, 'Invalidated', 'Late cause'),
+    'manager',
+    /already closed/,
+  );
+  refused(labErrorCheck(s, id), 'analyst', /already closed/);
+});
+
+test('a Result under investigation cannot be corrected around it', (t) => {
+  const lab = memory(t);
+  let s = assigned(lab);
+  s = run(lab, result(s, 'NIT-001-v1', 30), 'analyst');
+  s = run(lab, openOos(s), 'manager');
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 3, 'Re-integrated'), 'analyst'),
+    /OOS investigation OOS26-0001 is open on this Result/,
+  );
+  s = run(lab, labErrorCheck(s, 'OOS26-0001'), 'analyst');
+  s = run(lab, conclude(s, 'OOS26-0001', 'Confirmed'), 'manager');
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 3, 'Re-integrated'), 'analyst'),
+    /confirmed OOS \(OOS26-0001\) and cannot be corrected/,
+  );
+  // The other Test is unaffected, and a second out-of-specification Result
+  // gets its own investigation number.
+  s = run(lab, result(s, 'NIT-003-v1', 120), 'analyst');
+  s = run(lab, openOos(s, 'NIT-003-v1'), 'manager');
+  assert.deepEqual(
+    s.investigations.map((i) => [i.id, i.testId, i.status]),
+    [
+      ['OOS26-0001', 'NIT-001-v1', 'Closed'],
+      ['OOS26-0002', 'NIT-003-v1', 'Open'],
+    ],
+  );
+});
+
+test('opening, checking and concluding an investigation audit each change', (t) => {
+  const lab = memory(t);
+  let s = outOfSpecification(lab);
+  const record = 'OOS investigation OOS26-0001';
+  const at = '2026-09-10T12:00:00.000Z';
+  const opened = audited(lab, openOos(s), 'manager');
+  assert.deepEqual(opened.changes, [
+    [record, 'testId', null, 'NIT-001-v1', null],
+    [record, 'resultSequence', null, 1, null],
+    [record, 'status', null, 'Open', null],
+    [record, 'openedBy', null, 'manager', null],
+    [record, 'openedAt', null, at, null],
+    [
+      'Test 26-00001/NIT-001-v1',
+      'result.investigationId',
+      null,
+      'OOS26-0001',
+      null,
+    ],
+  ]);
+  s = opened.outcome.samples[0];
+  const checked = audited(lab, labErrorCheck(s, 'OOS26-0001'), 'analyst');
+  assert.deepEqual(checked.changes, [
+    [
+      record,
+      'labErrorCheck.findings',
+      null,
+      'Standard preparation log shows a dilution error.',
+      null,
+    ],
+    [record, 'labErrorCheck.errorIdentified', null, true, null],
+    [record, 'labErrorCheck.by', null, 'analyst', null],
+    [record, 'labErrorCheck.at', null, at, null],
+  ]);
+  s = checked.outcome.samples[0];
+  const cause = 'Standard diluted twice.';
+  const concluded = audited(
+    lab,
+    conclude(s, 'OOS26-0001', 'Invalidated', cause),
+    'manager',
+  );
+  assert.deepEqual(concluded.changes, [
+    [record, 'outcome', null, 'Invalidated', null],
+    [record, 'assignableCause', null, cause, null],
+    [record, 'status', 'Open', 'Closed', null],
+    [record, 'closedBy', null, 'manager', null],
+    [record, 'closedAt', null, at, null],
+    [
+      'Test 26-00001/NIT-001-v1',
+      'result.status',
+      'current',
+      'invalidated',
+      cause,
+    ],
+  ]);
+  assert.ok(
+    lab.auditTrail(s.id).some((e) => e.recordType === 'OOS investigation'),
+    "investigation entries join the Sample's history",
+  );
 });
