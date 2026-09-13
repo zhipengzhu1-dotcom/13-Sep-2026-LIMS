@@ -1,74 +1,120 @@
 import { z } from 'zod';
 
+/** Lab users as the workspace shows them. Sign-in accounts (with password
+ * hashes, server side only) are seeded from this list in src/accounts. */
 export const people = [
   { id: 'coordinator', name: 'Morgan Lee', role: 'coordinator' },
   { id: 'analyst', name: 'Alex Chen', role: 'analyst' },
   { id: 'analyst-2', name: 'Sam Rivera', role: 'analyst' },
-  { id: 'reviewer', name: 'Taylor Brooks', role: 'reviewer' },
+  { id: 'manager', name: 'Taylor Brooks', role: 'manager' },
 ] as const;
 export type Actor = (typeof people)[number];
-export const methods = [
-  {
-    id: 'assay',
-    name: 'Assay',
-    method: 'DEMO-HPLC-001 · v1',
-    unit: '%',
-    min: 98,
-    max: 102,
-    technique: 'HPLC',
-  },
-  {
-    id: 'water',
-    name: 'Water content',
-    method: 'DEMO-KF-002 · v1',
-    unit: '%',
-    min: 0,
-    max: 0.5,
-    technique: 'Karl Fischer',
-  },
-  {
-    id: 'impurity',
-    name: 'Total impurities',
-    method: 'DEMO-HPLC-003 · v1',
-    unit: '%',
-    min: 0,
-    max: 1,
-    technique: 'HPLC',
-  },
+export type Role = Actor['role'];
+
+export const materialTypes = ['raw material', 'finished product'] as const;
+export type MaterialType = (typeof materialTypes)[number];
+export type ReportingUnit = 'ppm' | 'ng/day';
+
+/** The reporting unit follows the Material type and is never entered. */
+export function reportingUnit(materialType: MaterialType): ReportingUnit {
+  return materialType === 'finished product' ? 'ng/day' : 'ppm';
+}
+
+/** Illustrative placeholders; the lab's real Analytes replace them. */
+export const analytes = [
+  { id: 'impurity-a', name: 'Impurity A' },
+  { id: 'impurity-b', name: 'Impurity B' },
+  { id: 'impurity-c', name: 'Impurity C' },
 ] as const;
+export type Analyte = (typeof analytes)[number];
+
 export type Method = {
+  /** Code and version together, so a later version is a separate Method. */
   id: string;
-  name: string;
-  method: string;
-  unit: string;
-  min: number;
-  max: number;
+  code: string;
+  version: number;
+  analyteId: Analyte['id'];
   technique: string;
+  materialTypes: readonly MaterialType[];
 };
+
+const method = (code: string, analyteId: Analyte['id']): Method => ({
+  id: `${code}-v1`,
+  code,
+  version: 1,
+  analyteId,
+  technique: 'LC-MS/MS',
+  materialTypes,
+});
+/** Illustrative placeholders; each Method measures exactly one Analyte. */
+export const methods: readonly Method[] = [
+  method('NIT-001', 'impurity-a'),
+  method('NIT-002', 'impurity-a'),
+  method('NIT-003', 'impurity-b'),
+  method('NIT-004', 'impurity-b'),
+  method('NIT-005', 'impurity-c'),
+];
+
 export type Result = {
   value: number;
-  reference: string;
-  analyst: string;
-  recordedAt: string;
+  unit: ReportingUnit;
+  enteredBy: string;
+  enteredAt: string;
+  /** Empty for a first Result; required when it replaces the current one. */
   reason: string;
-  inSpec: boolean;
 };
-export type Test = Method & { results: Result[] };
+
+/** One Method applied to one Sample. The Method's identity and Analyte are
+ * copied at receipt, so a later Method change never rewrites the Test. */
+export type Test = {
+  id: string;
+  methodId: string;
+  methodCode: string;
+  methodVersion: number;
+  analyteId: string;
+  analyteName: string;
+  technique: string;
+  unit: ReportingUnit;
+  /** Every Result ever entered, oldest first; the last one is current. */
+  results: Result[];
+};
+
+export const sampleStatuses = [
+  'Received',
+  'In progress',
+  'Awaiting approval',
+  'Returned',
+  'Approved',
+] as const;
+export type SampleStatus = (typeof sampleStatuses)[number];
+
+export type Submission = {
+  id: string;
+  client: string;
+  receivedAt: string;
+  receivedBy: string;
+  sampleIds: string[];
+};
+
 export type Sample = {
   id: string;
-  product: string;
+  submissionId: string;
   client: string;
+  product: string;
   batch: string;
+  materialType: MaterialType;
   dueDate: string;
   priority: 'Routine' | 'Urgent';
   receivedAt: string;
   receivedBy: string;
-  notes: string;
   assignee: string | null;
-  status: 'Received' | 'In progress' | 'In review' | 'Returned' | 'Approved';
+  status: SampleStatus;
+  /** The Manager's latest return, shown to the Analyst until resubmission. */
+  lastReturn: { comment: string; by: string; at: string } | null;
   tests: Test[];
   revision: number;
 };
+
 export type Activity = {
   id: number;
   sampleId: string;
@@ -77,12 +123,16 @@ export type Activity = {
   at: string;
   detail: string;
 };
+
 export type Snapshot = {
+  submissions: Submission[];
   samples: Sample[];
   activity: Activity[];
   people: typeof people;
+  analytes: typeof analytes;
   methods: typeof methods;
 };
+
 /**
  * A UUIDv7. Time-ordered, so successive keys land near each other in the
  * `commands` primary-key B-tree — RFC 9562 §6.10. `crypto.randomUUID()` is v4
@@ -110,34 +160,39 @@ const date = z
     const d = new Date(v + 'T00:00:00Z');
     return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
   }, 'Enter a valid date.');
+
+export const sampleReceiptSchema = z.object({
+  product: text,
+  batch: text,
+  materialType: z.enum(materialTypes),
+  methodIds: z.array(text).min(1).max(20),
+  dueDate: date,
+  priority: z.enum(['Routine', 'Urgent']),
+});
+export type SampleReceipt = z.infer<typeof sampleReceiptSchema>;
+
 export const commandSchema = z.discriminatedUnion('type', [
   z.object({
     commandId,
-    type: z.literal('receive'),
-    product: text,
+    type: z.literal('receiveSubmission'),
     client: text,
-    batch: text,
-    dueDate: date,
-    priority: z.enum(['Routine', 'Urgent']),
-    notes: z.string().trim().max(2000),
-    methodIds: z.array(text).min(1).max(20),
+    samples: z.array(sampleReceiptSchema).min(1).max(50),
   }),
   z.object({ commandId, type: z.literal('assign'), ...target, assignee: text }),
   z.object({
     commandId,
-    type: z.literal('record'),
+    type: z.literal('enterResult'),
     ...target,
     testId: text,
-    value: z.number().finite(),
-    reference: text,
+    value: z.number().finite().nonnegative(),
     reason: z.string().trim().max(1000),
   }),
-  z.object({ commandId, type: z.literal('submit'), ...target }),
+  z.object({ commandId, type: z.literal('submitForApproval'), ...target }),
+  z.object({ commandId, type: z.literal('approve'), ...target }),
   z.object({
     commandId,
-    type: z.literal('review'),
+    type: z.literal('return'),
     ...target,
-    decision: z.enum(['approve', 'return']),
     comment: z.string().trim().min(3).max(2000),
   }),
 ]);
@@ -148,15 +203,30 @@ export type Command = z.infer<typeof commandSchema>;
  * reused a key for a genuinely second laboratory act, silent success would lose
  * that act with no trace; an explicit "already recorded" is the moment the
  * analyst notices and records it properly.
+ *
+ * `samples` holds every Sample the command touched, in order: one for a
+ * Sample command, all of them for a receipt, which also returns its
+ * Submission.
  */
-export type CommandOutcome =
-  | { outcome: 'applied'; sample: Sample }
+export type CommandOutcome = {
+  submission: Submission | null;
+  samples: Sample[];
+} & (
+  | { outcome: 'applied' }
   | {
       outcome: 'replayed';
-      sample: Sample;
       originallyAppliedAt: string;
       originalActorId: string;
-    };
-export function hasException(sample: Sample) {
-  return sample.tests.some((t) => t.results.some((r) => !r.inSpec));
+    }
+);
+
+/**
+ * Separation of duties (ADR-0003): whoever entered any Result on a Sample,
+ * current or earlier, may not give it Approval. Shared so the core enforces it
+ * and the workspace can explain a disabled Approve.
+ */
+export function enteredResultOn(sample: Sample, actorId: string) {
+  return sample.tests.some((t) =>
+    t.results.some((r) => r.enteredBy === actorId),
+  );
 }

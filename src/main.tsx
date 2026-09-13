@@ -8,33 +8,44 @@ import React, {
 } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  hasException,
+  enteredResultOn,
+  materialTypes,
   newCommandId,
+  reportingUnit,
   type Command,
+  type MaterialType,
   type Snapshot,
   type Sample,
+  type SampleReceipt,
   type Test,
 } from './laboratory/contracts';
 import './styles.css';
 
-type View = 'Samples' | 'My work' | 'Review queue' | 'Methods' | 'Activity';
+type View =
+  | 'Receiving'
+  | 'Samples'
+  | 'My work'
+  | 'Approval queue'
+  | 'Methods'
+  | 'Activity';
+const QUEUES: View[] = ['Receiving', 'Samples', 'My work', 'Approval queue'];
 
 /** A command as a screen writes it. The key is minted by `execute`, not by the
  * caller, so no screen can reuse one across two separate laboratory acts. */
 type Draft<C = Command> = C extends unknown ? Omit<C, 'commandId'> : never;
 type Execute = (command: Draft) => Promise<boolean>;
 
-/** Each role's own queue is a permission, not a preference: a coordinator
- * schedules and needs the whole register plus the review queue to oversee
- * it; an analyst only ever acts on samples assigned to them; a reviewer
- * only ever acts on samples awaiting their review. Neither can act outside
- * their queue today (the server enforces this — see `requireRole` and
+/** Each role's own queue is a permission, not a preference: a Coordinator
+ * receives Submissions, assigns them from Receiving and oversees the whole
+ * register; an Analyst only ever acts on Samples assigned to them; a Manager
+ * only ever acts on Samples awaiting approval. No one can act outside their
+ * queue (the server enforces this — see `requireRole` and
  * `requireAssignedAnalyst` in laboratory.ts), so there is no reason to show
  * them a queue they cannot use. */
 function viewsForRole(role: string | undefined): View[] {
   if (role === 'analyst') return ['My work', 'Methods', 'Activity'];
-  if (role === 'reviewer') return ['Review queue', 'Methods', 'Activity'];
-  return ['Samples', 'My work', 'Review queue', 'Methods', 'Activity'];
+  if (role === 'manager') return ['Approval queue', 'Methods', 'Activity'];
+  return ['Receiving', 'Samples', 'Methods', 'Activity'];
 }
 function defaultViewForRole(role: string | undefined): View {
   return viewsForRole(role)[0];
@@ -44,12 +55,16 @@ function defaultViewForRole(role: string | undefined): View {
  * the filter bar are taken from this set, so a role never sees totals for
  * samples outside its own queue. */
 function baseSet(view: View, samples: Sample[], actor: string) {
+  if (view === 'Receiving')
+    return samples.filter((s) => s.status === 'Received');
   if (view === 'My work')
     return samples.filter(
-      (s) => s.assignee === actor && s.status !== 'Approved',
+      (s) =>
+        s.assignee === actor &&
+        (s.status === 'In progress' || s.status === 'Returned'),
     );
-  if (view === 'Review queue')
-    return samples.filter((s) => s.status === 'In review');
+  if (view === 'Approval queue')
+    return samples.filter((s) => s.status === 'Awaiting approval');
   return samples;
 }
 
@@ -58,8 +73,7 @@ const FILTERS = [
   'Received',
   'In progress',
   'Returned',
-  'In review',
-  'Investigate',
+  'Awaiting approval',
   'Approved',
   'All',
 ] as const;
@@ -67,7 +81,6 @@ type Filter = (typeof FILTERS)[number];
 function matches(s: Sample, f: Filter) {
   if (f === 'All') return true;
   if (f === 'Active') return s.status !== 'Approved';
-  if (f === 'Investigate') return hasException(s);
   // A returned sample is back at the analytical bench, so it is still work in
   // progress; "Returned" narrows to just those.
   if (f === 'In progress')
@@ -79,7 +92,7 @@ const STATUS_ORDER: Sample['status'][] = [
   'Received',
   'In progress',
   'Returned',
-  'In review',
+  'Awaiting approval',
   'Approved',
 ];
 type SortKey = 'due' | 'id' | 'status';
@@ -116,11 +129,18 @@ const initials = (name: string | undefined) =>
     ?.split(' ')
     .map((n) => n[0])
     .join('') ?? '—';
-const statusClass = (s: Sample) =>
-  hasException(s) ? 'investigate' : s.status.toLowerCase().replaceAll(' ', '-');
+const statusClass = (s: Sample) => s.status.toLowerCase().replaceAll(' ', '-');
+const personName = (data: Snapshot, id: string | null) =>
+  data.people.find((p) => p.id === id)?.name;
 
 function Icon({ name }: { name: string }) {
   const paths: Record<string, React.ReactNode> = {
+    Receiving: (
+      <>
+        <path d="M3 13h5l1.5 3h5L16 13h5" />
+        <path d="M5 13 7 5h10l2 8v6H5v-6Z" />
+      </>
+    ),
     Samples: (
       <>
         <rect x="3" y="4" width="18" height="17" rx="2" />
@@ -133,7 +153,7 @@ function Icon({ name }: { name: string }) {
         <path d="m8 14 3 3 5-6" />
       </>
     ),
-    'Review queue': (
+    'Approval queue': (
       <>
         <path d="m12 2 8 4v6c0 5-8 10-8 10S4 17 4 12V6l8-4Z" />
         <path d="m8 12 3 3 5-6" />
@@ -170,13 +190,8 @@ function Icon({ name }: { name: string }) {
 }
 
 function Status({ sample }: { sample: Sample }) {
-  // An out-of-spec result reads as "Investigate", not "Exception" — it needs
-  // a second look, not a verdict of failure. It has its own colour, distinct
-  // from "Returned", so the two don't read as the same thing.
   return (
-    <span className={'status ' + statusClass(sample)}>
-      {hasException(sample) ? 'Investigate' : sample.status}
-    </span>
+    <span className={'status ' + statusClass(sample)}>{sample.status}</span>
   );
 }
 
@@ -195,39 +210,6 @@ function Due({ sample }: { sample: Sample }) {
     <span className={'due ' + tone} title={longDate(sample.dueDate)}>
       <span className="due-date">{shortDate(sample.dueDate)}</span>
       {label && <span className="due-left">{label}</span>}
-    </span>
-  );
-}
-
-/** Where a value sits inside its acceptance window. The window is drawn at a
- * fixed place on the track so every row reads the same way; values outside
- * it are pinned to the ends. */
-function SpecGauge({ test, value }: { test: Test; value?: number }) {
-  const span = test.max - test.min || 1;
-  const lo = test.min - span * 0.25;
-  const hi = test.max + span * 0.25;
-  const at =
-    value === undefined
-      ? null
-      : Math.min(100, Math.max(0, ((value - lo) / (hi - lo)) * 100));
-  const inSpec = value !== undefined && value >= test.min && value <= test.max;
-  return (
-    <span
-      className="gauge"
-      role="img"
-      aria-label={
-        value === undefined
-          ? `Specification ${test.min} to ${test.max} ${test.unit}, not recorded`
-          : `${value} ${test.unit}, ${inSpec ? 'within' : 'outside'} ${test.min} to ${test.max}`
-      }
-    >
-      <span className="gauge-window" />
-      {at !== null && (
-        <span
-          className={'gauge-mark' + (inSpec ? '' : ' out')}
-          style={{ left: `${at}%` }}
-        />
-      )}
     </span>
   );
 }
@@ -343,7 +325,7 @@ function App() {
   const [user, setUser] = useState<SessionUser | null | undefined>(undefined);
   const [signInMessage, setSignInMessage] = useState('');
   const actor = user?.id ?? '';
-  const [view, setView] = useState<View>('Samples');
+  const [view, setView] = useState<View>('Receiving');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('Active');
   const [sort, setSort] = useState<{ key: SortKey; asc: boolean }>({
@@ -489,11 +471,12 @@ function App() {
       setNotice(
         result.outcome === 'replayed'
           ? `Already recorded at ${stamp(result.originallyAppliedAt)}. Nothing was saved twice.`
-          : command.type === 'receive'
-            ? `${result.sample.id} received.`
-            : `${result.sample.id} saved to the laboratory record.`,
+          : command.type === 'receiveSubmission'
+            ? `${result.submission.id} received with ${result.samples.length === 1 ? 'Sample' : 'Samples'} ${result.samples.map((s: Sample) => s.id).join(', ')}.`
+            : `${result.samples[0].id} saved to the laboratory record.`,
       );
-      if (command.type === 'receive') setSelected(result.sample.id);
+      if (command.type === 'receiveSubmission')
+        setSelected(result.samples[0].id);
       return true;
     } catch (e) {
       setError(
@@ -507,7 +490,7 @@ function App() {
 
   const person = user ?? undefined;
   const roleViews = viewsForRole(person?.role);
-  const isQueue = ['Samples', 'My work', 'Review queue'].includes(view);
+  const isQueue = QUEUES.includes(view);
   const base = useMemo(
     () => (data ? baseSet(view, data.samples, actor) : []),
     [data, view, actor],
@@ -517,7 +500,9 @@ function App() {
     const rows = base.filter(
       (s) =>
         matches(s, filter) &&
-        `${s.id} ${s.product} ${s.client} ${s.batch}`.toLowerCase().includes(q),
+        `${s.id} ${s.submissionId} ${s.product} ${s.client} ${s.batch}`
+          .toLowerCase()
+          .includes(q),
     );
     const dir = sort.asc ? 1 : -1;
     return rows.sort((a, b) => {
@@ -536,9 +521,10 @@ function App() {
     });
   }, [base, filter, search, sort]);
   const sample = data?.samples.find((s) => s.id === selected);
-  const reviewCount =
-    data?.samples.filter((s) => s.status === 'In review').length ?? 0;
-  const myCount = data ? baseSet('My work', data.samples, actor).length : 0;
+  const queueCount = (v: View) =>
+    data && v !== 'Samples' && QUEUES.includes(v)
+      ? baseSet(v, data.samples, actor).length
+      : 0;
 
   function navigate(next: View) {
     setView(next);
@@ -629,13 +615,8 @@ function App() {
             onClick={() => navigate(v)}
           >
             <Icon name={v} />
-            <span>{v === 'Review queue' ? 'Review' : v}</span>
-            {v === 'Review queue' && reviewCount > 0 && (
-              <b className="rail-count">{reviewCount}</b>
-            )}
-            {v === 'My work' && myCount > 0 && (
-              <b className="rail-count">{myCount}</b>
-            )}
+            <span>{v === 'Approval queue' ? 'Approval' : v}</span>
+            {queueCount(v) > 0 && <b className="rail-count">{queueCount(v)}</b>}
           </button>
         ))}
       </nav>
@@ -670,7 +651,7 @@ function App() {
               <input
                 ref={searchRef}
                 aria-label="Search samples"
-                placeholder="Sample, product, client or batch"
+                placeholder="Sample, Submission, product, Client or batch"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={(e) => {
@@ -696,7 +677,7 @@ function App() {
                   setIntake(true);
                 }}
               >
-                Receive sample
+                Receive submission
               </button>
             )}
             <div className="user" aria-label="Signed-in user">
@@ -795,7 +776,7 @@ function App() {
                         Due
                       </SortHead>
                       <th>Tests</th>
-                      <th>Product</th>
+                      <th>Product · Material type</th>
                       <th>Client · batch</th>
                       <th>Analyst</th>
                     </tr>
@@ -841,17 +822,14 @@ function App() {
                           </td>
                           <td>
                             <span className="pips" aria-hidden="true">
-                              {s.tests.map((t) => {
-                                const r = t.results.at(-1);
-                                return (
-                                  <i
-                                    key={t.id}
-                                    className={
-                                      r ? (r.inSpec ? 'pass' : 'fail') : ''
-                                    }
-                                  />
-                                );
-                              })}
+                              {s.tests.map((t) => (
+                                <i
+                                  key={t.id}
+                                  className={
+                                    t.results.length ? 'entered' : undefined
+                                  }
+                                />
+                              ))}
                             </span>
                             <span className="num">
                               {s.tests.filter((t) => t.results.length).length}/
@@ -860,6 +838,7 @@ function App() {
                           </td>
                           <td className="c-product" title={s.product}>
                             {s.product}
+                            <span className="batch">{s.materialType}</span>
                           </td>
                           <td className="c-client">
                             {s.client}
@@ -887,12 +866,12 @@ function App() {
                     {base.length
                       ? 'No samples match this filter. Choose All or clear the search.'
                       : view === 'My work'
-                        ? person?.role === 'analyst'
-                          ? 'Nothing is assigned to you right now.'
-                          : 'Switch to an analyst to see their assignments.'
-                        : view === 'Review queue'
-                          ? 'No results are waiting for review.'
-                          : 'No samples yet. Receive one to start.'}
+                        ? 'Nothing assigned to you needs work right now.'
+                        : view === 'Approval queue'
+                          ? 'No Samples are awaiting approval.'
+                          : view === 'Receiving'
+                            ? 'Every received Sample is assigned. Receive a Submission to add more.'
+                            : 'No Samples yet. Receive a Submission to start.'}
                   </div>
                 )}
               </div>
@@ -926,30 +905,34 @@ function App() {
             <table className="grid">
               <thead>
                 <tr>
-                  <th>Test</th>
                   <th>Method</th>
+                  <th>Version</th>
+                  <th>Analyte</th>
                   <th>Technique</th>
-                  <th className="r">Lower limit</th>
-                  <th className="r">Upper limit</th>
-                  <th>Unit</th>
+                  <th>Material types · reporting unit</th>
                 </tr>
               </thead>
               <tbody>
                 {data.methods.map((m) => (
                   <tr key={m.id}>
-                    <td className="strong">{m.name}</td>
-                    <td className="num">{m.method}</td>
+                    <td className="strong num">{m.code}</td>
+                    <td className="num">v{m.version}</td>
+                    <td>
+                      {data.analytes.find((a) => a.id === m.analyteId)?.name}
+                    </td>
                     <td>{m.technique}</td>
-                    <td className="num r">{m.min}</td>
-                    <td className="num r">{m.max}</td>
-                    <td>{m.unit}</td>
+                    <td>
+                      {m.materialTypes
+                        .map((t) => `${t} (${reportingUnit(t)})`)
+                        .join(', ')}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
             <p className="footnote">
-              Limits are inclusive and copied to each sample when it is
-              received. Illustrative values only.
+              Each Test copies its Method code, version and Analyte when the
+              Sample is received. Illustrative Methods only.
             </p>
           </div>
         ) : (
@@ -996,7 +979,7 @@ function App() {
       </div>
       {intake && data && (
         <Modal
-          title="Receive sample"
+          title="Receive submission"
           onClose={() => {
             if (!busy) {
               setIntake(false);
@@ -1093,95 +1076,167 @@ function Intake({
   error: string;
   onSubmit: (command: Draft) => Promise<void>;
 }) {
+  // Each Sample row keeps a stable key, so removing one never shifts the
+  // values typed into the others.
+  const nextKey = useRef(1);
+  const [rows, setRows] = useState([0]);
+  const [types, setTypes] = useState<Record<number, MaterialType>>({});
+  const [missing, setMissing] = useState('');
   return (
     <form
       className="form"
       onSubmit={(e) => {
         e.preventDefault();
         const f = new FormData(e.currentTarget);
+        const samples: SampleReceipt[] = rows.map((key) => ({
+          product: String(f.get(`product-${key}`)),
+          batch: String(f.get(`batch-${key}`)),
+          materialType: String(f.get(`materialType-${key}`)) as MaterialType,
+          methodIds: f.getAll(`methods-${key}`).map(String),
+          dueDate: String(f.get(`dueDate-${key}`)),
+          priority: f.get(`priority-${key}`) as 'Routine' | 'Urgent',
+        }));
+        const empty = samples.findIndex((s) => !s.methodIds.length);
+        if (empty !== -1) {
+          setMissing(`Request at least one Method for Sample ${empty + 1}.`);
+          return;
+        }
+        setMissing('');
         void onSubmit({
-          type: 'receive',
-          product: String(f.get('product')),
+          type: 'receiveSubmission',
           client: String(f.get('client')),
-          batch: String(f.get('batch')),
-          dueDate: String(f.get('dueDate')),
-          priority: f.get('priority') as 'Routine' | 'Urgent',
-          notes: String(f.get('notes')),
-          methodIds: f.getAll('methods').map(String),
+          samples,
         });
       }}
     >
       <div className="fields">
         <label className="span-2">
-          Product or material
+          Client
           <input
-            name="product"
+            name="client"
             required
             maxLength={200}
             autoFocus
-            placeholder="Acetaminophen tablets 500 mg"
+            placeholder="Northstar Pharma"
           />
         </label>
-        <label>
-          Client
-          <input name="client" required maxLength={200} />
-        </label>
-        <label>
-          Batch or lot
-          <input name="batch" required maxLength={200} />
-        </label>
-        <label>
-          Due date
-          <input name="dueDate" type="date" required />
-        </label>
-        <fieldset className="priority">
-          <legend>Priority</legend>
-          <label>
-            <input
-              type="radio"
-              name="priority"
-              value="Routine"
-              defaultChecked
-            />
-            Routine
-          </label>
-          <label>
-            <input type="radio" name="priority" value="Urgent" />
-            Urgent
-          </label>
-        </fieldset>
       </div>
-      <fieldset className="tests">
-        <legend>Requested tests</legend>
-        {data.methods.map((m) => (
-          <label key={m.id}>
-            <input type="checkbox" name="methods" value={m.id} defaultChecked />
-            <span className="strong">{m.name}</span>
-            <span className="dim num">{m.method}</span>
-            <span className="num r">
-              {m.min}–{m.max} {m.unit}
-            </span>
-          </label>
-        ))}
-      </fieldset>
-      <label>
-        Receipt notes
-        <textarea
-          name="notes"
-          rows={2}
-          maxLength={2000}
-          placeholder="Condition, storage location, observations"
-        />
-      </label>
-      {error && (
+      {rows.map((key, i) => {
+        const unit = reportingUnit(types[key] ?? 'finished product');
+        return (
+          <fieldset key={key} className="intake-sample">
+            <legend>
+              Sample {i + 1}
+              {rows.length > 1 && (
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() => setRows(rows.filter((k) => k !== key))}
+                >
+                  Remove
+                </button>
+              )}
+            </legend>
+            <div className="fields">
+              <label className="span-2">
+                Product
+                <input
+                  name={`product-${key}`}
+                  required
+                  maxLength={200}
+                  placeholder="Losartan potassium tablets 50 mg"
+                />
+              </label>
+              <label>
+                Batch or lot
+                <input name={`batch-${key}`} required maxLength={200} />
+              </label>
+              <label>
+                Material type
+                <select
+                  name={`materialType-${key}`}
+                  value={types[key] ?? 'finished product'}
+                  onChange={(e) =>
+                    setTypes({
+                      ...types,
+                      [key]: e.target.value as MaterialType,
+                    })
+                  }
+                >
+                  {materialTypes.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Due date
+                <input name={`dueDate-${key}`} type="date" required />
+              </label>
+              <fieldset className="priority">
+                <legend>Priority</legend>
+                <label>
+                  <input
+                    type="radio"
+                    name={`priority-${key}`}
+                    value="Routine"
+                    defaultChecked
+                  />
+                  Routine
+                </label>
+                <label>
+                  <input type="radio" name={`priority-${key}`} value="Urgent" />
+                  Urgent
+                </label>
+              </fieldset>
+            </div>
+            <fieldset className="tests">
+              <legend>Requested Methods · reported in {unit}</legend>
+              {data.methods
+                .filter((m) =>
+                  m.materialTypes.includes(types[key] ?? 'finished product'),
+                )
+                .map((m) => (
+                  <label key={m.id}>
+                    <input
+                      type="checkbox"
+                      name={`methods-${key}`}
+                      value={m.id}
+                    />
+                    <span className="strong num">
+                      {m.code} v{m.version}
+                    </span>
+                    <span className="dim">
+                      {data.analytes.find((a) => a.id === m.analyteId)?.name}
+                    </span>
+                    <span className="num r">{m.technique}</span>
+                  </label>
+                ))}
+            </fieldset>
+          </fieldset>
+        );
+      })}
+      <div>
+        <button
+          type="button"
+          className="btn sm"
+          onClick={() => setRows([...rows, nextKey.current++])}
+        >
+          Add another Sample
+        </button>
+      </div>
+      {(missing || error) && (
         <div role="alert" className="flash error inline">
-          {error}
+          {missing || error}
         </div>
       )}
       <div className="form-foot">
-        <span className="dim">A laboratory number is assigned on save.</span>
+        <span className="dim">
+          Submission and Sample IDs are assigned on save.
+        </span>
         <button className="btn primary" disabled={disabled}>
-          Receive sample
+          Receive submission
         </button>
       </div>
     </form>
@@ -1208,10 +1263,13 @@ function SamplePanel({
   const person = data.people.find((p) => p.id === actor)!;
   const canRecord =
     s.assignee === actor && ['In progress', 'Returned'].includes(s.status);
-  const canReview = person.role === 'reviewer' && s.status === 'In review';
+  const canDecide =
+    person.role === 'manager' && s.status === 'Awaiting approval';
+  // Separation of duties (ADR-0003): the core refuses this Approval too.
+  const ownResults = enteredResultOn(s, actor);
   const canAssign =
     person.role === 'coordinator' &&
-    !['Approved', 'In review'].includes(s.status);
+    !['Approved', 'Awaiting approval'].includes(s.status);
   const events = data.activity.filter((a) => a.sampleId === s.id);
   const recorded = s.tests.filter((t) => t.results.length).length;
   return (
@@ -1237,6 +1295,14 @@ function SamplePanel({
           <div>
             <dt>Client</dt>
             <dd>{s.client}</dd>
+          </div>
+          <div>
+            <dt>Submission</dt>
+            <dd className="num">{s.submissionId}</dd>
+          </div>
+          <div>
+            <dt>Material type</dt>
+            <dd>{s.materialType}</dd>
           </div>
           <div>
             <dt>Batch</dt>
@@ -1292,13 +1358,11 @@ function SamplePanel({
                   </button>
                 </form>
               ) : (
-                (data.people.find((p) => p.id === s.assignee)?.name ??
-                'Unassigned')
+                (personName(data, s.assignee) ?? 'Unassigned')
               )}
             </dd>
           </div>
         </dl>
-        {s.notes && <p className="note">{s.notes}</p>}
       </header>
       <div
         className="tabs"
@@ -1342,17 +1406,13 @@ function SamplePanel({
           <ActivityTable events={events} data={data} />
         ) : (
           <>
-            {hasException(s) && (
-              <div className="flash warn inline">
-                A current or earlier result is outside its specification.
-                Routine approval stays blocked after revision; investigation and
-                disposition happen outside this prototype.
-              </div>
-            )}
-            {s.status === 'Returned' && (
+            {s.status === 'Returned' && s.lastReturn && (
               <div className="flash returned inline">
-                <strong>Returned by review:</strong>{' '}
-                {events.find((e) => e.action === 'review')?.detail}
+                <strong>
+                  Returned by {personName(data, s.lastReturn.by)},{' '}
+                  {stamp(s.lastReturn.at)}:
+                </strong>{' '}
+                {s.lastReturn.comment}
               </div>
             )}
             <TestSheet
@@ -1377,75 +1437,76 @@ function SamplePanel({
                 disabled={busy || recorded < s.tests.length}
                 onClick={() =>
                   void execute({
-                    type: 'submit',
+                    type: 'submitForApproval',
                     sampleId: s.id,
                     revision: s.revision,
                   })
                 }
               >
-                Submit for review
+                Submit for approval
               </button>
             </>
-          ) : canReview ? (
+          ) : canDecide ? (
             <form
-              className="review"
+              className="decision"
               onSubmit={(e) => {
                 e.preventDefault();
                 const f = new FormData(e.currentTarget);
-                const decision = (
+                const choice = (
                   e.nativeEvent as SubmitEvent
                 ).submitter?.getAttribute('value');
-                void execute({
-                  type: 'review',
-                  sampleId: s.id,
-                  revision: s.revision,
-                  decision: decision === 'return' ? 'return' : 'approve',
-                  comment: String(f.get('comment')),
-                });
+                void execute(
+                  choice === 'return'
+                    ? {
+                        type: 'return',
+                        sampleId: s.id,
+                        revision: s.revision,
+                        comment: String(f.get('comment')),
+                      }
+                    : { type: 'approve', sampleId: s.id, revision: s.revision },
+                );
               }}
             >
               <textarea
                 name="comment"
-                aria-label="Review comment"
-                required
-                minLength={3}
+                aria-label="Comment for the analyst"
                 maxLength={2000}
                 rows={2}
-                placeholder="Review comment: what you checked, or the correction needed"
+                placeholder="Required to return: the correction the analyst should make"
               />
-              <div className="review-actions">
+              <div className="decision-actions">
                 <button
                   className="btn"
-                  name="decision"
+                  name="choice"
                   value="return"
                   disabled={busy}
                 >
-                  Return for correction
+                  Return to analyst
                 </button>
                 <button
                   className="btn primary"
-                  name="decision"
+                  name="choice"
                   value="approve"
-                  disabled={busy || hasException(s)}
+                  disabled={busy || ownResults}
                   title={
-                    hasException(s)
-                      ? 'Out-of-specification results cannot be approved routinely'
+                    ownResults
+                      ? 'You entered a Result on this Sample, so another Manager must approve it.'
                       : undefined
                   }
                 >
-                  Approve results
+                  Approve
                 </button>
               </div>
             </form>
           ) : (
             <span className="dim">
               {s.status === 'Approved'
-                ? 'Reviewed and approved. This sample is locked.'
-                : s.status === 'In review'
-                  ? 'Waiting for independent review.'
+                ? 'Approved. This Sample is locked.'
+                : s.status === 'Awaiting approval'
+                  ? 'Awaiting Manager approval.'
                   : s.assignee
-                    ? `Results are entered by ${data.people.find((p) => p.id === s.assignee)?.name}.`
-                    : 'Assign an analyst before results can be recorded.'}
+                    ? `Results are entered by ${personName(data, s.assignee)}.`
+                    : 'Assign an analyst before Results can be entered.'}
             </span>
           )}
         </footer>
@@ -1454,22 +1515,15 @@ function SamplePanel({
   );
 }
 
-/** The one place a `record` command is built, so every entry row sends a
- * result the same way. */
-function recordDraft(
-  s: Sample,
-  t: Test,
-  value: number,
-  reference: string,
-  reason: string,
-): Draft {
+/** The one place an `enterResult` command is built, so every entry row sends
+ * a Result the same way. The unit is never sent: it follows the Material type. */
+function resultDraft(s: Sample, t: Test, value: number, reason: string): Draft {
   return {
-    type: 'record',
+    type: 'enterResult',
     sampleId: s.id,
     revision: s.revision,
     testId: t.id,
     value,
-    reference,
     reason,
   };
 }
@@ -1492,23 +1546,13 @@ function TestSheet({
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [openHistory, setOpenHistory] = useState<string | null>(null);
-  // The run reference is usually shared across a sample's tests, so a new
-  // entry starts from the most recent one used on this sample.
-  const lastReference = s.tests
-    .flatMap((t) => t.results)
-    .sort((a, b) => a.recordedAt.localeCompare(b.recordedAt))
-    .at(-1)?.reference;
   return (
     <table className="grid sheet">
       <thead>
         <tr>
           <th>Test</th>
-          <th>Specification</th>
           <th className="r">Result</th>
-          <th className="c-gauge">
-            <span className="sr-only">Position in specification</span>
-          </th>
-          <th>Recorded</th>
+          <th>Entered</th>
         </tr>
       </thead>
       {s.tests.map((t) => {
@@ -1519,33 +1563,29 @@ function TestSheet({
           <tbody key={t.id} className={editing ? 'editing' : undefined}>
             <tr>
               <td>
-                <span className="strong">{t.name}</span>
-                <span className="sub num">{t.method}</span>
-              </td>
-              <td className="num">
-                {t.min}–{t.max} {t.unit}
+                <span className="strong">{t.analyteName}</span>
+                <span className="sub num">
+                  {t.methodCode} v{t.methodVersion} · {t.technique}
+                </span>
               </td>
               <td className="r">
                 {latest ? (
-                  <span className={'value' + (latest.inSpec ? '' : ' out')}>
+                  <span className="value">
                     {latest.value}
-                    <small>{t.unit}</small>
+                    <small>{latest.unit}</small>
                   </span>
                 ) : (
-                  <span className="dim">—</span>
+                  <span className="dim">— {t.unit}</span>
                 )}
-              </td>
-              <td className="c-gauge">
-                <SpecGauge test={t} value={latest?.value} />
               </td>
               <td>
                 {latest ? (
                   <span className="rec">
                     <span>
-                      {initials(
-                        data.people.find((p) => p.id === latest.analyst)?.name,
-                      )}{' '}
-                      <span className="num">{latest.reference}</span>
+                      {initials(personName(data, latest.enteredBy))}{' '}
+                      <time className="num" dateTime={latest.enteredAt}>
+                        {stamp(latest.enteredAt)}
+                      </time>
                     </span>
                     <span className="rec-actions">
                       {t.results.length > 1 && (
@@ -1570,24 +1610,23 @@ function TestSheet({
                     </span>
                   </span>
                 ) : (
-                  <span className="dim">Not recorded</span>
+                  <span className="dim">Not entered</span>
                 )}
               </td>
             </tr>
             {editing && (
               <tr className="entry">
-                <td colSpan={5}>
+                <td colSpan={3}>
                   <form
                     onSubmit={async (e) => {
                       e.preventDefault();
                       const f = new FormData(e.currentTarget);
                       if (
                         await execute(
-                          recordDraft(
+                          resultDraft(
                             s,
                             t,
                             Number(f.get('value')),
-                            String(f.get('reference')),
                             String(f.get('reason') ?? ''),
                           ),
                         )
@@ -1601,19 +1640,10 @@ function TestSheet({
                         name="value"
                         type="number"
                         step="any"
+                        min={0}
                         required
                         inputMode="decimal"
                         defaultValue={latest?.value}
-                      />
-                    </label>
-                    <label>
-                      <span>Run reference</span>
-                      <input
-                        name="reference"
-                        required
-                        maxLength={200}
-                        defaultValue={latest?.reference ?? lastReference}
-                        placeholder="HPLC-2026-0042"
                       />
                     </label>
                     {latest && (
@@ -1636,21 +1666,18 @@ function TestSheet({
             )}
             {history && (
               <tr className="revisions">
-                <td colSpan={5}>
+                <td colSpan={3}>
                   <ol>
                     {t.results.map((r, i) => (
                       <li key={i}>
                         <span className="num">v{i + 1}</span>
-                        <span className={'value' + (r.inSpec ? '' : ' out')}>
+                        <span className="value">
                           {r.value}
-                          <small>{t.unit}</small>
+                          <small>{r.unit}</small>
                         </span>
-                        <span>
-                          {data.people.find((p) => p.id === r.analyst)?.name}
-                        </span>
-                        <span className="num">{r.reference}</span>
-                        <time className="dim" dateTime={r.recordedAt}>
-                          {stamp(r.recordedAt)}
+                        <span>{personName(data, r.enteredBy)}</span>
+                        <time className="dim" dateTime={r.enteredAt}>
+                          {stamp(r.enteredAt)}
                         </time>
                         {r.reason && <span className="reason">{r.reason}</span>}
                       </li>
@@ -1665,6 +1692,15 @@ function TestSheet({
     </table>
   );
 }
+
+const ACTION_LABELS: Record<string, string> = {
+  receiveSubmission: 'Received',
+  assign: 'Assigned',
+  enterResult: 'Result entered',
+  submitForApproval: 'Submitted',
+  approve: 'Approved',
+  return: 'Returned',
+};
 
 function ActivityTable({
   events,
@@ -1698,7 +1734,9 @@ function ActivityTable({
               {data.people.find((p) => p.id === e.actor)?.name ?? e.actor}
             </td>
             <td>
-              <span className={'action a-' + e.action}>{e.action}</span>
+              <span className={'action a-' + e.action}>
+                {ACTION_LABELS[e.action] ?? e.action}
+              </span>
             </td>
             <td className="wrap">{e.detail}</td>
           </tr>
@@ -1791,7 +1829,7 @@ function SignIn({
         <p className="sign-in-note">
           Prototype demo accounts (password is the username followed by{' '}
           <code>-demo</code>): <code>coordinator</code>, <code>analyst</code>,{' '}
-          <code>analyst-2</code>, <code>reviewer</code>.
+          <code>analyst-2</code>, <code>manager</code>.
         </p>
       </form>
     </main>

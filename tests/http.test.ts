@@ -12,14 +12,18 @@ import { newCommandId } from '../src/laboratory/contracts.ts';
 const json = { 'Content-Type': 'application/json' };
 const receipt = () => ({
   commandId: newCommandId(),
-  type: 'receive',
-  product: 'Demo',
+  type: 'receiveSubmission',
   client: 'Fictional',
-  batch: '001',
-  dueDate: '2026-10-01',
-  priority: 'Routine',
-  notes: '',
-  methodIds: ['assay'],
+  samples: [
+    {
+      product: 'Demo',
+      batch: '001',
+      materialType: 'raw material',
+      methodIds: ['NIT-001-v1'],
+      dueDate: '2026-10-01',
+      priority: 'Routine',
+    },
+  ],
 });
 
 /** A real server on an ephemeral port over an in-memory core, with a clock
@@ -84,6 +88,8 @@ test('wrong credentials are rejected with a clear message', async (t) => {
     { username: 'coordinator', password: 'wrong' },
     { username: 'coordinator', password: 'analyst-demo' },
     { username: 'nobody', password: 'coordinator-demo' },
+    // The Reviewer role is retired; its old demo account no longer exists.
+    { username: 'reviewer', password: 'reviewer-demo' },
     { username: 'coordinator' },
   ]) {
     const response = await post('/api/sign-in', body);
@@ -120,10 +126,12 @@ test('the actor for a command is the session user, not anything the browser clai
     'X-Demo-Actor': 'analyst',
   });
   assert.equal(applied.status, 200);
-  assert.equal((await applied.json()).sample.receivedBy, 'coordinator');
+  assert.equal((await applied.json()).samples[0].receivedBy, 'coordinator');
   const workspace = await (
     await fetch(url + '/api/workspace', { headers: coordinator })
   ).json();
+  assert.equal(workspace.submissions.length, 1);
+  assert.equal(workspace.samples.length, 1);
   assert.equal(workspace.activity[0].actor, 'coordinator');
 
   // An analyst cannot borrow the coordinator's role by claiming it.
@@ -161,7 +169,7 @@ test('cross-origin, malformed and oversized writes are still rejected', async (t
     (
       await post(
         '/api/commands',
-        { ...receipt(), notes: 'x'.repeat(40000) },
+        { ...receipt(), client: 'x'.repeat(40000) },
         session,
       )
     ).status,

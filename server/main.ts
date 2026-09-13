@@ -5,11 +5,13 @@ import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import { api } from './http.ts';
-import { seed } from './seed.ts';
+import { discardOutdatedDemoDatabase, seed } from './seed.ts';
 import { Sessions } from './sessions.ts';
 
 mkdirSync('data', { recursive: true });
 const database = resolve('data/prototype.sqlite');
+// Discard before either store opens the file, so old accounts go with it.
+discardOutdatedDemoDatabase(database);
 const lab = new Laboratory(database);
 const accounts = new Accounts(database);
 accounts.seed(demoAccounts);

@@ -1,121 +1,163 @@
-import type { Laboratory } from '../src/laboratory/laboratory.ts';
-import { newCommandId } from '../src/laboratory/contracts.ts';
+import { existsSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import {
+  SCHEMA_VERSION,
+  type Laboratory,
+} from '../src/laboratory/laboratory.ts';
+import {
+  newCommandId,
+  type SampleReceipt,
+} from '../src/laboratory/contracts.ts';
 
+/**
+ * The demo database carries no data worth keeping. One written for an older
+ * schema is deleted, so the server starts on a fresh, reseeded file instead of
+ * mixing the old model's rows into the new one.
+ */
+export function discardOutdatedDemoDatabase(file: string) {
+  if (!existsSync(file)) return;
+  const db = new DatabaseSync(file);
+  const { user_version: version } = db.prepare('PRAGMA user_version').get() as {
+    user_version: number;
+  };
+  db.close();
+  if (version >= SCHEMA_VERSION) return;
+  for (const suffix of ['', '-wal', '-shm'])
+    rmSync(file + suffix, { force: true });
+}
+
+type Stage = 'received' | 'progress' | 'awaiting' | 'returned' | 'approved';
+
+/** Drives the public command seam, so demo records carry real activity. */
 export function seed(lab: Laboratory) {
-  if (lab.snapshot().samples.length) return;
+  if (lab.snapshot().submissions.length) return;
   const due = (days: number) =>
     new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
-  const entries = [
-    [
-      'Acetaminophen tablets 500 mg',
-      'Northstar Pharma',
-      'AC-260901',
-      1,
-      'Urgent',
-      'review',
-    ],
-    [
-      'Metformin HCl · API',
-      'Meridian Therapeutics',
-      'MF-260812',
-      3,
-      'Routine',
-      'progress',
-    ],
-    [
-      'Ibuprofen tablets 200 mg',
-      'Northstar Pharma',
-      'IB-260905',
-      2,
-      'Routine',
-      'received',
-    ],
-    [
-      'Caffeine · reference material',
-      'Aster Laboratories',
-      'CF-260822',
-      0,
-      'Urgent',
-      'exception',
-    ],
-    [
-      'Ascorbic acid · raw material',
-      'Meridian Therapeutics',
-      'AA-260902',
-      4,
-      'Routine',
-      'approved',
-    ],
-  ] as const;
-  for (const [product, client, batch, days, priority, stage] of entries) {
-    let { sample: s } = lab.execute(
+  const submissions: {
+    client: string;
+    samples: (SampleReceipt & { stage: Stage; values: number[] })[];
+  }[] = [
+    {
+      client: 'Northstar Pharma',
+      samples: [
+        {
+          product: 'Losartan potassium tablets 50 mg',
+          batch: 'LP-260811',
+          materialType: 'finished product',
+          methodIds: ['NIT-001-v1', 'NIT-003-v1'],
+          dueDate: due(4),
+          priority: 'Routine',
+          stage: 'approved',
+          values: [2.4, 0.8],
+        },
+        {
+          product: 'Losartan potassium tablets 100 mg',
+          batch: 'LP-260812',
+          materialType: 'finished product',
+          methodIds: ['NIT-001-v1', 'NIT-003-v1'],
+          dueDate: due(1),
+          priority: 'Urgent',
+          stage: 'awaiting',
+          values: [3.1, 12.6],
+        },
+      ],
+    },
+    {
+      client: 'Meridian Therapeutics',
+      samples: [
+        {
+          product: 'Metformin hydrochloride · API',
+          batch: 'MF-260802',
+          materialType: 'raw material',
+          methodIds: ['NIT-002-v1', 'NIT-005-v1'],
+          dueDate: due(3),
+          priority: 'Routine',
+          stage: 'progress',
+          values: [0.02],
+        },
+        {
+          product: 'Valsartan · API',
+          batch: 'VS-260830',
+          materialType: 'raw material',
+          methodIds: ['NIT-004-v1'],
+          dueDate: due(6),
+          priority: 'Routine',
+          stage: 'returned',
+          values: [0.05],
+        },
+      ],
+    },
+    {
+      client: 'Aster Laboratories',
+      samples: [
+        {
+          product: 'Sitagliptin tablets 100 mg',
+          batch: 'SG-260905',
+          materialType: 'finished product',
+          methodIds: ['NIT-001-v1', 'NIT-004-v1', 'NIT-005-v1'],
+          dueDate: due(0),
+          priority: 'Urgent',
+          stage: 'received',
+          values: [],
+        },
+        {
+          product: 'Ranolazine extended-release tablets 500 mg',
+          batch: 'RN-260907',
+          materialType: 'finished product',
+          methodIds: ['NIT-002-v1'],
+          dueDate: due(8),
+          priority: 'Routine',
+          stage: 'received',
+          values: [],
+        },
+      ],
+    },
+  ];
+  for (const { client, samples } of submissions) {
+    const receipt = lab.execute(
       {
         commandId: newCommandId(),
-        type: 'receive',
-        product,
+        type: 'receiveSubmission',
         client,
-        batch,
-        dueDate: due(days),
-        priority,
-        notes:
-          'Fictional demonstration sample. Specifications are illustrative only.',
-        methodIds: ['assay', 'water', 'impurity'],
+        samples: samples.map(({ stage: _s, values: _v, ...sample }) => sample),
       },
       'coordinator',
     );
-    if (stage === 'received') continue;
-    ({ sample: s } = lab.execute(
-      {
-        commandId: newCommandId(),
-        type: 'assign',
-        sampleId: s.id,
-        revision: s.revision,
-        assignee: 'analyst',
-      },
-      'coordinator',
-    ));
-    for (const [testId, value] of [
-      ['assay', stage === 'exception' ? 96.7 : 99.8],
-      ['water', 0.18],
-      ['impurity', 0.12],
-    ] as const) {
-      ({ sample: s } = lab.execute(
-        {
-          commandId: newCommandId(),
-          type: 'record',
-          sampleId: s.id,
-          revision: s.revision,
-          testId,
-          value,
-          reference: 'DEMO-RUN-0910',
-          reason: '',
-        },
-        'analyst',
-      ));
-      if (stage === 'progress') break;
-    }
-    if (stage === 'progress') continue;
-    ({ sample: s } = lab.execute(
-      {
-        commandId: newCommandId(),
-        type: 'submit',
-        sampleId: s.id,
-        revision: s.revision,
-      },
-      'analyst',
-    ));
-    if (stage === 'approved')
-      lab.execute(
-        {
-          commandId: newCommandId(),
-          type: 'review',
-          sampleId: s.id,
-          revision: s.revision,
-          decision: 'approve',
-          comment:
-            'Demo review completed; all illustrative specifications met.',
-        },
-        'reviewer',
-      );
+    receipt.samples.forEach((received, i) => {
+      const { stage, values } = samples[i];
+      if (stage === 'received') return;
+      let s = received;
+      const act = (command: object, actor: string) => {
+        s = lab.execute(
+          {
+            commandId: newCommandId(),
+            sampleId: s.id,
+            revision: s.revision,
+            ...command,
+          },
+          actor,
+        ).samples[0];
+      };
+      act({ type: 'assign', assignee: 'analyst' }, 'coordinator');
+      s.tests.forEach((t, j) => {
+        if (j < values.length)
+          act(
+            { type: 'enterResult', testId: t.id, value: values[j], reason: '' },
+            'analyst',
+          );
+      });
+      if (stage === 'progress') return;
+      act({ type: 'submitForApproval' }, 'analyst');
+      if (stage === 'approved') act({ type: 'approve' }, 'manager');
+      if (stage === 'returned')
+        act(
+          {
+            type: 'return',
+            comment:
+              'Check the dilution used for the NIT-004 Result against the worksheet.',
+          },
+          'manager',
+        );
+    });
   }
 }
