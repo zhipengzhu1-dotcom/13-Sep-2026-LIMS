@@ -33,9 +33,15 @@ import {
   type Test,
 } from './contracts.ts';
 import { AuditTrail, auditRecord, type Audit } from './audit.ts';
+import type { Attachment } from './attachment-contracts.ts';
+import {
+  AttachmentRejected,
+  AttachmentStore,
+  type Upload,
+} from './attachments.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 export class WorkflowError extends Error {
   constructor(
@@ -130,7 +136,8 @@ type Series = 'submission' | 'sample';
  * of a per-year sequence inside the same transaction, so a rejected command
  * consumes none. `audit` writes the command's field-level audit entries; every
  * command must write at least one. `limitInForce` is the Acceptable intake
- * entry for an Analyte in force at `at`.
+ * entry for an Analyte in force at `at`. `attachment` looks up a stored
+ * attachment record.
  */
 type Context = {
   at: string;
@@ -139,6 +146,7 @@ type Context = {
   limitInForce: (analyteId: string) => AcceptableIntake | null;
   /** The Method reference data in force. */
   methods: readonly Method[];
+  attachment: (id: string) => Attachment | null;
 };
 
 /**
@@ -339,7 +347,7 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       audit.set(record, sample, 'status', 'In progress');
   },
 
-  enterResult(command, actor, sample, { at, audit, limitInForce }) {
+  enterResult(command, actor, sample, { at, audit, limitInForce, attachment }) {
     requireAssignedAnalyst(actor, sample);
     const test = sample.tests.find((t) => t.id === command.testId);
     if (!test) throw new WorkflowError('Test not found.');
@@ -356,6 +364,13 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       throw new WorkflowError(
         `No Acceptable intake is in force for ${test.analyteName}.`,
       );
+    // The attachment record holds the filename and SHA-256, so the trail
+    // names only its id.
+    const worksheet = attachment(command.attachmentId);
+    if (!worksheet)
+      throw new WorkflowError(
+        'The worksheet attachment was not found. Upload the calculation worksheet again.',
+      );
     // The unit and LOD/LOQ come from the Test, which took them from the
     // Material type at receipt; the qualifier is never entered.
     const qualifier = qualify(command.value, test);
@@ -367,6 +382,7 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       qualifier,
       instrumentReading: command.instrumentReading,
       sequenceId: command.sequenceId,
+      attachmentId: worksheet.id,
       enteredBy: actor.id,
       enteredAt: at,
       reason: command.reason,
@@ -465,6 +481,7 @@ type Subject = { submissionId: string | null; sampleIds: string[] };
 export class Laboratory {
   private db: DatabaseSync;
   private audit: AuditTrail;
+  private attachments: AttachmentStore;
   private clock: () => string;
   /** Absent, every Electronic signature is refused. */
   private credentials: SignerCredentials | null;
@@ -499,10 +516,34 @@ export class Laboratory {
       .get() as { user_version: number };
     if (version === 0) this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
     this.audit = new AuditTrail(this.db);
+    this.attachments = new AttachmentStore(this.db);
   }
 
   close() {
     this.db.close();
+  }
+
+  /**
+   * Stores a calculation worksheet so a later `enterResult` can reference it.
+   * Kept outside `execute`: it creates no laboratory record by itself, and the
+   * stored file is immutable, so a retried upload only adds an unused copy.
+   */
+  storeAttachment(upload: Upload, actorId: string): Attachment {
+    const actor = people.find((p) => p.id === actorId);
+    if (!actor) throw new WorkflowError('Unknown user.', 403);
+    requireRole(actor, 'analyst');
+    try {
+      return this.attachments.store(upload, actor.id, this.clock());
+    } catch (error) {
+      if (error instanceof AttachmentRejected)
+        throw new WorkflowError(error.message, error.status);
+      throw error;
+    }
+  }
+
+  /** An attachment's record and bytes, or null if there is none. */
+  readAttachment(id: string) {
+    return this.attachments.read(id);
   }
 
   snapshot(): Snapshot {
@@ -517,6 +558,7 @@ export class Laboratory {
           )
           .all() as (Omit<Signature, 'command'> & { command: string })[]
       ).map((row) => ({ ...row, command: JSON.parse(row.command) })),
+      attachments: this.attachments.list(),
       people,
       clients,
       analytes,
@@ -623,6 +665,7 @@ export class Laboratory {
         limitInForce: (analyteId) =>
           limitInForce(this.acceptableIntakes(), analyteId, at),
         methods: this.methods,
+        attachment: (id) => this.attachments.find(id),
       };
       // Verified before the key is claimed or a replay answered, so a wrong
       // password applies nothing, is never reported as an earlier success, and

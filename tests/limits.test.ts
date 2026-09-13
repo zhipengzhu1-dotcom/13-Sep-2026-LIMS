@@ -34,9 +34,32 @@ const rawMaterial = {
 };
 const target = (s: Sample) => ({ sampleId: s.id, revision: s.revision });
 
+const worksheets = new WeakMap<Laboratory, string>();
+/** One stored calculation worksheet per lab, for every Result entered. */
+function worksheet(lab: Laboratory) {
+  if (!worksheets.has(lab))
+    worksheets.set(
+      lab,
+      lab.storeAttachment(
+        {
+          filename: 'worksheet.csv',
+          contentType: 'text/csv',
+          content: Buffer.from('reading,result\n1.25,2.5\n'),
+        },
+        'analyst',
+      ).id,
+    );
+  return worksheets.get(lab)!;
+}
 function run(lab: Laboratory, command: object, actor: string): Sample {
-  return lab.execute({ commandId: newCommandId(), ...command }, actor)
-    .samples[0];
+  const attachment =
+    (command as { type?: string }).type === 'enterResult'
+      ? { attachmentId: worksheet(lab) }
+      : {};
+  return lab.execute(
+    { commandId: newCommandId(), ...attachment, ...command },
+    actor,
+  ).samples[0];
 }
 function assigned(lab: Laboratory, sample: object = finishedProduct) {
   const s = run(
@@ -307,6 +330,7 @@ test('a finished product Result with no Acceptable intake in force is refused an
   const { lab, clock } = clocked(t);
   const s = assigned(lab);
   clock.now = '2023-08-03T12:00:00.000Z';
+  worksheet(lab);
   const before = lab.snapshot();
   assert.throws(
     () => run(lab, result(s, 'NIT-001-v1', 2), 'analyst'),

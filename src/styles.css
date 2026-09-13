@@ -1093,6 +1093,25 @@ body.resizing {
 .entry label.grow input {
   width: 100%;
 }
+.entry label.worksheet input {
+  width: 220px;
+  padding: 3px 7px;
+  font-variant-numeric: normal;
+  font-size: 12px;
+}
+.entry .upload-error {
+  flex-basis: 100%;
+  color: var(--late);
+  font-size: 12px;
+}
+.worksheet-link {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
 .entry .btn {
   height: 28px;
 }

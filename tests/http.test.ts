@@ -7,6 +7,7 @@ import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import { api } from '../server/http.ts';
 import { IDLE_TIMEOUT_MS, Sessions } from '../server/sessions.ts';
+import { createHash } from 'node:crypto';
 import { newCommandId } from '../src/laboratory/contracts.ts';
 
 const json = { 'Content-Type': 'application/json' };
@@ -60,7 +61,19 @@ async function serve(t: TestContext) {
     const cookie = response.headers.get('set-cookie')!;
     return { Cookie: cookie.split(';')[0] };
   }
-  return { lab, url, clock, post, signIn };
+  /** Posts raw file bytes to the attachment route. */
+  const upload = (
+    filename: string,
+    contentType: string,
+    body: Uint8Array,
+    headers = {},
+  ) =>
+    fetch(`${url}/api/attachments?filename=${encodeURIComponent(filename)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': contentType, ...headers },
+      body: new Uint8Array(body),
+    });
+  return { lab, url, clock, post, signIn, upload };
 }
 
 test('sign-in with correct credentials starts an HttpOnly session', async (t) => {
@@ -217,7 +230,7 @@ test('an inactive session expires, and activity keeps it alive', async (t) => {
 });
 
 test('a wrong signing password is refused without ending the session', async (t) => {
-  const { url, post, signIn } = await serve(t);
+  const { url, post, signIn, upload } = await serve(t);
   const coordinator = await signIn('coordinator', 'coordinator-demo');
   const analyst = await signIn('analyst', 'analyst-demo');
   const command = async (body: object, session: object) => {
@@ -238,6 +251,9 @@ test('a wrong signing password is refused without ending the session', async (t)
     return response;
   };
   await act({ type: 'assign', assignee: 'analyst' }, coordinator);
+  const { attachment } = await (
+    await upload('sheet.csv', 'text/csv', Buffer.from('a,b\n1,2\n'), analyst)
+  ).json();
   await act(
     {
       type: 'enterResult',
@@ -245,6 +261,7 @@ test('a wrong signing password is refused without ending the session', async (t)
       value: 0.02,
       instrumentReading: 0.2,
       sequenceId: 'SEQ-0001',
+      attachmentId: attachment.id,
       reason: '',
     },
     analyst,
@@ -271,4 +288,219 @@ test('a wrong signing password is refused without ending the session', async (t)
   ).text();
   assert.equal(JSON.parse(workspace).signatures[0].printedName, 'Alex Chen');
   assert.ok(!workspace.includes('analyst-demo'));
+});
+
+const MB = 1024 * 1024;
+const pdf = (size: number) => {
+  const bytes = Buffer.alloc(size, 0x20);
+  bytes.write('%PDF-1.7\n');
+  return bytes;
+};
+
+test('uploading a worksheet needs a session, the same origin and an Analyst', async (t) => {
+  const { lab, upload, signIn } = await serve(t);
+  const anonymous = await upload('sheet.pdf', 'application/pdf', pdf(1000));
+  assert.equal(anonymous.status, 401);
+  assert.match((await anonymous.json()).error, /Sign in/);
+  const forged = await upload('sheet.pdf', 'application/pdf', pdf(1000), {
+    Cookie: 'benchline_session=forged-token',
+  });
+  assert.equal(forged.status, 401);
+  const analyst = await signIn('analyst', 'analyst-demo');
+  const crossOrigin = await upload('sheet.pdf', 'application/pdf', pdf(1000), {
+    ...analyst,
+    Origin: 'https://untrusted.example',
+  });
+  assert.equal(crossOrigin.status, 403);
+  const coordinator = await signIn('coordinator', 'coordinator-demo');
+  assert.equal(
+    (await upload('sheet.pdf', 'application/pdf', pdf(1000), coordinator))
+      .status,
+    403,
+  );
+  assert.equal(lab.snapshot().attachments.length, 0);
+});
+
+test('worksheet uploads are limited to 10 MB and the accepted file types', async (t) => {
+  const { lab, upload, signIn } = await serve(t);
+  const analyst = await signIn('analyst', 'analyst-demo');
+  const tooLarge = await upload(
+    'big.pdf',
+    'application/pdf',
+    pdf(10 * MB + 1),
+    analyst,
+  );
+  assert.equal(tooLarge.status, 413);
+  assert.match((await tooLarge.json()).error, /10 MB/);
+  for (const [filename, type, body] of [
+    ['run.exe', 'application/octet-stream', Buffer.from('MZ')],
+    ['notes.txt', 'text/plain', Buffer.from('hello')],
+    ['sheet.pdf', 'text/csv', pdf(100)],
+    ['photo.png', 'image/png', pdf(100)],
+    ['sheet.xls', 'application/vnd.ms-excel', Buffer.from('not ole')],
+  ] as const) {
+    const refused = await upload(filename, type, body, analyst);
+    assert.equal(refused.status, 415, filename);
+  }
+  assert.equal(
+    (await upload('empty.csv', 'text/csv', new Uint8Array(0), analyst)).status,
+    400,
+  );
+  assert.equal(lab.snapshot().attachments.length, 0);
+
+  // The command route's 32 KB limit does not apply: 10 MB exactly is accepted.
+  const accepted = await upload(
+    'full.pdf',
+    'application/pdf',
+    pdf(10 * MB),
+    analyst,
+  );
+  assert.equal(accepted.status, 201);
+  assert.equal((await accepted.json()).attachment.size, 10 * MB);
+  for (const [filename, type, bytes] of [
+    ['sheet.csv', 'text/csv; charset=utf-8', Buffer.from('a,b\n1,2\n')],
+    ['photo.jpeg', 'image/jpeg', Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0])],
+    [
+      'calc.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      Buffer.from([0x50, 0x4b, 0x03, 0x04, 0]),
+    ],
+  ] as const)
+    assert.equal(
+      (await upload(filename, type, bytes, analyst)).status,
+      201,
+      filename,
+    );
+});
+
+test('a Result carries its worksheet, which Analyst and Manager download intact', async (t) => {
+  const { lab, url, post, signIn, upload } = await serve(t);
+  const coordinator = await signIn('coordinator', 'coordinator-demo');
+  const analyst = await signIn('analyst', 'analyst-demo');
+  const manager = await signIn('manager', 'manager-demo');
+  let sample = (
+    await (await post('/api/commands', receipt(), coordinator)).json()
+  ).samples[0];
+  sample = (
+    await (
+      await post(
+        '/api/commands',
+        {
+          commandId: newCommandId(),
+          type: 'assign',
+          sampleId: sample.id,
+          revision: sample.revision,
+          assignee: 'analyst',
+        },
+        coordinator,
+      )
+    ).json()
+  ).samples[0];
+
+  const bytes = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 250, 251, 252,
+  ]);
+  const uploaded = await upload('Calcul feuille é.png', 'image/png', bytes, {
+    ...analyst,
+    'X-Demo-Actor': 'manager',
+  });
+  assert.equal(uploaded.status, 201);
+  const { attachment } = await uploaded.json();
+  const hash = createHash('sha256').update(bytes).digest('hex');
+  assert.equal(attachment.sha256, hash);
+  assert.equal(attachment.size, bytes.byteLength);
+  assert.equal(attachment.contentType, 'image/png');
+  assert.equal(attachment.filename, 'Calcul feuille é.png');
+  assert.equal(
+    attachment.uploadedBy,
+    'analyst',
+    'the uploader is the session user',
+  );
+  assert.match(attachment.uploadedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+  const entry = (attachmentId: string) => ({
+    commandId: newCommandId(),
+    type: 'enterResult',
+    sampleId: sample.id,
+    revision: sample.revision,
+    testId: sample.tests[0].id,
+    value: 0.05,
+    instrumentReading: 1.2,
+    sequenceId: 'SEQ-1',
+    attachmentId,
+    reason: '',
+  });
+  const unknown = await post('/api/commands', entry(newCommandId()), analyst);
+  assert.equal(unknown.status, 400);
+  assert.match(
+    (await unknown.json()).error,
+    /worksheet attachment was not found/,
+  );
+  const entered = await post('/api/commands', entry(attachment.id), analyst);
+  assert.equal(entered.status, 200);
+  const result = (await entered.json()).samples[0].tests[0].results[0];
+  assert.equal(result.attachmentId, attachment.id);
+
+  for (const session of [analyst, manager]) {
+    const workspace = await (
+      await fetch(url + '/api/workspace', { headers: session })
+    ).json();
+    const id = workspace.samples[0].tests[0].results[0].attachmentId;
+    assert.deepEqual(
+      workspace.attachments.find((a: { id: string }) => a.id === id),
+      attachment,
+    );
+    const download = await fetch(`${url}/api/attachments/${id}`, {
+      headers: session,
+    });
+    assert.equal(download.status, 200);
+    const received = Buffer.from(await download.arrayBuffer());
+    assert.equal(createHash('sha256').update(received).digest('hex'), hash);
+    assert.deepEqual(received, bytes);
+    assert.equal(download.headers.get('content-type'), 'image/png');
+    assert.equal(download.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(
+      download.headers.get('repr-digest'),
+      `sha-256=:${Buffer.from(hash, 'hex').toString('base64')}:`,
+    );
+    assert.match(
+      download.headers.get('content-disposition')!,
+      /^attachment; .*filename\*=UTF-8''Calcul%20feuille%20%C3%A9\.png$/,
+    );
+  }
+
+  // No route replaces stored content, and downloads need a session.
+  for (const method of ['PUT', 'POST', 'DELETE'])
+    assert.equal(
+      (
+        await fetch(`${url}/api/attachments/${attachment.id}`, {
+          method,
+          headers: { ...analyst, 'Content-Type': 'image/png' },
+          body: method === 'DELETE' ? undefined : Buffer.from('replacement'),
+        })
+      ).status,
+      404,
+      method,
+    );
+  assert.equal(
+    (await fetch(`${url}/api/attachments/${attachment.id}`)).status,
+    401,
+  );
+  assert.equal(
+    (
+      await fetch(`${url}/api/attachments/${newCommandId()}`, {
+        headers: manager,
+      })
+    ).status,
+    404,
+  );
+  const again = Buffer.from(
+    await (
+      await fetch(`${url}/api/attachments/${attachment.id}`, {
+        headers: manager,
+      })
+    ).arrayBuffer(),
+  );
+  assert.deepEqual(again, bytes);
+  assert.equal(lab.snapshot().attachments.length, 1);
 });

@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import { Laboratory, SCHEMA_VERSION } from '../src/laboratory/laboratory.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
@@ -57,21 +58,45 @@ const receipt = {
 const NOW = '2026-09-10T12:00:00.000Z';
 const target = (s: Sample) => ({ sampleId: s.id, revision: s.revision });
 
+const worksheets = new WeakMap<Laboratory, string>();
+/** One stored calculation worksheet per lab, for Results that do not test
+ * attachments themselves. */
+function worksheet(lab: Laboratory) {
+  if (!worksheets.has(lab))
+    worksheets.set(
+      lab,
+      lab.storeAttachment(
+        {
+          filename: 'worksheet.csv',
+          contentType: 'text/csv',
+          content: Buffer.from('reading,result\n1.25,2.5\n'),
+        },
+        'analyst',
+      ).id,
+    );
+  return worksheets.get(lab)!;
+}
+
 /** Mints a fresh key per call — a distinct laboratory act. Tests that exercise
- * replay pass their own commandId instead. A signing command is signed with
- * the actor's own password unless the test supplies one. */
+ * replay pass their own commandId instead. */
 function execute(lab: Laboratory, command: object, actor: string) {
   return lab.execute(
-    { commandId: newCommandId(), ...signed(command, actor) },
+    { commandId: newCommandId(), ...sent(lab, command, actor) },
     actor,
   );
 }
-/** The command as its actor would send it: signed, if its type requires it. */
-function signed(command: object, actor: string) {
+/** The command as its actor would send it: signed with the actor's own
+ * password if its type requires it, and an `enterResult` referencing the
+ * lab's stored worksheet, unless the test supplies its own. */
+function sent(lab: Laboratory, command: object, actor: string) {
   const type = (command as { type?: string }).type ?? '';
+  const withAttachment =
+    type === 'enterResult' && !('attachmentId' in command)
+      ? { attachmentId: worksheet(lab), ...command }
+      : command;
   return Object.hasOwn(signatureMeanings, type) && !('password' in command)
-    ? { password: passwordOf(actor), ...command }
-    : command;
+    ? { password: passwordOf(actor), ...withAttachment }
+    : withAttachment;
 }
 /** Runs a command and unwraps the first Sample it touched. */
 function run(lab: Laboratory, command: object, actor: string): Sample {
@@ -109,7 +134,10 @@ const commandsAudited = (lab: Laboratory) =>
  * the order it wrote them, as `[record, field, old, new, reason]`. */
 function audited(lab: Laboratory, command: object, actor: string) {
   const commandId = newCommandId();
-  const outcome = lab.execute({ commandId, ...signed(command, actor) }, actor);
+  const outcome = lab.execute(
+    { commandId, ...sent(lab, command, actor) },
+    actor,
+  );
   const entries = lab
     .auditTrail()
     .filter((e) => e.commandId === commandId)
@@ -960,7 +988,11 @@ test('a retried command is replayed, not applied a second time', () => {
     },
     'coordinator',
   ).samples[0];
-  const entry = { commandId: newCommandId(), ...result(s, 'NIT-001-v1', 1) };
+  const entry = {
+    commandId: newCommandId(),
+    attachmentId: worksheet(lab),
+    ...result(s, 'NIT-001-v1', 1),
+  };
   lab.execute(entry, 'analyst');
   const again = lab.execute(entry, 'analyst');
   assert.equal(again.outcome, 'replayed');
@@ -1153,6 +1185,7 @@ test('the instrument reading and sequence ID are required and recorded', (t) => 
           e.field !== 'result.unit' &&
           e.field !== 'result.qualifier' &&
           e.field !== 'result.conformity' &&
+          e.field !== 'result.attachmentId' &&
           !e.field.startsWith('result.limit.'),
       )
       .map(change),
@@ -1354,6 +1387,7 @@ test('enterResult audits old and new Result values with the reason for a change'
     [record, 'result.qualifier', null, '< LOQ', null],
     [record, 'result.instrumentReading', null, 1.25, null],
     [record, 'result.sequenceId', null, 'SEQ-0001', null],
+    [record, 'result.attachmentId', null, worksheet(lab), null],
     [record, 'result.limit.entry', null, 1, null],
     [record, 'result.limit.value', null, 26.5, null],
     [record, 'result.conformity', null, 'Complies', null],
@@ -1755,4 +1789,115 @@ test('a laboratory without credentials refuses every signature', () => {
   );
   assert.equal(lab.snapshot().samples[0].status, 'In progress');
   lab.close();
+});
+
+test('a Result must reference a stored worksheet attachment', (t) => {
+  const lab = memory(t);
+  const s = assigned(lab);
+  const before = lab.snapshot();
+  assert.throws(
+    () =>
+      run(
+        lab,
+        { ...result(s, 'NIT-001-v1', 4), attachmentId: undefined },
+        'analyst',
+      ),
+    /attachmentId/,
+    'missing',
+  );
+  assert.throws(
+    () =>
+      run(lab, { ...result(s, 'NIT-001-v1', 4), attachmentId: ' ' }, 'analyst'),
+    /attachmentId/,
+    'blank',
+  );
+  assert.throws(
+    () =>
+      run(
+        lab,
+        { ...result(s, 'NIT-001-v1', 4), attachmentId: newCommandId() },
+        'analyst',
+      ),
+    /worksheet attachment was not found/,
+    'unknown',
+  );
+  assert.deepEqual(lab.snapshot(), before, 'nothing was recorded');
+
+  const content = Buffer.from('%PDF-1.7\nworksheet\n');
+  const stored = lab.storeAttachment(
+    {
+      filename: 'C:\\bench\\NIT-001 worksheet.pdf',
+      contentType: 'application/pdf',
+      content,
+    },
+    'analyst',
+  );
+  assert.deepEqual(
+    { ...stored, id: undefined },
+    {
+      id: undefined,
+      filename: 'NIT-001 worksheet.pdf',
+      contentType: 'application/pdf',
+      size: content.byteLength,
+      sha256: createHash('sha256').update(content).digest('hex'),
+      uploadedBy: 'analyst',
+      uploadedAt: NOW,
+    },
+  );
+  const { outcome, changes } = audited(
+    lab,
+    { ...result(s, 'NIT-001-v1', 4), attachmentId: stored.id },
+    'analyst',
+  );
+  assert.equal(outcome.samples[0].tests[0].results[0].attachmentId, stored.id);
+  assert.deepEqual(lab.snapshot().attachments, [stored]);
+  // The trail names the worksheet; its record holds the filename and hash.
+  assert.deepEqual(
+    changes.find(([, field]) => field === 'result.attachmentId'),
+    ['Test 26-00001/NIT-001-v1', 'result.attachmentId', null, stored.id, null],
+  );
+  const read = lab.readAttachment(stored.id)!;
+  assert.deepEqual(Buffer.from(read.content), content);
+  assert.equal(lab.readAttachment(newCommandId()), null);
+});
+
+test('only Analysts store worksheets, of an accepted type and size', (t) => {
+  const lab = memory(t);
+  const upload = (patch: object, actor = 'analyst') =>
+    lab.storeAttachment(
+      {
+        filename: 'sheet.csv',
+        contentType: 'text/csv',
+        content: Buffer.from('a,b\n'),
+        ...patch,
+      },
+      actor,
+    );
+  for (const actor of ['coordinator', 'manager'])
+    assert.throws(() => upload({}, actor), /analyst role/);
+  const refusals: [object, number][] = [
+    [{ filename: 'run.exe', contentType: 'application/octet-stream' }, 415],
+    [{ filename: 'sheet.pdf' }, 415],
+    [{ filename: 'image.png', contentType: 'image/png' }, 415],
+    [{ content: Buffer.from([0x61, 0, 0x62]) }, 415],
+    [{ content: new Uint8Array(0) }, 400],
+    [{ filename: '  ' }, 400],
+    [{ content: Buffer.alloc(10 * 1024 * 1024 + 1, 0x61) }, 413],
+  ];
+  for (const [patch, status] of refusals)
+    assert.throws(
+      () => upload(patch),
+      (e: Error & { status: number }) => e.status === status,
+      JSON.stringify(Object.keys(patch)),
+    );
+  assert.equal(lab.snapshot().attachments.length, 0);
+  const xlsx = upload({
+    filename: 'sheet.XLSX',
+    contentType:
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    content: Buffer.from([0x50, 0x4b, 0x03, 0x04, 1]),
+  });
+  assert.equal(xlsx.filename, 'sheet.XLSX');
+  const full = upload({ content: Buffer.alloc(10 * 1024 * 1024, 0x61) });
+  assert.equal(full.size, 10 * 1024 * 1024);
 });

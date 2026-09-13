@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { AcceptableIntake, ConformityStatement } from './limits.ts';
+import type { Attachment } from './attachment-contracts.ts';
 
 export * from './limits.ts';
 
@@ -93,6 +94,8 @@ export type Result = {
   instrumentReading: number;
   /** The injection or sequence ID that traces the Result to raw data. */
   sequenceId: string;
+  /** The calculation worksheet the value was derived from (ADR-0002). */
+  attachmentId: string;
   enteredBy: string;
   enteredAt: string;
   /** Empty for a first Result; required when it replaces the current one. */
@@ -338,6 +341,8 @@ export type Snapshot = {
   audit: AuditEntry[];
   /** Every Electronic signature, oldest first. */
   signatures: Signature[];
+  /** Records only; the bytes are downloaded per attachment. */
+  attachments: Attachment[];
   people: typeof people;
   clients: typeof clients;
   analytes: typeof analytes;
@@ -489,6 +494,7 @@ export const commandSchema = z.discriminatedUnion('type', [
     value: z.number().finite().nonnegative(),
     instrumentReading: z.number().finite().nonnegative(),
     sequenceId: text,
+    attachmentId: text,
     reason: z.string().trim().max(1000),
   }),
   z.object({
