@@ -13,12 +13,17 @@ const json = { 'Content-Type': 'application/json' };
 const receipt = () => ({
   commandId: newCommandId(),
   type: 'receiveSubmission',
-  client: 'Fictional',
+  clientId: 'northstar',
+  shippingCondition: 'ambient',
+  packageCondition: 'intact',
   samples: [
     {
       product: 'Demo',
       batch: '001',
       materialType: 'raw material',
+      quantity: { value: 5, unit: 'g' },
+      containers: { count: 1, type: 'jar' },
+      conditionOnReceipt: 'Intact',
       methodIds: ['NIT-001-v1'],
       dueDate: '2026-10-01',
       priority: 'Routine',

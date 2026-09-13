@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import {
   analytes,
+  clients,
   commandSchema,
   enteredResultOn,
   methods,
@@ -21,7 +22,7 @@ import {
 } from './contracts.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export class WorkflowError extends Error {
   constructor(
@@ -78,6 +79,22 @@ function fingerprintOf(command: Command): Uint8Array {
   );
 }
 
+/** A schema issue in words a Coordinator can act on: an issue inside a
+ * receipt names its Sample by position rather than by array index. */
+function describeIssue({
+  path,
+  message,
+}: {
+  path: PropertyKey[];
+  message: string;
+}) {
+  if (path[0] === 'samples' && typeof path[1] === 'number') {
+    const field = path.slice(2).map(String).join('.');
+    return `Sample ${path[1] + 1}${field ? `, ${field}` : ''}: ${message}`;
+  }
+  return `${path.map(String).join('.')}: ${message}`;
+}
+
 type CommandOf<T extends Command['type']> = Extract<Command, { type: T }>;
 type SampleCommandType = Exclude<Command['type'], 'receiveSubmission'>;
 
@@ -92,7 +109,12 @@ type Series = 'submission' | 'sample';
  * of a per-year sequence inside the same transaction, so a rejected command
  * consumes none.
  */
-type Context = { at: string; allocate: (series: Series) => number };
+type Context = {
+  at: string;
+  allocate: (series: Series) => number;
+  /** The Method reference data in force. */
+  methods: readonly Method[];
+};
 
 /**
  * Receipt is the one verb that creates its subjects, so it returns the
@@ -132,15 +154,65 @@ function testOf(method: Method, unit: ReportingUnit): Test {
   };
 }
 
+/**
+ * The received date and time is the server time of the receipt unless the
+ * Coordinator corrects it. A correction needs a reason, may not lie after the
+ * moment of saving, and keeps the server time it replaced on the record.
+ */
+function receivedAtOf(
+  correction: CommandOf<'receiveSubmission'>['receivedAt'],
+  serverTime: string,
+): Pick<Submission, 'receivedAt' | 'receivedAtCorrection'> {
+  if (!correction)
+    return { receivedAt: serverTime, receivedAtCorrection: null };
+  if (correction.reason.length < 3)
+    throw new WorkflowError(
+      'Give a reason for correcting the received date and time.',
+    );
+  const corrected = new Date(correction.at).toISOString();
+  if (corrected > serverTime)
+    throw new WorkflowError(
+      'The received date and time cannot be later than the time of saving.',
+    );
+  return {
+    receivedAt: corrected,
+    receivedAtCorrection: { recordedAt: serverTime, reason: correction.reason },
+  };
+}
+
 const receiveSubmission: ReceiptHandler = (
   command,
   actor,
-  { at, allocate },
+  { at, allocate, methods },
 ) => {
   requireRole(actor, 'coordinator');
+  const client = clients.find((c) => c.id === command.clientId);
+  if (!client) throw new WorkflowError('Choose a Client from the Client list.');
+  const received = receivedAtOf(command.receivedAt, at);
   // Every Sample is checked before any identifier is allocated.
   const requested = command.samples.map((receipt, i) => {
     const label = command.samples.length > 1 ? `Sample ${i + 1}: ` : '';
+    const finished = receipt.materialType === 'finished product';
+    if (finished && receipt.maximumDailyDose === null)
+      throw new WorkflowError(
+        `${label}Enter the Maximum daily dose (mg/day) supplied by the Client for a finished product.`,
+      );
+    if (!finished && receipt.maximumDailyDose !== null)
+      throw new WorkflowError(
+        `${label}A raw material does not take a Maximum daily dose.`,
+      );
+    if (!finished && receipt.stability)
+      throw new WorkflowError(
+        `${label}Only a finished product can be a Stability sample.`,
+      );
+    if (
+      receipt.manufactureDate &&
+      receipt.expiryDate &&
+      receipt.expiryDate <= receipt.manufactureDate
+    )
+      throw new WorkflowError(
+        `${label}The ${receipt.expiryKind} date must be after the manufacture date.`,
+      );
     if (new Set(receipt.methodIds).size !== receipt.methodIds.length)
       throw new WorkflowError(`${label}Request each Method only once.`);
     return receipt.methodIds.map((id) => {
@@ -157,23 +229,30 @@ const receiveSubmission: ReceiptHandler = (
   const yy = at.slice(2, 4);
   const submission: Submission = {
     id: `S${yy}-${pad(allocate('submission'), 4)}`,
-    client: command.client,
-    receivedAt: at,
+    clientId: client.id,
+    client: client.name,
+    clientKind: client.kind,
+    clientReference: command.clientReference,
+    ...received,
     receivedBy: actor.id,
+    courier: command.courier,
+    trackingNumber: command.trackingNumber,
+    shippingCondition: command.shippingCondition,
+    temperatureOnArrival: command.temperatureOnArrival,
+    packageCondition: command.packageCondition,
+    chainOfCustodyReference: command.chainOfCustodyReference,
     sampleIds: [],
   };
   const samples = command.samples.map((receipt, i): Sample => {
     const unit = reportingUnit(receipt.materialType);
+    const { methodIds: _methodIds, ...record } = receipt;
     const sample: Sample = {
       id: `${yy}-${pad(allocate('sample'), 5)}`,
       submissionId: submission.id,
-      client: command.client,
-      product: receipt.product,
-      batch: receipt.batch,
-      materialType: receipt.materialType,
-      dueDate: receipt.dueDate,
-      priority: receipt.priority,
-      receivedAt: at,
+      clientId: client.id,
+      client: client.name,
+      ...record,
+      receivedAt: received.receivedAt,
       receivedBy: actor.id,
       assignee: null,
       status: 'Received',
@@ -184,12 +263,17 @@ const receiveSubmission: ReceiptHandler = (
     submission.sampleIds.push(sample.id);
     return sample;
   });
+  // Until the structured audit trail lands, a corrected received-at is
+  // recorded in the activity detail as well as on the Submission itself.
+  const correction = submission.receivedAtCorrection
+    ? ` Received at corrected from ${submission.receivedAtCorrection.recordedAt} to ${submission.receivedAt}; reason: ${submission.receivedAtCorrection.reason}`
+    : '';
   return {
     submission,
     samples,
     details: samples.map(
       (s) =>
-        `Received under ${submission.id}: ${s.product}, batch ${s.batch}, ${s.materialType}; ${s.tests.length} Test(s).`,
+        `Received under ${submission.id}: ${s.product}, batch ${s.batch}, ${s.materialType}, ${s.quantity.value} ${s.quantity.unit}; ${s.tests.length} Test(s).${correction}`,
     ),
   };
 };
@@ -270,6 +354,8 @@ export class Laboratory {
   constructor(
     path: string,
     private clock = () => new Date().toISOString(),
+    /** Seeded reference data; replaceable so rules over it can be exercised. */
+    private reference: { methods: readonly Method[] } = { methods },
   ) {
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL;
@@ -302,8 +388,9 @@ export class Laboratory {
         )
         .all() as Activity[],
       people,
+      clients,
       analytes,
-      methods,
+      methods: this.reference.methods,
     };
   }
 
@@ -319,9 +406,7 @@ export class Laboratory {
     const parsed = commandSchema.safeParse(input);
     if (!parsed.success)
       throw new WorkflowError(
-        parsed.error.issues
-          .map((i) => `${i.path.join('.')}: ${i.message}`)
-          .join('; '),
+        parsed.error.issues.map(describeIssue).join('; '),
       );
     const command = parsed.data;
     const key = keyOf(command.commandId);
@@ -331,6 +416,7 @@ export class Laboratory {
       const context: Context = {
         at: this.clock(),
         allocate: (series) => this.allocate(series, context.at),
+        methods: this.reference.methods,
       };
       // Claim the key as the first statement inside the transaction, before any
       // validation or domain work. A suppressed insert returns no row, which is

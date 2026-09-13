@@ -88,23 +88,121 @@ export const sampleStatuses = [
 ] as const;
 export type SampleStatus = (typeof sampleStatuses)[number];
 
+/** Seeded, illustrative Clients. There is no maintenance screen in this
+ * release; a Submission copies the Client's name and kind at receipt. */
+export const clients = [
+  { id: 'northstar', name: 'Northstar Pharma', kind: 'external' },
+  { id: 'meridian', name: 'Meridian Therapeutics', kind: 'external' },
+  { id: 'aster', name: 'Aster Laboratories', kind: 'external' },
+  {
+    id: 'formulation-development',
+    name: 'Formulation Development',
+    kind: 'internal',
+  },
+] as const;
+export type Client = (typeof clients)[number];
+export type ClientKind = Client['kind'];
+
+/** Fixed receipt lists, seeded and illustrative like the rest of the
+ * reference data. */
+export const shippingConditions = [
+  'ambient',
+  'refrigerated',
+  'frozen',
+] as const;
+export const packageConditions = ['intact', 'damaged'] as const;
+export const containerTypes = [
+  'bottle',
+  'blister pack',
+  'vial',
+  'jar',
+  'bag',
+  'drum',
+  'other',
+] as const;
+export const quantityUnits = ['g', 'mg', 'kg', 'mL', 'L', 'units'] as const;
+export const expiryKinds = ['expiry', 'retest'] as const;
+export const priorities = ['Routine', 'Urgent'] as const;
+export const stabilityTimePoints = [
+  'Initial',
+  '1M',
+  '3M',
+  '6M',
+  '9M',
+  '12M',
+  '18M',
+  '24M',
+  '36M',
+] as const;
+export const stabilityConditions = ['RT', 'INT', 'ACC', 'REF'] as const;
+export const stabilityConditionLabels: Record<
+  (typeof stabilityConditions)[number],
+  string
+> = {
+  RT: '25 °C / 60% RH',
+  INT: '30 °C / 65% RH',
+  ACC: '40 °C / 75% RH',
+  REF: '5 °C',
+};
+
+export type Stability = {
+  studyId: string;
+  timePoint: (typeof stabilityTimePoints)[number];
+  condition: (typeof stabilityConditions)[number];
+};
+
 export type Submission = {
   id: string;
+  clientId: string;
+  /** The Client's name and kind as they were at receipt. */
   client: string;
+  clientKind: ClientKind;
+  clientReference: string;
+  /** When the delivery arrived: the server time of the receipt, or the
+   * Coordinator's corrected time when `receivedAtCorrection` is present. */
   receivedAt: string;
+  /** A corrected received-at keeps the server time it replaced and the reason,
+   * so the change is never hidden. */
+  receivedAtCorrection: { recordedAt: string; reason: string } | null;
   receivedBy: string;
+  courier: string;
+  trackingNumber: string;
+  shippingCondition: (typeof shippingConditions)[number];
+  /** °C, when measured. */
+  temperatureOnArrival: number | null;
+  packageCondition: (typeof packageConditions)[number];
+  chainOfCustodyReference: string;
   sampleIds: string[];
 };
 
 export type Sample = {
   id: string;
   submissionId: string;
+  clientId: string;
   client: string;
+  clientSampleId: string;
   product: string;
+  strength: string;
   batch: string;
+  manufacturer: string;
+  /** YYYY-MM-DD, when supplied. */
+  manufactureDate: string | null;
+  expiryDate: string | null;
+  expiryKind: (typeof expiryKinds)[number];
+  quantity: { value: number; unit: (typeof quantityUnits)[number] };
+  containers: { count: number; type: (typeof containerTypes)[number] };
+  conditionOnReceipt: string;
+  storageCondition: string;
+  storageLocation: string;
   materialType: MaterialType;
+  /** mg/day, supplied by the Client; finished products only. */
+  maximumDailyDose: number | null;
+  /** Finished products only. */
+  stability: Stability | null;
   dueDate: string;
-  priority: 'Routine' | 'Urgent';
+  priority: (typeof priorities)[number];
+  remarks: string;
+  retentionInstruction: string;
   receivedAt: string;
   receivedBy: string;
   assignee: string | null;
@@ -129,6 +227,7 @@ export type Snapshot = {
   samples: Sample[];
   activity: Activity[];
   people: typeof people;
+  clients: typeof clients;
   analytes: typeof analytes;
   methods: typeof methods;
 };
@@ -161,23 +260,108 @@ const date = z
     return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
   }, 'Enter a valid date.');
 
+const required = (label: string) =>
+  z
+    .string({ error: `Enter the ${label}.` })
+    .trim()
+    .min(1, `Enter the ${label}.`)
+    .max(200);
+const optionalText = z.string().trim().max(200).default('');
+const optionalDate = date.nullable().default(null);
+
 export const sampleReceiptSchema = z.object({
-  product: text,
-  batch: text,
+  clientSampleId: optionalText,
   materialType: z.enum(materialTypes),
-  methodIds: z.array(text).min(1).max(20),
+  product: required('product name'),
+  strength: optionalText,
+  batch: required('batch or lot'),
+  manufacturer: optionalText,
+  manufactureDate: optionalDate,
+  expiryDate: optionalDate,
+  expiryKind: z.enum(expiryKinds).default('expiry'),
+  quantity: z.object(
+    {
+      value: z
+        .number({ error: 'Enter the quantity received as a number.' })
+        .finite()
+        .positive('The quantity received must be a positive number.'),
+      unit: z.enum(quantityUnits),
+    },
+    { error: 'Enter the quantity received.' },
+  ),
+  containers: z.object({
+    count: z
+      .number({ error: 'Enter the number of containers.' })
+      .int()
+      .positive('The number of containers must be at least 1.')
+      .max(10000),
+    type: z.enum(containerTypes),
+  }),
+  conditionOnReceipt: required('condition on receipt'),
+  storageCondition: optionalText,
+  storageLocation: optionalText,
+  methodIds: z.array(text).min(1, 'Request at least one Method.').max(20),
   dueDate: date,
-  priority: z.enum(['Routine', 'Urgent']),
+  priority: z.enum(priorities),
+  remarks: z.string().trim().max(2000).default(''),
+  retentionInstruction: optionalText,
+  maximumDailyDose: z
+    .number()
+    .finite()
+    .positive('The Maximum daily dose must be a positive number of mg/day.')
+    .nullable()
+    .default(null),
+  stability: z
+    .object({
+      studyId: required('stability study ID'),
+      timePoint: z.enum(stabilityTimePoints, {
+        error: 'Choose a stability time point from the list.',
+      }),
+      condition: z.enum(stabilityConditions, {
+        error: 'Choose a stability storage condition from the list.',
+      }),
+    })
+    .nullable()
+    .default(null),
 });
-export type SampleReceipt = z.infer<typeof sampleReceiptSchema>;
+/** A Sample as a receipt supplies it; optional fields may be omitted. */
+export type SampleReceipt = z.input<typeof sampleReceiptSchema>;
+
+export const receiveSubmissionSchema = z.object({
+  commandId,
+  type: z.literal('receiveSubmission'),
+  clientId: text,
+  clientReference: optionalText,
+  /** Omitted to take the server time. A correction must give a reason. */
+  receivedAt: z
+    .object({
+      at: z.iso.datetime({
+        offset: true,
+        error: 'Enter a valid received date and time.',
+      }),
+      reason: z.string().trim().max(1000),
+    })
+    .nullable()
+    .default(null),
+  courier: optionalText,
+  trackingNumber: optionalText,
+  shippingCondition: z.enum(shippingConditions),
+  temperatureOnArrival: z
+    .number()
+    .finite()
+    .min(-100)
+    .max(100)
+    .nullable()
+    .default(null),
+  packageCondition: z.enum(packageConditions),
+  chainOfCustodyReference: optionalText,
+  samples: z.array(sampleReceiptSchema).min(1).max(50),
+});
+/** A receipt as a client sends it; optional fields may be omitted. */
+export type SubmissionReceipt = z.input<typeof receiveSubmissionSchema>;
 
 export const commandSchema = z.discriminatedUnion('type', [
-  z.object({
-    commandId,
-    type: z.literal('receiveSubmission'),
-    client: text,
-    samples: z.array(sampleReceiptSchema).min(1).max(50),
-  }),
+  receiveSubmissionSchema,
   z.object({ commandId, type: z.literal('assign'), ...target, assignee: text }),
   z.object({
     commandId,

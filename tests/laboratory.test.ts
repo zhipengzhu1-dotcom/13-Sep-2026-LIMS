@@ -7,14 +7,20 @@ import { DatabaseSync } from 'node:sqlite';
 import { Laboratory, SCHEMA_VERSION } from '../src/laboratory/laboratory.ts';
 import {
   enteredResultOn,
+  methods,
   newCommandId,
   type Sample,
 } from '../src/laboratory/contracts.ts';
 
+/** The mandatory receipt record only; every optional field is left out. */
 const finishedProduct = {
   product: 'Demo tablets 10 mg',
   batch: 'B-001',
   materialType: 'finished product',
+  quantity: { value: 60, unit: 'units' },
+  containers: { count: 2, type: 'bottle' },
+  conditionOnReceipt: 'Intact',
+  maximumDailyDose: 40,
   methodIds: ['NIT-001-v1', 'NIT-003-v1'],
   dueDate: '2026-10-01',
   priority: 'Routine',
@@ -24,13 +30,18 @@ const rawMaterial = {
   product: 'Demo API',
   batch: 'API-001',
   materialType: 'raw material',
+  quantity: { value: 10, unit: 'g' },
+  maximumDailyDose: null,
   methodIds: ['NIT-005-v1'],
 };
 const receipt = {
   type: 'receiveSubmission',
-  client: 'Fictional Pharma',
+  clientId: 'northstar',
+  shippingCondition: 'ambient',
+  packageCondition: 'intact',
   samples: [finishedProduct],
 };
+const NOW = '2026-09-10T12:00:00.000Z';
 const target = (s: Sample) => ({ sampleId: s.id, revision: s.revision });
 
 /** Mints a fresh key per call — a distinct laboratory act. Tests that exercise
@@ -66,7 +77,7 @@ function submitted(lab: Laboratory) {
   return run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
 }
 function memory(t: { after: (fn: () => void) => void }) {
-  const lab = new Laboratory(':memory:', () => '2026-09-10T12:00:00.000Z');
+  const lab = new Laboratory(':memory:', () => NOW);
   t.after(() => lab.close());
   return lab;
 }
@@ -226,10 +237,365 @@ test('receipt rejects unknown or duplicate Methods, blank fields, bad Material t
       ),
     );
   assert.throws(() => run(lab, { ...receipt, samples: [] }, 'coordinator'));
-  assert.throws(() => run(lab, { ...receipt, client: ' ' }, 'coordinator'));
+  assert.throws(() => run(lab, { ...receipt, clientId: ' ' }, 'coordinator'));
+  assert.throws(
+    () => run(lab, { ...receipt, clientId: 'unknown' }, 'coordinator'),
+    /Client list/,
+  );
+  for (const patch of [
+    { shippingCondition: 'warm' },
+    { packageCondition: 'wet' },
+    { temperatureOnArrival: '4' },
+  ])
+    assert.throws(() => run(lab, { ...receipt, ...patch }, 'coordinator'));
   assert.equal(lab.snapshot().submissions.length, 0);
   assert.equal(lab.snapshot().samples.length, 0);
   assert.equal(lab.snapshot().activity.length, 0);
+});
+
+test('a receipt keeps the full Submission and Sample record', (t) => {
+  const lab = memory(t);
+  const stabilitySample = {
+    ...finishedProduct,
+    clientSampleId: 'STAB-7-ACC-3M',
+    product: 'Demo tablets',
+    strength: '10 mg',
+    manufacturer: 'Fictional Pharma, Site 1',
+    manufactureDate: '2026-01-15',
+    expiryDate: '2028-01-14',
+    storageCondition: '15–25 °C',
+    storageLocation: 'Store R2',
+    priority: 'Urgent',
+    remarks: 'Protect from light.',
+    retentionInstruction: 'Retain 12 months',
+    stability: { studyId: 'STAB-7', timePoint: '3M', condition: 'ACC' },
+  };
+  const outcome = execute(
+    lab,
+    {
+      ...receipt,
+      clientId: 'formulation-development',
+      clientReference: 'PO-42',
+      courier: 'World Courier',
+      trackingNumber: 'WC-1',
+      shippingCondition: 'refrigerated',
+      temperatureOnArrival: 4.5,
+      chainOfCustodyReference: 'COC-9',
+      samples: [stabilitySample, rawMaterial],
+    },
+    'coordinator',
+  );
+  const { id: _id, sampleIds: _ids, ...submission } = outcome.submission!;
+  assert.deepEqual(submission, {
+    clientId: 'formulation-development',
+    client: 'Formulation Development',
+    clientKind: 'internal',
+    clientReference: 'PO-42',
+    receivedAt: NOW,
+    receivedAtCorrection: null,
+    receivedBy: 'coordinator',
+    courier: 'World Courier',
+    trackingNumber: 'WC-1',
+    shippingCondition: 'refrigerated',
+    temperatureOnArrival: 4.5,
+    packageCondition: 'intact',
+    chainOfCustodyReference: 'COC-9',
+  });
+  const [stability, material] = outcome.samples;
+  const { methodIds: _m, ...fields } = stabilitySample;
+  for (const [key, value] of Object.entries(fields))
+    assert.deepEqual(stability[key as keyof Sample], value, key);
+  assert.equal(stability.client, 'Formulation Development');
+  assert.equal(stability.expiryKind, 'expiry');
+  // Optional fields left out are stored empty, never missing.
+  assert.deepEqual(
+    [
+      material.clientSampleId,
+      material.strength,
+      material.manufactureDate,
+      material.expiryDate,
+      material.maximumDailyDose,
+      material.stability,
+      material.remarks,
+    ],
+    ['', '', null, null, null, null, ''],
+  );
+});
+
+test('received date/time, quantity, condition on receipt and batch/lot are mandatory', (t) => {
+  const lab = memory(t);
+  const sample = (patch: object) => ({
+    ...receipt,
+    samples: [rawMaterial, { ...finishedProduct, ...patch }],
+  });
+  for (const [command, message] of [
+    [sample({ batch: ' ' }), /Sample 2, batch: Enter the batch or lot/],
+    [sample({ batch: undefined }), /Sample 2, batch: Enter the batch or lot/],
+    [
+      sample({ conditionOnReceipt: '' }),
+      /Sample 2, conditionOnReceipt: Enter the condition on receipt/,
+    ],
+    [sample({ quantity: undefined }), /Sample 2, quantity: Enter the quantity/],
+    [
+      sample({ quantity: { value: 0, unit: 'g' } }),
+      /Sample 2, quantity.value: The quantity received must be a positive number/,
+    ],
+    [sample({ quantity: { value: -5, unit: 'g' } }), /positive number/],
+    [sample({ quantity: { value: 5 } }), /Sample 2, quantity.unit/],
+    [
+      sample({ quantity: { value: '5', unit: 'g' } }),
+      /quantity received as a number/,
+    ],
+    [
+      { ...receipt, receivedAt: { at: '', reason: 'Late entry' } },
+      /Enter a valid received date and time/,
+    ],
+    [
+      { ...receipt, receivedAt: { reason: 'Late entry' } },
+      /Enter a valid received date and time/,
+    ],
+  ] as const)
+    assert.throws(() => run(lab, command, 'coordinator'), message);
+  assert.equal(lab.snapshot().samples.length, 0);
+  assert.equal(lab.snapshot().activity.length, 0);
+});
+
+test('received at defaults to server time; a correction needs a reason and is kept on the record', (t) => {
+  const lab = memory(t);
+  const plain = execute(lab, receipt, 'coordinator');
+  assert.equal(plain.submission?.receivedAt, NOW);
+  assert.equal(plain.samples[0].receivedAt, NOW);
+  assert.equal(plain.submission?.receivedAtCorrection, null);
+  // Leaving the received-at out is the same as not correcting it.
+  const ignored = execute(
+    lab,
+    { ...receipt, receivedAt: undefined, samples: [rawMaterial] },
+    'coordinator',
+  );
+  assert.equal(ignored.submission?.receivedAt, NOW);
+
+  for (const [receivedAt, message] of [
+    [{ at: '2026-09-10T07:40:00Z', reason: '' }, /reason/],
+    [{ at: '2026-09-10T07:40:00Z', reason: '  ok ' }, /reason/],
+    [
+      { at: '2026-09-10T12:00:01Z', reason: 'Logged after unpacking' },
+      /cannot be later than the time of saving/,
+    ],
+    [{ at: '10 September', reason: 'Logged late' }, /valid received date/],
+  ] as const)
+    assert.throws(
+      () => run(lab, { ...receipt, receivedAt }, 'coordinator'),
+      message,
+    );
+  assert.equal(lab.snapshot().submissions.length, 2);
+
+  const corrected = execute(
+    lab,
+    {
+      ...receipt,
+      receivedAt: {
+        at: '2026-09-10T09:40:00+02:00',
+        reason: 'Delivered before the instrument run; logged once unpacked.',
+      },
+      samples: [finishedProduct, rawMaterial],
+    },
+    'coordinator',
+  );
+  assert.equal(corrected.submission?.receivedAt, '2026-09-10T07:40:00.000Z');
+  assert.deepEqual(corrected.submission?.receivedAtCorrection, {
+    recordedAt: NOW,
+    reason: 'Delivered before the instrument run; logged once unpacked.',
+  });
+  assert.ok(
+    corrected.samples.every((s) => s.receivedAt === '2026-09-10T07:40:00.000Z'),
+  );
+  // The correction is audit-trailed for every Sample it applies to, with the
+  // server time it replaced and the reason.
+  const trail = lab
+    .snapshot()
+    .activity.filter((a) => corrected.samples.some((s) => s.id === a.sampleId));
+  assert.equal(trail.length, 2);
+  for (const entry of trail) {
+    assert.equal(entry.actor, 'coordinator');
+    assert.equal(entry.at, NOW);
+    assert.match(
+      entry.detail,
+      /Received at corrected from 2026-09-10T12:00:00.000Z to 2026-09-10T07:40:00.000Z; reason: Delivered before the instrument run/,
+    );
+  }
+  assert.doesNotMatch(
+    lab.snapshot().activity.find((a) => a.sampleId === plain.samples[0].id)!
+      .detail,
+    /corrected/,
+  );
+});
+
+test('Maximum daily dose is required for finished products and not accepted for raw materials', (t) => {
+  const lab = memory(t);
+  for (const [samples, message] of [
+    [
+      [rawMaterial, { ...finishedProduct, maximumDailyDose: null }],
+      /Sample 2: Enter the Maximum daily dose \(mg\/day\)/,
+    ],
+    [
+      [{ ...finishedProduct, maximumDailyDose: undefined }],
+      /Enter the Maximum daily dose/,
+    ],
+    [
+      [{ ...finishedProduct, maximumDailyDose: 0 }],
+      /positive number of mg\/day/,
+    ],
+    [
+      [{ ...finishedProduct, maximumDailyDose: -1 }],
+      /positive number of mg\/day/,
+    ],
+    [
+      [{ ...rawMaterial, maximumDailyDose: 100 }],
+      /raw material does not take a Maximum daily dose/,
+    ],
+  ] as const)
+    assert.throws(
+      () => run(lab, { ...receipt, samples }, 'coordinator'),
+      message,
+    );
+  assert.equal(lab.snapshot().samples.length, 0);
+  const [product, material] = execute(
+    lab,
+    { ...receipt, samples: [finishedProduct, rawMaterial] },
+    'coordinator',
+  ).samples;
+  assert.equal(product.maximumDailyDose, 40);
+  assert.equal(material.maximumDailyDose, null);
+});
+
+test('requested Methods must apply to the Sample Material type', (t) => {
+  // Every seeded Method applies to both Material types, so the rule is
+  // exercised over reference data holding one finished-product-only Method.
+  const restricted = [
+    ...methods,
+    {
+      ...methods[0],
+      id: 'NIT-900-v1',
+      code: 'NIT-900',
+      materialTypes: ['finished product'] as const,
+    },
+  ];
+  const lab = new Laboratory(':memory:', () => NOW, { methods: restricted });
+  t.after(() => lab.close());
+  assert.throws(
+    () =>
+      run(
+        lab,
+        {
+          ...receipt,
+          samples: [
+            { ...finishedProduct, methodIds: ['NIT-900-v1'] },
+            { ...rawMaterial, methodIds: ['NIT-005-v1', 'NIT-900-v1'] },
+          ],
+        },
+        'coordinator',
+      ),
+    /Sample 2: NIT-900 v1 does not apply to a raw material/,
+  );
+  assert.equal(lab.snapshot().samples.length, 0);
+  const s = run(
+    lab,
+    {
+      ...receipt,
+      samples: [{ ...finishedProduct, methodIds: ['NIT-900-v1'] }],
+    },
+    'coordinator',
+  );
+  assert.deepEqual(
+    s.tests.map((x) => x.methodCode),
+    ['NIT-900'],
+  );
+  assert.deepEqual(
+    lab.snapshot().methods.map((m) => m.id),
+    restricted.map((m) => m.id),
+  );
+});
+
+test('a Stability sample is a finished product with study ID, time point and condition from fixed lists', (t) => {
+  const lab = memory(t);
+  const stability = { studyId: 'STAB-7', timePoint: '1M', condition: 'RT' };
+  for (const [patch, message] of [
+    [
+      { stability: { ...stability, timePoint: '2M' } },
+      /stability.timePoint: Choose a stability time point from the list/,
+    ],
+    [
+      { stability: { ...stability, condition: '37 °C' } },
+      /stability.condition: Choose a stability storage condition from the list/,
+    ],
+    [
+      { stability: { ...stability, studyId: ' ' } },
+      /Enter the stability study ID/,
+    ],
+    [
+      { ...rawMaterial, stability },
+      /Only a finished product can be a Stability sample/,
+    ],
+  ] as const)
+    assert.throws(
+      () =>
+        run(
+          lab,
+          { ...receipt, samples: [{ ...finishedProduct, ...patch }] },
+          'coordinator',
+        ),
+      message,
+    );
+  for (const timePoint of ['Initial', '3M', '36M'])
+    for (const condition of ['RT', 'ACC'])
+      assert.deepEqual(
+        run(
+          lab,
+          {
+            ...receipt,
+            samples: [
+              {
+                ...finishedProduct,
+                stability: { ...stability, timePoint, condition },
+              },
+            ],
+          },
+          'coordinator',
+        ).stability,
+        { studyId: 'STAB-7', timePoint, condition },
+      );
+});
+
+test('receipt checks container count and that expiry or retest follows manufacture', (t) => {
+  const lab = memory(t);
+  for (const [patch, message] of [
+    [{ containers: { count: 0, type: 'vial' } }, /at least 1/],
+    [{ containers: { count: 1.5, type: 'vial' } }, /containers.count/],
+    [{ containers: { count: 1, type: 'crate' } }, /containers.type/],
+    [
+      { manufactureDate: '2026-05-01', expiryDate: '2026-05-01' },
+      /expiry date must be after the manufacture date/,
+    ],
+    [
+      {
+        manufactureDate: '2026-05-01',
+        expiryDate: '2026-04-01',
+        expiryKind: 'retest',
+      },
+      /retest date must be after the manufacture date/,
+    ],
+    [{ expiryDate: '2026-13-01' }, /expiryDate/],
+  ] as const)
+    assert.throws(
+      () =>
+        run(
+          lab,
+          { ...receipt, samples: [{ ...finishedProduct, ...patch }] },
+          'coordinator',
+        ),
+      message,
+    );
+  assert.equal(lab.snapshot().samples.length, 0);
 });
 
 test('incomplete and unassigned Samples cannot be submitted', (t) => {
