@@ -504,3 +504,93 @@ test('a Result carries its worksheet, which Analyst and Manager download intact'
   assert.deepEqual(again, bytes);
   assert.equal(lab.snapshot().attachments.length, 1);
 });
+
+test("an approved Sample's Certificate is retrieved by signed-in users", async (t) => {
+  const { url, post, signIn, upload } = await serve(t);
+  const coordinator = await signIn('coordinator', 'coordinator-demo');
+  const analyst = await signIn('analyst', 'analyst-demo');
+  const manager = await signIn('manager', 'manager-demo');
+  const command = async (body: object, session: object) => {
+    const response = await post(
+      '/api/commands',
+      { commandId: newCommandId(), ...body },
+      session,
+    );
+    assert.equal(response.status, 200);
+    return (await response.json()).samples[0];
+  };
+  let sample = await command(receipt(), coordinator);
+  const act = async (body: object, session: object) => {
+    sample = await command(
+      { sampleId: sample.id, revision: sample.revision, ...body },
+      session,
+    );
+  };
+  const get = (path: string, headers = {}) => fetch(url + path, { headers });
+  const path = `/api/samples/${sample.id}/certificates`;
+  assert.deepEqual(await (await get(path, coordinator)).json(), {
+    certificates: [],
+  });
+  assert.equal((await get(`${path}/1`, coordinator)).status, 404);
+
+  await act({ type: 'assign', assignee: 'analyst' }, coordinator);
+  const { attachment } = await (
+    await upload('sheet.csv', 'text/csv', Buffer.from('a,b\n1,2\n'), analyst)
+  ).json();
+  await act(
+    {
+      type: 'enterResult',
+      testId: 'NIT-001-v1',
+      value: 0.05,
+      instrumentReading: 0.5,
+      sequenceId: 'SEQ-0001',
+      attachmentId: attachment.id,
+      reason: '',
+    },
+    analyst,
+  );
+  await act({ type: 'submitForApproval', password: 'analyst-demo' }, analyst);
+  await act({ type: 'approve', password: 'manager-demo' }, manager);
+  assert.equal(sample.status, 'Approved');
+
+  for (const session of [coordinator, analyst, manager]) {
+    const response = await get(`${path}/1`, session);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    const { certificate } = await response.json();
+    assert.equal(certificate.sampleId, sample.id);
+    assert.equal(certificate.version, 1);
+    assert.equal(certificate.content.results[0].conformity, 'Report');
+    assert.deepEqual(
+      certificate.content.signatures.map(
+        (x: { meaning: string; printedName: string }) => [
+          x.meaning,
+          x.printedName,
+        ],
+      ),
+      [
+        ['performed by', 'Alex Chen'],
+        ['approved by', 'Taylor Brooks'],
+      ],
+    );
+    assert.deepEqual(await (await get(path, session)).json(), {
+      certificates: [certificate],
+    });
+  }
+  const workspace = await (await get('/api/workspace', manager)).json();
+  assert.equal(workspace.certificates[0].version, 1);
+
+  assert.equal((await get(path)).status, 401);
+  assert.equal((await get(`${path}/1`)).status, 401);
+  assert.equal(
+    (await get(`${path}/1`, { Cookie: 'benchline_session=forged' })).status,
+    401,
+  );
+  assert.equal((await get(`${path}/2`, manager)).status, 404);
+  assert.equal(
+    (await get('/api/samples/26-99999/certificates/1', manager)).status,
+    404,
+  );
+  // No route replaces or adds a Certificate.
+  assert.equal((await post(`${path}/1`, {}, manager)).status, 404);
+});

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { Laboratory, SCHEMA_VERSION } from '../src/laboratory/laboratory.ts';
+import { renderCertificate } from '../src/laboratory/certificate-renderer.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
@@ -1790,14 +1791,15 @@ test('submitting, returning and approving audit the status and each signature, w
     ['Sample 26-00001', 'signature.signer', null, 'analyst', null],
   ]);
   s = resubmit.outcome.samples[0];
-  assert.deepEqual(
-    audited(lab, { type: 'approve', ...target(s) }, 'manager').changes,
-    [
-      ['Sample 26-00001', 'status', 'Awaiting approval', 'Approved', null],
-      ['Sample 26-00001', 'signature.meaning', null, 'approved by', null],
-      ['Sample 26-00001', 'signature.signer', null, 'manager', null],
-    ],
-  );
+  const approved = audited(lab, { type: 'approve', ...target(s) }, 'manager');
+  const certificate = 'Certificate of Analysis 26-00001/v1';
+  assert.deepEqual(approved.changes, [
+    ['Sample 26-00001', 'status', 'Awaiting approval', 'Approved', null],
+    [certificate, 'version', null, 1, null],
+    [certificate, 'sha256', null, lab.certificate(s.id).sha256, null],
+    ['Sample 26-00001', 'signature.meaning', null, 'approved by', null],
+    ['Sample 26-00001', 'signature.signer', null, 'manager', null],
+  ]);
 });
 
 test('a rejected command writes no audit entry', (t) => {
@@ -2551,5 +2553,260 @@ test('opening, checking and concluding an investigation audit each change', (t) 
   assert.ok(
     lab.auditTrail(s.id).some((e) => e.recordType === 'OOS investigation'),
     "investigation entries join the Sample's history",
+  );
+});
+
+test('Approval freezes Certificate version 1 for a finished product with a Receipt deviation and a Confirmed OOS', (t) => {
+  const lab = memory(t);
+  let s = run(
+    lab,
+    {
+      ...receipt,
+      clientReference: 'PO-4471',
+      samples: [
+        {
+          ...finishedProduct,
+          clientSampleId: 'NP-STB-06',
+          strength: '10 mg',
+          manufacturer: 'Northstar Pharma, Plant 2',
+          manufactureDate: '2026-01-15',
+          expiryDate: '2028-01-14',
+          stability: {
+            studyId: 'STB-2026-04',
+            timePoint: '6M',
+            condition: 'ACC',
+          },
+          deviations: [deviation],
+        },
+      ],
+    },
+    'coordinator',
+  );
+  s = run(lab, instruction(s, 'proceed'), 'coordinator');
+  s = run(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'analyst' },
+    'coordinator',
+  );
+  s = run(lab, result(s, 'NIT-001-v1', 30), 'analyst');
+  s = run(lab, result(s, 'NIT-003-v1', 0.5), 'analyst');
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(lab, openOos(s), 'manager');
+  s = run(
+    lab,
+    {
+      ...labErrorCheck(s, 'OOS26-0001'),
+      findings: 'No laboratory error found.',
+      errorIdentified: false,
+    },
+    'analyst',
+  );
+  s = run(lab, conclude(s, 'OOS26-0001', 'Confirmed'), 'manager');
+  assert.deepEqual(lab.certificates(s.id), [], 'none before Approval');
+  assert.throws(
+    () => lab.certificate(s.id),
+    (e: Error & { status: number }) =>
+      e.status === 404 && /no Certificate of Analysis yet/.test(e.message),
+  );
+
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  const certificates = lab.certificates(s.id);
+  assert.equal(certificates.length, 1);
+  const [certificate] = certificates;
+  assert.deepEqual(
+    { ...certificate, content: undefined },
+    {
+      sampleId: s.id,
+      version: 1,
+      approvedAt: NOW,
+      sha256: createHash('sha256')
+        .update(JSON.stringify(certificate.content))
+        .digest('hex'),
+      content: undefined,
+    },
+  );
+  assert.deepEqual(lab.certificate(s.id), certificate);
+  assert.deepEqual(lab.certificate(s.id, 1), certificate);
+  assert.deepEqual(lab.snapshot().certificates, [
+    {
+      sampleId: s.id,
+      version: 1,
+      approvedAt: NOW,
+      sha256: certificate.sha256,
+    },
+  ]);
+  t.assert.snapshot(certificate.content);
+
+  const document = renderCertificate(certificate.content);
+  assert.equal(document.reference, 'Sample 26-00001 · Version 1');
+  assert.equal(document.marker, null);
+  const table = document.sections.find((x) => x.kind === 'table');
+  assert.deepEqual(table && [table.columns, table.rows], [
+    [
+      'Analyte',
+      'Method',
+      'Result',
+      'Unit',
+      'Limit',
+      'Conformity statement',
+      'OOS investigation',
+    ],
+    [
+      [
+        'Impurity A',
+        'NIT-001 v1 (LC-MS/MS)',
+        '30',
+        'ng/day',
+        '26.5 ng/day',
+        'Does not comply',
+        'OOS26-0001 (Confirmed)',
+      ],
+      [
+        'Impurity B',
+        'NIT-003 v1 (LC-MS/MS)',
+        '< LOD (1)',
+        'ng/day',
+        '96 ng/day',
+        'Complies',
+        '—',
+      ],
+    ],
+  ]);
+  assert.deepEqual(
+    document.sections.map((x) => x.heading),
+    [
+      'Client and Submission',
+      'Sample',
+      'Stability study',
+      'Receipt deviations',
+      'Results',
+      'Decision rule',
+      'Electronic signatures',
+    ],
+  );
+  assert.deepEqual(document.sections.at(-1), {
+    kind: 'signatures',
+    heading: 'Electronic signatures',
+    signatures: [
+      {
+        meaning: 'Performed by',
+        name: 'Alex Chen',
+        signedAt: '2026-09-10 12:00:00 UTC',
+      },
+      {
+        meaning: 'Approved by',
+        name: 'Taylor Brooks',
+        signedAt: '2026-09-10 12:00:00 UTC',
+      },
+    ],
+  });
+});
+
+test('a raw material Certificate reports each Result with Report and no Limit', (t) => {
+  const lab = memory(t);
+  let s = run(
+    lab,
+    {
+      ...receipt,
+      samples: [{ ...rawMaterial, methodIds: ['NIT-001-v1', 'NIT-005-v1'] }],
+    },
+    'coordinator',
+  );
+  s = run(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'analyst' },
+    'coordinator',
+  );
+  s = run(lab, result(s, 'NIT-001-v1', 0.02), 'analyst');
+  s = run(lab, result(s, 'NIT-005-v1', 0.05), 'analyst');
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  const { content } = lab.certificate(s.id);
+  assert.deepEqual(
+    content.results.map((r) => [r.qualifier, r.conformity, r.limit]),
+    [
+      ['< LOQ', 'Report', null],
+      ['quantified', 'Report', null],
+    ],
+  );
+  t.assert.snapshot(content);
+  const table = renderCertificate(content).sections.find(
+    (x) => x.kind === 'table',
+  );
+  assert.deepEqual(table && [table.columns, table.rows, table.notes], [
+    [
+      'Analyte',
+      'Method',
+      'Result',
+      'Unit',
+      'Conformity statement',
+      'OOS investigation',
+    ],
+    [
+      [
+        'Impurity A',
+        'NIT-001 v1 (LC-MS/MS)',
+        '< LOQ (0.03)',
+        'ppm',
+        'Report',
+        '—',
+      ],
+      ['Impurity C', 'NIT-005 v1 (LC-MS/MS)', '0.05', 'ppm', 'Report', '—'],
+    ],
+    [],
+  ]);
+});
+
+test('a Certificate stays as issued through replays, reference data changes and reopening', (t) => {
+  const folder = mkdtempSync(join(tmpdir(), 'lims-certificate-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const file = join(folder, 'lab.sqlite');
+  const lab = new Laboratory(file, { clock: () => NOW, credentials: accounts });
+  let s = submitted(lab);
+  const approve = {
+    commandId: newCommandId(),
+    type: 'approve',
+    ...target(s),
+    password: 'manager-demo',
+  };
+  s = lab.execute(approve, 'manager').samples[0];
+  const issued = lab.certificate(s.id);
+  assert.equal(issued.content.results[0].limit?.value, 26.5);
+  assert.equal(lab.execute(approve, 'manager').outcome, 'replayed');
+  assert.deepEqual(lab.certificates(s.id), [issued], 'nothing issued again');
+
+  // A revised Acceptable intake now in force for the certified Analyte.
+  lab.appendAcceptableIntake({
+    analyteId: 'impurity-a',
+    value: 18,
+    sourceTitle: 'CDER Nitrosamine Impurity Acceptable Intake Limits',
+    sourceUrl: 'https://www.fda.gov/example-revision',
+    sourceRevisionDate: '2026-09-01',
+    effectiveFrom: '2026-09-01',
+    illustrative: true,
+  });
+  assert.deepEqual(lab.certificate(s.id), issued);
+  lab.close();
+
+  // Reopened with changed Method reference data.
+  const reopened = new Laboratory(file, {
+    clock: () => NOW,
+    credentials: accounts,
+    methods: methods.map((m) => ({
+      ...m,
+      version: 2,
+      technique: 'GC-MS',
+      lodLoq: { 'ng/day': { lod: 5, loq: 10 }, ppm: { lod: 1, loq: 2 } },
+    })),
+  });
+  t.after(() => reopened.close());
+  assert.deepEqual(reopened.certificates(s.id), [issued]);
+  assert.throws(
+    () => reopened.certificate(s.id, 2),
+    (e: Error & { status: number }) => e.status === 404,
+  );
+  assert.throws(
+    () => reopened.certificates('26-99999'),
+    (e: Error & { status: number }) => e.status === 404,
   );
 });

@@ -38,6 +38,11 @@ export const auditRecord = {
     id: i.id,
     sampleId: s.id,
   }),
+  certificate: (s: Sample, version: number): AuditRecord => ({
+    type: 'Certificate of Analysis',
+    id: `${s.id}/v${version}`,
+    sampleId: s.id,
+  }),
 };
 
 /** Fields of `T` whose values the trail can hold as they are. */

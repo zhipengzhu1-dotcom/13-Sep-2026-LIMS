@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AcceptableIntake, ConformityStatement } from './limits.ts';
 import type { Attachment } from './attachment-contracts.ts';
+import type { CertificateSummary } from './certificate.ts';
 
 export * from './limits.ts';
 export * from './investigations.ts';
@@ -323,7 +324,11 @@ export type Sample = {
 
 /** The kinds of record an audit entry can describe. */
 export type AuditRecordType =
-  'Submission' | 'Sample' | 'Test' | 'OOS investigation';
+  | 'Submission'
+  | 'Sample'
+  | 'Test'
+  | 'OOS investigation'
+  | 'Certificate of Analysis';
 /** A single field's value as the audit trail keeps it. */
 export type AuditValue = string | number | boolean | null;
 
@@ -406,6 +411,9 @@ export type Snapshot = {
   methods: typeof methods;
   /** Every Acceptable intake entry, current and historical, in append order. */
   acceptableIntakes: AcceptableIntake[];
+  /** Every Certificate version issued, by Sample then version; the content
+   * is read per Certificate. */
+  certificates: CertificateSummary[];
 };
 
 /**

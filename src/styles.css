@@ -1907,3 +1907,171 @@ body.resizing {
     gap: 2px;
   }
 }
+
+/* ---------- Certificate of Analysis ----------
+ * A paper document: fixed light colours whatever the workspace theme, laid
+ * out for A4 when printed. */
+.certificates li {
+  grid-template-columns: 8em minmax(0, 1fr) auto;
+}
+.certificate-view {
+  width: min(900px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.certificate-view::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+.certificate-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface);
+  font-size: 13px;
+}
+.certificate-view > .blank,
+.certificate-view > .flash {
+  margin: 16px;
+}
+.coa {
+  margin: 16px;
+  padding: 28px 32px;
+  background: #ffffff;
+  color: #111614;
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.2);
+}
+.coa-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid #111614;
+}
+.coa-lab {
+  font-size: 15px;
+  font-weight: 700;
+}
+.coa-lab-line {
+  color: #4a5550;
+}
+.coa-title {
+  text-align: right;
+}
+.coa-title h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.01em;
+}
+.coa-marker {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 8px;
+  border: 1.5px solid #9b1c1c;
+  color: #9b1c1c;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.coa-section {
+  margin-top: 16px;
+  break-inside: avoid;
+}
+.coa-section h2 {
+  margin: 0 0 6px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid #b9c2be;
+  font-size: 13px;
+}
+.coa-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 4px 20px;
+}
+.coa-fields div {
+  display: grid;
+  grid-template-columns: 11em minmax(0, 1fr);
+  gap: 8px;
+}
+.coa-fields dt {
+  color: #4a5550;
+}
+.coa-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.coa-table th,
+.coa-table td {
+  padding: 4px 6px;
+  border: 1px solid #b9c2be;
+  text-align: left;
+  vertical-align: top;
+}
+.coa-table th {
+  background: #eef1ef;
+  font-weight: 600;
+}
+.coa-notes {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: #4a5550;
+}
+.coa-text {
+  margin: 0 0 4px;
+}
+.coa-foot {
+  margin-top: 20px;
+  padding-top: 8px;
+  border-top: 1px solid #b9c2be;
+  color: #4a5550;
+  font-size: 11px;
+}
+.coa-hash {
+  overflow-wrap: anywhere;
+}
+@page {
+  size: A4;
+  margin: 14mm;
+}
+@media print {
+  body {
+    background: #ffffff;
+  }
+  body > :not(.certificate-view) {
+    display: none !important;
+  }
+  .certificate-view {
+    position: static;
+    width: auto;
+    max-height: none;
+    overflow: visible;
+    border: 0;
+    background: #ffffff;
+  }
+  .certificate-view::backdrop {
+    display: none;
+  }
+  .certificate-toolbar {
+    display: none;
+  }
+  .coa {
+    margin: 0;
+    padding: 0;
+    box-shadow: none;
+  }
+}

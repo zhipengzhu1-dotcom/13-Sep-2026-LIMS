@@ -39,6 +39,12 @@ import {
   type Test,
 } from './contracts.ts';
 import { AuditTrail, auditRecord, type Audit } from './audit.ts';
+import {
+  certificateContent,
+  type Certificate,
+  type CertificateContent,
+  type CertificateSummary,
+} from './certificate.ts';
 import type { Attachment } from './attachment-contracts.ts';
 import {
   AttachmentRejected,
@@ -47,7 +53,7 @@ import {
 } from './attachments.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 export class WorkflowError extends Error {
   constructor(
@@ -155,7 +161,10 @@ type Series = 'submission' | 'sample' | 'investigation';
  * consumes none. `audit` writes the command's field-level audit entries; every
  * command must write at least one. `limitInForce` is the Acceptable intake
  * entry for an Analyte in force at `at`. `attachment` looks up a stored
- * attachment record.
+ * attachment record. `submission` loads a Sample's Submission, `signatures`
+ * lists a Sample's recorded Electronic signatures (oldest first), and
+ * `certificates` / `issueCertificate` read and store locked Certificate
+ * versions inside the same transaction.
  */
 type Context = {
   at: string;
@@ -165,6 +174,10 @@ type Context = {
   /** The Method reference data in force. */
   methods: readonly Method[];
   attachment: (id: string) => Attachment | null;
+  submission: (id: string) => Submission;
+  signatures: (sampleId: string) => Signature[];
+  certificates: (sampleId: string) => CertificateSummary[];
+  issueCertificate: (content: CertificateContent) => Certificate;
 };
 
 /**
@@ -553,7 +566,12 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     sample.lastReturn = null;
   },
 
-  approve(_command, actor, sample, { audit }) {
+  approve(
+    _command,
+    actor,
+    sample,
+    { at, audit, submission, signatures, certificates, issueCertificate },
+  ) {
     requireRole(actor, 'manager');
     requireAwaitingApproval(sample);
     if (enteredResultOn(sample, actor.id))
@@ -564,6 +582,41 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     const blocked = oosApprovalBlocker(sample);
     if (blocked) throw new WorkflowError(blocked);
     audit.set(auditRecord.sample(sample), sample, 'status', 'Approved');
+    // Approval freezes the next Certificate version. The submission that led
+    // here carries the latest "performed by"; this Approval's own signature
+    // is recorded by the entry point with the same signer and time.
+    const performed = signatures(sample.id)
+      .filter((x) => x.meaning === 'performed by')
+      .at(-1);
+    if (!performed)
+      throw new Error(`Sample ${sample.id} has no "performed by" signature.`);
+    const manifestation = (x: Signature) => ({
+      meaning: x.meaning,
+      signerId: x.signerId,
+      printedName: x.printedName,
+      signedAt: x.signedAt,
+    });
+    const version = (certificates(sample.id).at(-1)?.version ?? 0) + 1;
+    const certificate = issueCertificate(
+      certificateContent({
+        sample,
+        submission: submission(sample.submissionId),
+        version,
+        approvedAt: at,
+        signatures: [
+          manifestation(performed),
+          {
+            meaning: signatureMeanings.approve,
+            signerId: actor.id,
+            printedName: actor.name,
+            signedAt: at,
+          },
+        ],
+      }),
+    );
+    const record = auditRecord.certificate(sample, version);
+    audit.change(record, 'version', null, version);
+    audit.change(record, 'sha256', null, certificate.sha256);
   },
 
   return(command, actor, sample, { at, audit }) {
@@ -736,7 +789,10 @@ export class Laboratory {
       CREATE TABLE IF NOT EXISTS commandReplays (id INTEGER PRIMARY KEY, commandId BLOB NOT NULL REFERENCES commands(commandId), at TEXT NOT NULL, actorId TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS acceptableIntakes (id INTEGER PRIMARY KEY, analyteId TEXT NOT NULL, value REAL NOT NULL, sourceTitle TEXT NOT NULL, sourceUrl TEXT NOT NULL, sourceRevisionDate TEXT NOT NULL, effectiveFrom TEXT NOT NULL, illustrative INTEGER NOT NULL);
       CREATE TRIGGER IF NOT EXISTS acceptableIntakesNoUpdate BEFORE UPDATE ON acceptableIntakes BEGIN SELECT RAISE(ABORT, 'Acceptable intake entries are append-only.'); END;
-      CREATE TRIGGER IF NOT EXISTS acceptableIntakesNoDelete BEFORE DELETE ON acceptableIntakes BEGIN SELECT RAISE(ABORT, 'Acceptable intake entries are append-only.'); END;`);
+      CREATE TRIGGER IF NOT EXISTS acceptableIntakesNoDelete BEFORE DELETE ON acceptableIntakes BEGIN SELECT RAISE(ABORT, 'Acceptable intake entries are append-only.'); END;
+      CREATE TABLE IF NOT EXISTS certificates (sampleId TEXT NOT NULL, version INTEGER NOT NULL, approvedAt TEXT NOT NULL, sha256 TEXT NOT NULL, content TEXT NOT NULL, commandId BLOB NOT NULL, PRIMARY KEY (sampleId, version)) WITHOUT ROWID;
+      CREATE TRIGGER IF NOT EXISTS certificatesNoUpdate BEFORE UPDATE ON certificates BEGIN SELECT RAISE(ABORT, 'Certificates of Analysis are locked.'); END;
+      CREATE TRIGGER IF NOT EXISTS certificatesNoDelete BEFORE DELETE ON certificates BEGIN SELECT RAISE(ABORT, 'Certificates of Analysis are locked.'); END;`);
     // Reference data: a new database starts with the seeded entries, written
     // as one statement so it is never half seeded.
     const { entries } = this.db
@@ -786,20 +842,108 @@ export class Laboratory {
       submissions: this.documents('submissions'),
       samples: this.documents('samples'),
       audit: this.audit.entries(),
-      signatures: (
-        this.db
-          .prepare(
-            'SELECT sampleId, signerId, printedName, signedAt, meaning, command FROM signatures ORDER BY signedAt, id',
-          )
-          .all() as (Omit<Signature, 'command'> & { command: string })[]
-      ).map((row) => ({ ...row, command: JSON.parse(row.command) })),
+      signatures: this.signatures(),
       attachments: this.attachments.list(),
       people,
       clients,
       analytes,
       methods: this.methods,
       acceptableIntakes: this.acceptableIntakes(),
+      certificates: this.certificateSummaries(),
     };
+  }
+
+  /** Electronic signatures, oldest first: lab-wide or for one Sample. */
+  private signatures(sampleId?: string): Signature[] {
+    const columns =
+      'SELECT sampleId, signerId, printedName, signedAt, meaning, command FROM signatures';
+    const rows = (
+      sampleId === undefined
+        ? this.db.prepare(`${columns} ORDER BY signedAt, id`).all()
+        : this.db
+            .prepare(`${columns} WHERE sampleId=? ORDER BY signedAt, id`)
+            .all(sampleId)
+    ) as (Omit<Signature, 'command'> & { command: string })[];
+    return rows.map((row) => ({ ...row, command: JSON.parse(row.command) }));
+  }
+
+  private certificateSummaries(sampleId?: string): CertificateSummary[] {
+    const columns =
+      'SELECT sampleId, version, approvedAt, sha256 FROM certificates';
+    const rows = (
+      sampleId === undefined
+        ? this.db.prepare(`${columns} ORDER BY sampleId, version`).all()
+        : this.db
+            .prepare(`${columns} WHERE sampleId=? ORDER BY version`)
+            .all(sampleId)
+    ) as CertificateSummary[];
+    return rows.map((row) => ({ ...row, version: Number(row.version) }));
+  }
+
+  /**
+   * Every Certificate of Analysis version of a Sample, oldest first, each
+   * with its locked content. Empty until the Sample is approved.
+   */
+  certificates(sampleId: string): Certificate[] {
+    this.load(sampleId);
+    return (
+      this.db
+        .prepare(
+          'SELECT sampleId, version, approvedAt, sha256, content FROM certificates WHERE sampleId=? ORDER BY version',
+        )
+        .all(sampleId) as (CertificateSummary & { content: string })[]
+    ).map((row) => ({
+      sampleId: row.sampleId,
+      version: Number(row.version),
+      approvedAt: row.approvedAt,
+      sha256: row.sha256,
+      content: JSON.parse(row.content),
+    }));
+  }
+
+  /** One Certificate version of a Sample, or its latest when no version is
+   * given. */
+  certificate(sampleId: string, version?: number): Certificate {
+    const all = this.certificates(sampleId);
+    const found =
+      version === undefined
+        ? all.at(-1)
+        : all.find((c) => c.version === version);
+    if (!found)
+      throw new WorkflowError(
+        version === undefined
+          ? `Sample ${sampleId} has no Certificate of Analysis yet.`
+          : `Sample ${sampleId} has no Certificate of Analysis version ${version}.`,
+        404,
+      );
+    return found;
+  }
+
+  private issueCertificate(
+    content: CertificateContent,
+    commandId: Uint8Array,
+  ): Certificate {
+    const document = JSON.stringify(content);
+    const certificate: Certificate = {
+      sampleId: content.sampleId,
+      version: content.version,
+      approvedAt: content.approvedAt,
+      sha256: createHash('sha256').update(document).digest('hex'),
+      content: JSON.parse(document),
+    };
+    this.db
+      .prepare(
+        'INSERT INTO certificates (sampleId, version, approvedAt, sha256, content, commandId) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        certificate.sampleId,
+        certificate.version,
+        certificate.approvedAt,
+        certificate.sha256,
+        document,
+        commandId,
+      );
+    return certificate;
   }
 
   /** The audit trail, newest first: lab-wide, or one Sample's history
@@ -901,6 +1045,14 @@ export class Laboratory {
           limitInForce(this.acceptableIntakes(), analyteId, at),
         methods: this.methods,
         attachment: (id) => this.attachments.find(id),
+        submission: (id) => {
+          const found = this.find<Submission>('submissions', id);
+          if (!found) throw new Error(`Submission ${id} not found.`);
+          return found;
+        },
+        signatures: (sampleId) => this.signatures(sampleId),
+        certificates: (sampleId) => this.certificateSummaries(sampleId),
+        issueCertificate: (content) => this.issueCertificate(content, key),
       };
       // Verified before the key is claimed or a replay answered, so a wrong
       // password applies nothing, is never reported as an earlier success, and

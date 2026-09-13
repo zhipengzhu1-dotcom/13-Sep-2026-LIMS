@@ -61,6 +61,20 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
       }
       if (path === '/api/attachments' || path.startsWith('/api/attachments/'))
         return await handleAttachments(lab, req, res, url, currentUser);
+      // GET /api/samples/:sampleId/certificates lists every version with its
+      // locked content; .../certificates/:version returns one.
+      const certificates = path.match(
+        /^\/api\/samples\/([^/]+)\/certificates(?:\/(\d+))?$/,
+      );
+      if (req.method === 'GET' && certificates) {
+        currentUser();
+        const sampleId = decodeURIComponent(certificates[1]);
+        return certificates[2] === undefined
+          ? send(200, { certificates: lab.certificates(sampleId) })
+          : send(200, {
+              certificate: lab.certificate(sampleId, Number(certificates[2])),
+            });
+      }
       if (
         ![
           'POST /api/sign-in',
