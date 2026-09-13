@@ -35,7 +35,12 @@ const passwordOf = (id: string) =>
   demoAccounts.find((a) => a.id === id)!.password;
 
 type Stage = 'received' | 'progress' | 'awaiting' | 'returned' | 'approved';
-type SeedSample = SampleReceipt & { stage: Stage; values: number[] };
+type SeedSample = SampleReceipt & {
+  stage: Stage;
+  values: number[];
+  /** A Manager opens an OOS investigation on the first Test's Result. */
+  openOos?: true;
+};
 type SeedSubmission = Omit<
   SubmissionReceipt,
   'commandId' | 'type' | 'samples'
@@ -217,6 +222,37 @@ export function seed(lab: Laboratory) {
         },
       ],
     },
+    {
+      clientId: 'harbor',
+      clientReference: 'HH-QC-2609',
+      courier: 'UPS',
+      trackingNumber: '1Z-902-771-3304',
+      shippingCondition: 'ambient',
+      temperatureOnArrival: 22.1,
+      packageCondition: 'intact',
+      chainOfCustodyReference: 'COC-HH-2609',
+      samples: [
+        {
+          ...tablets,
+          clientSampleId: 'HH-IRB-300-01',
+          product: 'Irbesartan tablets',
+          strength: '300 mg',
+          batch: 'IR-260909',
+          manufacturer: 'Harbor Health Products',
+          manufactureDate: '2026-07-14',
+          expiryDate: '2028-07-13',
+          maximumDailyDose: 300,
+          materialType: 'finished product',
+          methodIds: ['NIT-001-v1', 'NIT-003-v1'],
+          dueDate: due(5),
+          priority: 'Urgent',
+          stage: 'awaiting',
+          // Impurity A over its illustrative 26.5 ng/day Limit.
+          values: [31.4, 4.2],
+          openOos: true,
+        },
+      ],
+    },
   ];
   for (const { samples, ...submission } of submissions) {
     const receipt = lab.execute(
@@ -224,12 +260,14 @@ export function seed(lab: Laboratory) {
         commandId: newCommandId(),
         type: 'receiveSubmission',
         ...submission,
-        samples: samples.map(({ stage: _s, values: _v, ...sample }) => sample),
+        samples: samples.map(
+          ({ stage: _s, values: _v, openOos: _o, ...sample }) => sample,
+        ),
       },
       'coordinator',
     );
     receipt.samples.forEach((received, i) => {
-      const { stage, values } = samples[i];
+      const { stage, values, openOos } = samples[i];
       if (stage === 'received') return;
       let s = received;
       const act = (command: object, actor: string) => {
@@ -273,7 +311,7 @@ export function seed(lab: Laboratory) {
             'analyst',
           );
         };
-        if (stage === 'awaiting' && j === 0) {
+        if (stage === 'awaiting' && j === 0 && !openOos) {
           // One corrected Result, so the demo shows a superseded entry.
           entry(values[j] - 0.5, 1);
           entry(values[j], 2, 'Wrong injection selected; re-read sequence.');
@@ -284,6 +322,9 @@ export function seed(lab: Laboratory) {
         { type: 'submitForApproval', password: passwordOf('analyst') },
         'analyst',
       );
+      // Left open: the Analyst's laboratory error check comes next.
+      if (openOos)
+        act({ type: 'openOosInvestigation', testId: s.tests[0].id }, 'manager');
       if (stage === 'approved')
         act({ type: 'approve', password: passwordOf('manager') }, 'manager');
       if (stage === 'returned')

@@ -15,9 +15,13 @@ import {
   decisionRule,
   enteredResultOn,
   expiryKinds,
+  investigationOf,
   limitInForce,
   materialTypes,
   newCommandId,
+  oosApprovalBlocker,
+  oosRows,
+  outOfSpecification,
   packageConditions,
   priorities,
   qualify,
@@ -34,6 +38,8 @@ import {
   type Command,
   type ConformityStatement,
   type MaterialType,
+  type OosInvestigation,
+  type OosRow,
   type Qualifier,
   type Result,
   type Snapshot,
@@ -55,6 +61,7 @@ type View =
   | 'Samples'
   | 'My work'
   | 'Approval queue'
+  | 'OOS investigations'
   | 'Methods'
   | 'Audit trail';
 const QUEUES: View[] = ['Receiving', 'Samples', 'My work', 'Approval queue'];
@@ -78,7 +85,8 @@ type Execute = (
  * them a queue they cannot use. */
 function viewsForRole(role: string | undefined): View[] {
   if (role === 'analyst') return ['My work', 'Methods', 'Audit trail'];
-  if (role === 'manager') return ['Approval queue', 'Methods', 'Audit trail'];
+  if (role === 'manager')
+    return ['Approval queue', 'OOS investigations', 'Methods', 'Audit trail'];
   return ['Receiving', 'Samples', 'Methods', 'Audit trail'];
 }
 function defaultViewForRole(role: string | undefined): View {
@@ -202,6 +210,12 @@ function Icon({ name }: { name: string }) {
       <>
         <path d="m12 2 8 4v6c0 5-8 10-8 10S4 17 4 12V6l8-4Z" />
         <path d="m8 12 3 3 5-6" />
+      </>
+    ),
+    'OOS investigations': (
+      <>
+        <path d="M12 3 2 20h20L12 3Z" />
+        <path d="M12 10v4m0 3v.01" />
       </>
     ),
     Methods: (
@@ -572,9 +586,15 @@ function App() {
   }, [base, filter, refine, search, sort]);
   const sample = data?.samples.find((s) => s.id === selected);
   const queueCount = (v: View) =>
-    data && v !== 'Samples' && QUEUES.includes(v)
-      ? baseSet(v, data.samples, actor).length
-      : 0;
+    !data
+      ? 0
+      : v === 'OOS investigations'
+        ? oosRows(data.samples).filter(
+            (r) => r.investigation?.status !== 'Closed',
+          ).length
+        : v !== 'Samples' && QUEUES.includes(v)
+          ? baseSet(v, data.samples, actor).length
+          : 0;
 
   function navigate(next: View) {
     setView(next);
@@ -644,6 +664,32 @@ function App() {
         ?.scrollIntoView({ block: 'nearest' });
   }, [selected]);
 
+  // The open Sample beside a list: the register, or the OOS investigations.
+  const openSample =
+    sample && data ? (
+      <>
+        <Splitter
+          width={shownPanelWidth}
+          max={panelMax(workspaceWidth)}
+          onChange={setPanelWidth}
+        />
+        <section className="panel" aria-label="Sample">
+          <SamplePanel
+            key={sample.id}
+            sample={sample}
+            data={data}
+            actor={actor}
+            busy={busy}
+            execute={execute}
+            onClose={() => setSelected(null)}
+          />
+        </section>
+      </>
+    ) : null;
+  const workspaceStyle = {
+    '--panel-width': `${shownPanelWidth}px`,
+  } as React.CSSProperties;
+
   if (user === undefined) return <p className="blank">Loading…</p>;
   if (user === null)
     return <SignIn message={signInMessage} onSignedIn={signedIn} />;
@@ -666,7 +712,13 @@ function App() {
             onClick={() => navigate(v)}
           >
             <Icon name={v} />
-            <span>{v === 'Approval queue' ? 'Approval' : v}</span>
+            <span>
+              {v === 'Approval queue'
+                ? 'Approval'
+                : v === 'OOS investigations'
+                  ? 'OOS'
+                  : v}
+            </span>
             {queueCount(v) > 0 && <b className="rail-count">{queueCount(v)}</b>}
           </button>
         ))}
@@ -859,11 +911,7 @@ function App() {
           <div
             ref={setWorkspaceEl}
             className={'workspace' + (sample ? ' has-sample' : '')}
-            style={
-              {
-                '--panel-width': `${shownPanelWidth}px`,
-              } as React.CSSProperties
-            }
+            style={workspaceStyle}
           >
             <section className="register" aria-label="Samples">
               <div className="scroll">
@@ -924,6 +972,16 @@ function App() {
                             {s.priority === 'Urgent' && (
                               <span className="urgent" title="Urgent">
                                 Urgent
+                              </span>
+                            )}
+                            {oosRows([s]).some(
+                              (r) => r.investigation?.status !== 'Closed',
+                            ) && (
+                              <span
+                                className="oos-flag"
+                                title="Out of specification: an OOS investigation is required or open"
+                              >
+                                OOS
                               </span>
                             )}
                           </td>
@@ -996,26 +1054,27 @@ function App() {
             {/* With no sample open the register keeps the whole width; the
                 panel and its divider only appear once there is something to
                 show in them. */}
-            {sample && (
-              <>
-                <Splitter
-                  width={shownPanelWidth}
-                  max={panelMax(workspaceWidth)}
-                  onChange={setPanelWidth}
+            {openSample}
+          </div>
+        ) : view === 'OOS investigations' ? (
+          <div
+            ref={setWorkspaceEl}
+            className={'workspace' + (sample ? ' has-sample' : '')}
+            style={workspaceStyle}
+          >
+            <section className="register" aria-label="OOS investigations">
+              <div className="scroll">
+                <OosTable
+                  data={data}
+                  selected={selected}
+                  onSelect={(id) => {
+                    setSelected(id);
+                    setError('');
+                  }}
                 />
-                <section className="panel" aria-label="Sample">
-                  <SamplePanel
-                    key={sample.id}
-                    sample={sample}
-                    data={data}
-                    actor={actor}
-                    busy={busy}
-                    execute={execute}
-                    onClose={() => setSelected(null)}
-                  />
-                </section>
-              </>
-            )}
+              </div>
+            </section>
+            {openSample}
           </div>
         ) : view === 'Methods' ? (
           <div className="scroll page">
@@ -1881,6 +1940,8 @@ function SamplePanel({
     person.role === 'manager' && s.status === 'Awaiting approval';
   // Separation of duties (ADR-0003): the core refuses this Approval too.
   const ownResults = enteredResultOn(s, actor);
+  // The OOS gate, as the core enforces it.
+  const oosBlocker = oosApprovalBlocker(s);
   const canAssign =
     person.role === 'coordinator' &&
     !['Approved', 'Awaiting approval'].includes(s.status);
@@ -2045,6 +2106,13 @@ function SamplePanel({
               execute={execute}
               data={data}
             />
+            <Investigations
+              sample={s}
+              data={data}
+              actor={actor}
+              busy={busy}
+              execute={execute}
+            />
             <Signatures
               signatures={data.signatures.filter((x) => x.sampleId === s.id)}
             />
@@ -2085,6 +2153,11 @@ function SamplePanel({
                 });
               }}
             >
+              {oosBlocker && (
+                <p className="flash warn inline" role="status">
+                  {oosBlocker}
+                </p>
+              )}
               <textarea
                 name="comment"
                 aria-label="Comment for the analyst"
@@ -2105,11 +2178,11 @@ function SamplePanel({
                   className="btn primary"
                   name="choice"
                   value="approve"
-                  disabled={busy || ownResults}
+                  disabled={busy || ownResults || !!oosBlocker}
                   title={
                     ownResults
                       ? 'You entered a Result on this Sample, so another Manager must approve it.'
-                      : undefined
+                      : (oosBlocker ?? undefined)
                   }
                 >
                   Approve…
@@ -2630,6 +2703,11 @@ function TestSheet({
         const current = currentResult(t);
         const editing = canRecord && (!current || editingId === t.id);
         const history = openHistory === t.id;
+        // Earlier Results besides the current one, such as an Invalidated
+        // result awaiting its retest.
+        const earlier = t.results.length - (current ? 1 : 0);
+        const retest =
+          !current && t.results.some((r) => r.status === 'invalidated');
         return (
           <tbody key={t.id} className={editing ? 'editing' : undefined}>
             <tr>
@@ -2653,10 +2731,24 @@ function TestSheet({
                 ) : (
                   <span className="dim">— {t.unit}</span>
                 )}
+                {!current && earlier > 0 && (
+                  <button
+                    className="link sub"
+                    aria-expanded={history}
+                    onClick={() => setOpenHistory(history ? null : t.id)}
+                  >
+                    History ({t.results.length})
+                  </button>
+                )}
               </td>
               <td>
                 {current ? (
-                  <LimitCell result={current} />
+                  <>
+                    <LimitCell result={current} />
+                    <OosNote sample={s} result={current} />
+                  </>
+                ) : retest ? (
+                  <span className="oos-note">Retest required</span>
                 ) : (
                   <span className="dim">—</span>
                 )}
@@ -2721,7 +2813,7 @@ function TestSheet({
                       <li key={r.sequence} className={r.status}>
                         <span className="num">#{r.sequence}</span>
                         <span className={'result-status ' + r.status}>
-                          {r.status === 'current' ? 'Current' : 'Superseded'}
+                          {r.status[0].toUpperCase() + r.status.slice(1)}
                         </span>
                         <ResultValue result={r} />
                         <ConformityTag statement={r.conformity} />
@@ -2737,6 +2829,14 @@ function TestSheet({
                         {r.reason && (
                           <span className="reason">Reason: {r.reason}</span>
                         )}
+                        {r.investigationId && (
+                          <span className="reason">
+                            {r.investigationId} ·{' '}
+                            {investigationLabel(investigationOf(s, r))}
+                            {investigationOf(s, r)?.assignableCause &&
+                              ` · Assignable cause: ${investigationOf(s, r)!.assignableCause}`}
+                          </span>
+                        )}
                       </li>
                     ))}
                   </ol>
@@ -2750,6 +2850,385 @@ function TestSheet({
   );
 }
 
+/** Where an out-of-specification Result stands in its investigation. */
+function investigationLabel(investigation: OosInvestigation | undefined) {
+  if (!investigation) return 'Investigation required';
+  if (investigation.status === 'Open') return 'Investigation open';
+  return investigation.outcome === 'Invalidated'
+    ? 'Invalidated'
+    : 'Confirmed OOS';
+}
+const investigationClass = (investigation: OosInvestigation | undefined) =>
+  'oos-status ' +
+  (!investigation
+    ? 'required'
+    : investigation.status === 'Open'
+      ? 'open'
+      : (investigation.outcome ?? '').toLowerCase());
+
+/** Flags a current Result that is out of specification, with its
+ * investigation reference once one is opened. */
+function OosNote({ sample, result }: { sample: Sample; result: Result }) {
+  if (!outOfSpecification(result) && !result.investigationId) return null;
+  const investigation = investigationOf(sample, result);
+  return (
+    <span className="sub">
+      <span className={investigationClass(investigation)}>
+        {investigationLabel(investigation)}
+      </span>{' '}
+      {investigation && <span className="num">{investigation.id}</span>}
+    </span>
+  );
+}
+
+/** The Sample's OOS investigations: each out-of-specification Result with its
+ * investigation, and the step the signed-in user can take next. */
+function Investigations({
+  sample: s,
+  data,
+  actor,
+  busy,
+  execute,
+}: {
+  sample: Sample;
+  data: Snapshot;
+  actor: string;
+  busy: boolean;
+  execute: Execute;
+}) {
+  const rows = oosRows([s]);
+  if (!rows.length) return null;
+  const person = data.people.find((p) => p.id === actor)!;
+  const manager = person.role === 'manager' && s.status !== 'Approved';
+  const target = { sampleId: s.id, revision: s.revision };
+  return (
+    <section className="investigations" aria-label="OOS investigations">
+      <h3>OOS investigations</h3>
+      <ul>
+        {rows.map(({ test: t, result: r, investigation: inv }) => (
+          <li key={`${t.id}-${r.sequence}`}>
+            <div className="inv-head">
+              <strong className="num">{inv?.id ?? 'Not opened'}</strong>
+              <span className={investigationClass(inv)}>
+                {investigationLabel(inv)}
+              </span>
+              <span>
+                {t.analyteName} · {t.methodCode} v{t.methodVersion} · Result #
+                {r.sequence}
+              </span>
+              <ResultValue result={r} />
+              {r.limit && (
+                <span className="dim num">Limit {r.limit.value} ng/day</span>
+              )}
+            </div>
+            {!inv ? (
+              manager ? (
+                <div className="inv-step">
+                  <span className="dim">
+                    This Result does not comply with its Limit. Approval waits
+                    for a closed investigation.
+                  </span>
+                  <button
+                    className="btn sm primary"
+                    disabled={busy}
+                    onClick={() =>
+                      void execute({
+                        type: 'openOosInvestigation',
+                        ...target,
+                        testId: t.id,
+                      })
+                    }
+                  >
+                    Open investigation
+                  </button>
+                </div>
+              ) : (
+                <p className="inv-step dim">
+                  A Manager opens the OOS investigation.
+                </p>
+              )
+            ) : (
+              <dl className="inv-detail">
+                <div>
+                  <dt>Opened</dt>
+                  <dd>
+                    {personName(data, inv.openedBy)}, {stamp(inv.openedAt)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Laboratory error check</dt>
+                  <dd>
+                    {inv.labErrorCheck ? (
+                      <>
+                        <strong>
+                          {inv.labErrorCheck.errorIdentified
+                            ? 'Laboratory error identified.'
+                            : 'No laboratory error identified.'}
+                        </strong>{' '}
+                        {inv.labErrorCheck.findings}{' '}
+                        <span className="dim">
+                          {personName(data, inv.labErrorCheck.by)},{' '}
+                          {stamp(inv.labErrorCheck.at)}
+                        </span>
+                      </>
+                    ) : inv.status === 'Open' && s.assignee === actor ? (
+                      <form
+                        className="inv-form"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const f = new FormData(e.currentTarget);
+                          void execute({
+                            type: 'recordLabErrorCheck',
+                            ...target,
+                            investigationId: inv.id,
+                            findings: String(f.get('findings')),
+                            errorIdentified: f.get('errorIdentified') === 'on',
+                          });
+                        }}
+                      >
+                        <textarea
+                          name="findings"
+                          aria-label="Laboratory error check findings"
+                          required
+                          minLength={3}
+                          maxLength={2000}
+                          rows={2}
+                          placeholder="Calculations, standards, instrument, sample preparation checked"
+                        />
+                        <label className="check">
+                          <input type="checkbox" name="errorIdentified" />A
+                          laboratory error was identified
+                        </label>
+                        <button className="btn sm primary" disabled={busy}>
+                          Record check
+                        </button>
+                      </form>
+                    ) : (
+                      <span className="dim">
+                        Awaiting {personName(data, s.assignee) ?? 'the analyst'}
+                        .
+                      </span>
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Conclusion</dt>
+                  <dd>
+                    {inv.status === 'Closed' ? (
+                      <>
+                        <strong>{inv.outcome}</strong>
+                        {inv.assignableCause &&
+                          `. Assignable cause: ${inv.assignableCause}`}{' '}
+                        <span className="dim">
+                          Closed by {personName(data, inv.closedBy)},{' '}
+                          {stamp(inv.closedAt!)}
+                        </span>
+                        {inv.outcome === 'Invalidated' && !currentResult(t) && (
+                          <span className="oos-note">
+                            {' '}
+                            A retest Result is required on this Test.
+                          </span>
+                        )}
+                      </>
+                    ) : manager && inv.labErrorCheck ? (
+                      <ConcludeForm
+                        investigation={inv}
+                        busy={busy}
+                        onConclude={(outcome, assignableCause) =>
+                          void execute({
+                            type: 'concludeOosInvestigation',
+                            ...target,
+                            investigationId: inv.id,
+                            outcome,
+                            assignableCause,
+                          })
+                        }
+                      />
+                    ) : (
+                      <span className="dim">
+                        {inv.labErrorCheck
+                          ? 'A Manager concludes and closes the investigation.'
+                          : 'Concluded by a Manager after the laboratory error check.'}
+                      </span>
+                    )}
+                  </dd>
+                </div>
+              </dl>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function ConcludeForm({
+  investigation,
+  busy,
+  onConclude,
+}: {
+  investigation: OosInvestigation;
+  busy: boolean;
+  onConclude: (
+    outcome: 'Invalidated' | 'Confirmed',
+    assignableCause: string,
+  ) => void;
+}) {
+  const [outcome, setOutcome] = useState<'Invalidated' | 'Confirmed'>(
+    investigation.labErrorCheck?.errorIdentified ? 'Invalidated' : 'Confirmed',
+  );
+  return (
+    <form
+      className="inv-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const f = new FormData(e.currentTarget);
+        onConclude(
+          outcome,
+          outcome === 'Invalidated' ? String(f.get('assignableCause')) : '',
+        );
+      }}
+    >
+      <fieldset className="priority">
+        <legend>Outcome</legend>
+        {(['Invalidated', 'Confirmed'] as const).map((o) => (
+          <label key={o}>
+            <input
+              type="radio"
+              name="outcome"
+              value={o}
+              checked={outcome === o}
+              onChange={() => setOutcome(o)}
+            />
+            {o}
+          </label>
+        ))}
+      </fieldset>
+      {outcome === 'Invalidated' && (
+        <textarea
+          name="assignableCause"
+          aria-label="Assignable cause"
+          required
+          minLength={3}
+          maxLength={2000}
+          rows={2}
+          placeholder="Required: the assignable laboratory cause"
+        />
+      )}
+      <button className="btn sm primary" disabled={busy}>
+        Conclude and close
+      </button>
+    </form>
+  );
+}
+
+/** The Manager's OOS investigations list: Results still needing an
+ * investigation, then open ones, then closed ones. */
+function OosTable({
+  data,
+  selected,
+  onSelect,
+}: {
+  data: Snapshot;
+  selected: string | null;
+  onSelect: (sampleId: string) => void;
+}) {
+  const rows: OosRow[] = oosRows(data.samples);
+  if (!rows.length)
+    return (
+      <p className="blank">No Result is out of specification. Nothing to do.</p>
+    );
+  return (
+    <table className="grid" aria-label="OOS investigations">
+      <thead>
+        <tr>
+          <th>Investigation</th>
+          <th>Status</th>
+          <th>Sample</th>
+          <th>Test</th>
+          <th className="r">Result</th>
+          <th>Opened</th>
+          <th>Lab error check</th>
+          <th>Outcome · cause</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(({ sample: s, test: t, result: r, investigation: inv }) => (
+          <tr
+            key={`${s.id}-${t.id}-${r.sequence}`}
+            className="row"
+            aria-selected={s.id === selected}
+            onClick={() => onSelect(s.id)}
+          >
+            <td className="c-id">
+              <button
+                className="id-link"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelect(s.id);
+                }}
+              >
+                {inv?.id ?? 'Not opened'}
+              </button>
+            </td>
+            <td>
+              <span className={investigationClass(inv)}>
+                {investigationLabel(inv)}
+              </span>
+            </td>
+            <td className="num">
+              {s.id}
+              <span className="batch">{s.status}</span>
+            </td>
+            <td>
+              {t.analyteName}
+              <span className="batch">
+                {t.methodCode} v{t.methodVersion} · #{r.sequence}
+              </span>
+            </td>
+            <td className="r">
+              <ResultValue result={r} />
+              {r.limit && (
+                <span className="sub num">Limit {r.limit.value}</span>
+              )}
+            </td>
+            <td>
+              {inv ? (
+                <span className="num">{stamp(inv.openedAt)}</span>
+              ) : (
+                <span className="dim">—</span>
+              )}
+            </td>
+            <td>
+              {inv?.labErrorCheck ? (
+                inv.labErrorCheck.errorIdentified ? (
+                  'Error identified'
+                ) : (
+                  'No error identified'
+                )
+              ) : (
+                <span className="dim">{inv ? 'Awaiting analyst' : '—'}</span>
+              )}
+            </td>
+            <td className="wrap">
+              {inv?.outcome ? (
+                <>
+                  {inv.outcome}
+                  {inv.assignableCause && (
+                    <span className="batch">{inv.assignableCause}</span>
+                  )}
+                </>
+              ) : (
+                <span className="dim">—</span>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 const COMMAND_LABELS: Record<string, string> = {
   receiveSubmission: 'Received',
   assign: 'Assigned',
@@ -2757,6 +3236,9 @@ const COMMAND_LABELS: Record<string, string> = {
   submitForApproval: 'Submitted',
   approve: 'Approved',
   return: 'Returned',
+  openOosInvestigation: 'OOS investigation opened',
+  recordLabErrorCheck: 'Lab error check recorded',
+  concludeOosInvestigation: 'OOS investigation concluded',
 };
 
 const auditValue = (value: AuditValue) =>

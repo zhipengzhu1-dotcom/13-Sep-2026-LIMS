@@ -1699,3 +1699,125 @@ body.resizing {
     transition: none !important;
   }
 }
+
+/* ---------- OOS investigations ---------- */
+.oos-flag {
+  margin-left: 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--alert);
+}
+.oos-status {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  padding: 0 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.oos-status.required,
+.oos-status.open {
+  color: var(--alert);
+  background: var(--alert-wash);
+}
+.oos-status.invalidated {
+  color: var(--received);
+  background: var(--received-wash);
+}
+.oos-status.confirmed {
+  color: var(--returned);
+  background: var(--returned-wash);
+}
+.oos-note {
+  font-weight: 600;
+  color: var(--alert);
+}
+.result-status.invalidated {
+  color: var(--alert);
+}
+.revisions li.invalidated .value {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.investigations {
+  margin-top: 14px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--raised);
+}
+.investigations h3 {
+  margin: 0;
+  padding: 7px 10px 6px;
+  border-bottom: 1px solid var(--rule-soft);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.investigations ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.investigations li {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--rule-soft);
+  font-size: 13px;
+}
+.investigations li:last-child {
+  border-bottom: 0;
+}
+.inv-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.inv-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+}
+.inv-detail {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+.inv-detail > div {
+  display: grid;
+  grid-template-columns: 11em minmax(0, 1fr);
+  gap: 10px;
+}
+.inv-detail dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.inv-detail dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.inv-form {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+.inv-form textarea {
+  width: 100%;
+}
+.inv-form .check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+@media (max-width: 600px) {
+  .inv-detail > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}
