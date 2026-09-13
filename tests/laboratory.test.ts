@@ -1,15 +1,25 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Laboratory, SCHEMA_VERSION } from '../src/laboratory/laboratory.ts';
+import { Accounts } from '../src/accounts/accounts.ts';
+import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
   enteredResultOn,
   newCommandId,
+  signatureMeanings,
   type Sample,
 } from '../src/laboratory/contracts.ts';
+
+/** The seeded demo accounts, whose hashes signatures are verified against.
+ * Each password is the user ID followed by `-demo`. */
+const accounts = new Accounts(':memory:');
+accounts.seed(demoAccounts);
+after(() => accounts.close());
+const passwordOf = (actor: string) => `${actor}-demo`;
 
 const finishedProduct = {
   product: 'Demo tablets 10 mg',
@@ -34,9 +44,18 @@ const receipt = {
 const target = (s: Sample) => ({ sampleId: s.id, revision: s.revision });
 
 /** Mints a fresh key per call — a distinct laboratory act. Tests that exercise
- * replay pass their own commandId instead. */
+ * replay pass their own commandId instead. A signing command is signed with
+ * the actor's own password unless the test supplies one. */
 function execute(lab: Laboratory, command: object, actor: string) {
-  return lab.execute({ commandId: newCommandId(), ...command }, actor);
+  const type = (command as { type?: string }).type ?? '';
+  const signature =
+    Object.hasOwn(signatureMeanings, type) && !('password' in command)
+      ? { password: passwordOf(actor) }
+      : {};
+  return lab.execute(
+    { commandId: newCommandId(), ...signature, ...command },
+    actor,
+  );
 }
 /** Runs a command and unwraps the first Sample it touched. */
 function run(lab: Laboratory, command: object, actor: string): Sample {
@@ -66,7 +85,11 @@ function submitted(lab: Laboratory) {
   return run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
 }
 function memory(t: { after: (fn: () => void) => void }) {
-  const lab = new Laboratory(':memory:', () => '2026-09-10T12:00:00.000Z');
+  const lab = new Laboratory(
+    ':memory:',
+    () => '2026-09-10T12:00:00.000Z',
+    accounts,
+  );
   t.after(() => lab.close());
   return lab;
 }
@@ -587,5 +610,217 @@ test('a rejected command releases its key and may be resubmitted', () => {
   const retried = lab.execute({ commandId, ...receipt }, 'coordinator');
   assert.equal(retried.outcome, 'applied', 'the same key is usable again');
   assert.equal(lab.snapshot().samples.length, 1);
+  lab.close();
+});
+
+test('submission and Approval are Electronic signatures with printed name, time, meaning and the signed command', (t) => {
+  const lab = memory(t);
+  let s = entered(lab, assigned(lab));
+  const submit = {
+    commandId: newCommandId(),
+    type: 'submitForApproval',
+    ...target(s),
+    password: 'analyst-demo',
+  };
+  s = lab.execute(submit, 'analyst').samples[0];
+  // Returning is an unsigned, commented act.
+  s = run(
+    lab,
+    { type: 'return', ...target(s), comment: 'Check the worksheet.' },
+    'manager',
+  );
+  assert.equal(lab.snapshot().signatures.length, 1, 'a return is not signed');
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  const approve = {
+    commandId: newCommandId(),
+    type: 'approve',
+    ...target(s),
+    password: 'manager-demo',
+  };
+  s = lab.execute(approve, 'manager').samples[0];
+  assert.equal(s.status, 'Approved');
+  const [first, second, third] = lab.snapshot().signatures;
+  assert.deepEqual(first, {
+    sampleId: s.id,
+    signerId: 'analyst',
+    printedName: 'Alex Chen',
+    signedAt: '2026-09-10T12:00:00.000Z',
+    meaning: 'performed by',
+    command: {
+      commandId: submit.commandId,
+      type: 'submitForApproval',
+      sampleId: s.id,
+      revision: submit.revision,
+    },
+  });
+  assert.equal(second.meaning, 'performed by');
+  assert.deepEqual(third, {
+    sampleId: s.id,
+    signerId: 'manager',
+    printedName: 'Taylor Brooks',
+    signedAt: '2026-09-10T12:00:00.000Z',
+    meaning: 'approved by',
+    command: {
+      commandId: approve.commandId,
+      type: 'approve',
+      sampleId: s.id,
+      revision: approve.revision,
+    },
+  });
+  assert.match(third.signedAt, /T\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:\d\d)$/);
+});
+
+test('a wrong password applies nothing, writes no signature and releases the key', (t) => {
+  const lab = memory(t);
+  const s = entered(lab, assigned(lab));
+  const before = lab.snapshot();
+  const commandId = newCommandId();
+  const submit = { commandId, type: 'submitForApproval', ...target(s) };
+  for (const password of ['wrong', 'manager-demo', 'Analyst-demo', ' '])
+    assert.throws(
+      () => lab.execute({ ...submit, password }, 'analyst'),
+      (e: Error & { status: number }) =>
+        e.status === 403 && /password is incorrect/.test(e.message),
+      `a password of ${JSON.stringify(password)} does not sign`,
+    );
+  assert.throws(() => lab.execute(submit, 'analyst'), /Enter your password/);
+  assert.throws(
+    () => lab.execute({ ...submit, password: '' }, 'analyst'),
+    /Enter your password/,
+  );
+  assert.deepEqual(lab.snapshot(), before, 'no Sample, activity or signature');
+  const applied = lab.execute(
+    { ...submit, password: 'analyst-demo' },
+    'analyst',
+  );
+  assert.equal(applied.outcome, 'applied', 'the same key is usable again');
+  const awaiting = applied.samples[0];
+
+  const approve = {
+    commandId: newCommandId(),
+    type: 'approve',
+    ...target(awaiting),
+  };
+  const signed = lab.snapshot();
+  assert.throws(
+    () => lab.execute({ ...approve, password: 'analyst-demo' }, 'manager'),
+    /password is incorrect/,
+  );
+  assert.deepEqual(lab.snapshot(), signed);
+  assert.equal(
+    lab.execute({ ...approve, password: 'manager-demo' }, 'manager').outcome,
+    'applied',
+  );
+  assert.deepEqual(
+    lab.snapshot().signatures.map((x) => x.meaning),
+    ['performed by', 'approved by'],
+  );
+});
+
+test('a retry with the wrong password is refused, not replayed as a success', (t) => {
+  const lab = memory(t);
+  const s = entered(lab, assigned(lab));
+  const submit = {
+    commandId: newCommandId(),
+    type: 'submitForApproval',
+    ...target(s),
+  };
+  lab.execute({ ...submit, password: 'analyst-demo' }, 'analyst');
+  assert.throws(
+    () => lab.execute({ ...submit, password: 'guess' }, 'analyst'),
+    /password is incorrect/,
+  );
+  assert.equal(
+    lab.execute({ ...submit, password: 'analyst-demo' }, 'analyst').outcome,
+    'replayed',
+  );
+  assert.equal(lab.snapshot().signatures.length, 1, 'signed once');
+});
+
+test('the password is not part of the command fingerprint', () => {
+  // Credentials that accept any password isolate the fingerprint: the same act
+  // retried with a differently typed password is still the same act.
+  const lab = new Laboratory(':memory:', undefined, {
+    checkPassword: () => true,
+  });
+  const s = entered(lab, assigned(lab));
+  const submit = {
+    commandId: newCommandId(),
+    type: 'submitForApproval',
+    ...target(s),
+  };
+  lab.execute({ ...submit, password: 'first' }, 'analyst');
+  assert.equal(
+    lab.execute({ ...submit, password: 'second' }, 'analyst').outcome,
+    'replayed',
+  );
+  lab.close();
+});
+
+test('the password never reaches stored or returned data', (t) => {
+  const folder = mkdtempSync(join(tmpdir(), 'lims-signature-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const file = join(folder, 'test.sqlite');
+  const lab = new Laboratory(file, undefined, accounts);
+  let s = entered(lab, assigned(lab));
+  const outcomes = [
+    lab.execute(
+      {
+        commandId: newCommandId(),
+        type: 'submitForApproval',
+        ...target(s),
+        password: 'analyst-demo',
+      },
+      'analyst',
+    ),
+  ];
+  s = outcomes[0].samples[0];
+  const approve = {
+    commandId: newCommandId(),
+    type: 'approve',
+    ...target(s),
+    password: 'manager-demo',
+  };
+  assert.throws(() =>
+    lab.execute({ ...approve, password: 'rejected-guess' }, 'manager'),
+  );
+  outcomes.push(
+    lab.execute(approve, 'manager'),
+    lab.execute(approve, 'manager'),
+  );
+  assert.deepEqual(
+    outcomes.map((o) => o.outcome),
+    ['applied', 'applied', 'replayed'],
+  );
+  const snapshot = JSON.stringify(lab.snapshot());
+  lab.close();
+  const stored = [file, `${file}-wal`, `${file}-journal`]
+    .filter(existsSync)
+    .map((f) => readFileSync(f).toString('latin1'))
+    .join('');
+  assert.match(stored, /Taylor Brooks/, 'the store is readable as text');
+  for (const secret of ['analyst-demo', 'manager-demo', 'rejected-guess']) {
+    assert.ok(!stored.includes(secret), `${secret} is not in the database`);
+    assert.ok(!snapshot.includes(secret), `${secret} is not in the snapshot`);
+    assert.ok(
+      !JSON.stringify(outcomes).includes(secret),
+      `${secret} is not in an outcome`,
+    );
+  }
+});
+
+test('a laboratory without credentials refuses every signature', () => {
+  const lab = new Laboratory(':memory:');
+  const s = entered(lab, assigned(lab));
+  assert.throws(
+    () =>
+      run(
+        lab,
+        { type: 'submitForApproval', ...target(s), password: 'analyst-demo' },
+        'analyst',
+      ),
+    /cannot be verified/,
+  );
+  assert.equal(lab.snapshot().samples[0].status, 'In progress');
   lab.close();
 });

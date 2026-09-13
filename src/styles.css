@@ -1331,6 +1331,62 @@ body.resizing {
   border-top: 1px solid var(--rule-soft);
 }
 
+/* ---------- electronic signatures ---------- */
+.signatures {
+  margin-top: 14px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--raised);
+}
+.signatures h3 {
+  margin: 0;
+  padding: 7px 10px 6px;
+  border-bottom: 1px solid var(--rule-soft);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.signatures ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.signatures li {
+  display: grid;
+  grid-template-columns: 8em minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--rule-soft);
+  font-size: 13px;
+}
+.signatures li:last-child {
+  border-bottom: 0;
+}
+.sig-meaning,
+.signatures time {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.signatures time {
+  font-variant-numeric: tabular-nums;
+}
+.sign-statement {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.sign-actions {
+  display: flex;
+  gap: 8px;
+}
+@media (max-width: 600px) {
+  .signatures li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}
+
 /* ---------- smaller screens ----------
  * Below ~1100px there is no room for both panes: the list and the open sample
  * take turns, and "Back to list" returns to the queue. */

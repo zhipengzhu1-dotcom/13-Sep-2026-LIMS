@@ -1,5 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
-import { hashPassword, verifyPassword } from './passwords.ts';
+import type { SignerCredentials } from '../laboratory/laboratory.ts';
+import {
+  hashPassword,
+  verifyPassword,
+  verifyPasswordSync,
+} from './passwords.ts';
 
 /** What the rest of the system may know about a signed-in person. The
  * password hash never leaves this module. */
@@ -16,7 +21,7 @@ const DECOY_HASH = hashPassword('decoy-password-never-matches');
  * active flag and a salted scrypt password hash. Accounts are seeded; there is
  * no account administration in this release.
  */
-export class Accounts {
+export class Accounts implements SignerCredentials {
   private db: DatabaseSync;
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -61,5 +66,19 @@ export class Accounts {
       row?.passwordHash ?? DECOY_HASH,
     );
     return row && matches && row.active ? this.find(row.id) : null;
+  }
+
+  /** Whether this is the active user's own password. Used by the laboratory
+   * core to verify an Electronic signature; an unknown or inactive user costs
+   * the same work and never matches. */
+  checkPassword(userId: string, password: string): boolean {
+    const row = this.db
+      .prepare('SELECT active, passwordHash FROM users WHERE id = ?')
+      .get(userId) as { active: number; passwordHash: string } | undefined;
+    const matches = verifyPasswordSync(
+      password,
+      row?.passwordHash ?? DECOY_HASH,
+    );
+    return Boolean(row?.active) && matches;
   }
 }

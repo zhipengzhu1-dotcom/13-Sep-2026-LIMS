@@ -4,6 +4,7 @@ import {
   SCHEMA_VERSION,
   type Laboratory,
 } from '../src/laboratory/laboratory.ts';
+import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
   newCommandId,
   type SampleReceipt,
@@ -26,9 +27,14 @@ export function discardOutdatedDemoDatabase(file: string) {
     rmSync(file + suffix, { force: true });
 }
 
+/** Demo signers re-enter their published demo password, as a person would. */
+const passwordOf = (id: string) =>
+  demoAccounts.find((a) => a.id === id)!.password;
+
 type Stage = 'received' | 'progress' | 'awaiting' | 'returned' | 'approved';
 
-/** Drives the public command seam, so demo records carry real activity. */
+/** Drives the public command seam, so demo records carry real activity and
+ * real Electronic signatures. */
 export function seed(lab: Laboratory) {
   if (lab.snapshot().submissions.length) return;
   const due = (days: number) =>
@@ -147,8 +153,12 @@ export function seed(lab: Laboratory) {
           );
       });
       if (stage === 'progress') return;
-      act({ type: 'submitForApproval' }, 'analyst');
-      if (stage === 'approved') act({ type: 'approve' }, 'manager');
+      act(
+        { type: 'submitForApproval', password: passwordOf('analyst') },
+        'analyst',
+      );
+      if (stage === 'approved')
+        act({ type: 'approve', password: passwordOf('manager') }, 'manager');
       if (stage === 'returned')
         act(
           {

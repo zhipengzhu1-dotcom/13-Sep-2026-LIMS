@@ -12,11 +12,14 @@ import {
   materialTypes,
   newCommandId,
   reportingUnit,
+  signatureMeanings,
   type Command,
   type MaterialType,
   type Snapshot,
   type Sample,
   type SampleReceipt,
+  type Signature,
+  type SigningCommandType,
   type Test,
 } from './laboratory/contracts';
 import './styles.css';
@@ -33,7 +36,12 @@ const QUEUES: View[] = ['Receiving', 'Samples', 'My work', 'Approval queue'];
 /** A command as a screen writes it. The key is minted by `execute`, not by the
  * caller, so no screen can reuse one across two separate laboratory acts. */
 type Draft<C = Command> = C extends unknown ? Omit<C, 'commandId'> : never;
-type Execute = (command: Draft) => Promise<boolean>;
+/** Resolves true once the command is saved. A screen that shows its own
+ * errors (a signing dialog) passes `onError` instead of the page flash. */
+type Execute = (
+  command: Draft,
+  options?: { onError?: (message: string) => void },
+) => Promise<boolean>;
 
 /** Each role's own queue is a permission, not a preference: a Coordinator
  * receives Submissions, assigns them from Receiving and oversees the whole
@@ -427,7 +435,10 @@ function App() {
         setSignInMessage('The server is unavailable. Try again shortly.');
       });
   }, []);
-  async function execute(draft: Draft) {
+  async function execute(
+    draft: Draft,
+    { onError = setError }: { onError?: (message: string) => void } = {},
+  ) {
     setBusy(true);
     setError('');
     setNotice('');
@@ -462,7 +473,7 @@ function App() {
         // The command committed but the workspace did not refresh. Keep the key:
         // if this form is submitted again it is a retry of the same act, and the
         // server will return the original result rather than recording it twice.
-        setError(
+        onError(
           'Your change was saved, but the workspace could not refresh. Use Refresh before continuing.',
         );
         return false;
@@ -479,7 +490,7 @@ function App() {
         setSelected(result.samples[0].id);
       return true;
     } catch (e) {
-      setError(
+      onError(
         e instanceof Error ? e.message : 'Unable to save. Please try again.',
       );
       return false;
@@ -1259,6 +1270,8 @@ function SamplePanel({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<'Results' | 'History'>('Results');
+  const [signing, setSigning] = useState<SigningCommandType | null>(null);
+  useEffect(() => setSigning(null), [s.id]);
   const tabIds = useId();
   const person = data.people.find((p) => p.id === actor)!;
   const canRecord =
@@ -1422,6 +1435,9 @@ function SamplePanel({
               execute={execute}
               data={data}
             />
+            <Signatures
+              signatures={data.signatures.filter((x) => x.sampleId === s.id)}
+            />
           </>
         )}
       </div>
@@ -1435,15 +1451,9 @@ function SamplePanel({
               <button
                 className="btn primary"
                 disabled={busy || recorded < s.tests.length}
-                onClick={() =>
-                  void execute({
-                    type: 'submitForApproval',
-                    sampleId: s.id,
-                    revision: s.revision,
-                  })
-                }
+                onClick={() => setSigning('submitForApproval')}
               >
-                Submit for approval
+                Submit for approval…
               </button>
             </>
           ) : canDecide ? (
@@ -1455,16 +1465,14 @@ function SamplePanel({
                 const choice = (
                   e.nativeEvent as SubmitEvent
                 ).submitter?.getAttribute('value');
-                void execute(
-                  choice === 'return'
-                    ? {
-                        type: 'return',
-                        sampleId: s.id,
-                        revision: s.revision,
-                        comment: String(f.get('comment')),
-                      }
-                    : { type: 'approve', sampleId: s.id, revision: s.revision },
-                );
+                // Returning is unsigned; Approval is an Electronic signature.
+                if (choice !== 'return') return setSigning('approve');
+                void execute({
+                  type: 'return',
+                  sampleId: s.id,
+                  revision: s.revision,
+                  comment: String(f.get('comment')),
+                });
               }}
             >
               <textarea
@@ -1494,7 +1502,7 @@ function SamplePanel({
                       : undefined
                   }
                 >
-                  Approve
+                  Approve…
                 </button>
               </div>
             </form>
@@ -1511,7 +1519,148 @@ function SamplePanel({
           )}
         </footer>
       )}
+      {signing && (
+        <SignDialog
+          type={signing}
+          sample={s}
+          signerName={person.name}
+          busy={busy}
+          execute={execute}
+          onClose={() => setSigning(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/** A date and time with its UTC offset, as a signature manifestation shows it. */
+function signatureStamp(value: string) {
+  const d = new Date(value);
+  const offset = -d.getTimezoneOffset();
+  const hhmm = (n: number) => String(n).padStart(2, '0');
+  const local = d.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  return `${local} UTC${offset < 0 ? '-' : '+'}${hhmm(Math.floor(Math.abs(offset) / 60))}:${hhmm(Math.abs(offset) % 60)}`;
+}
+
+/** Signature manifestations: who signed, when, and what the signature means. */
+function Signatures({ signatures }: { signatures: Signature[] }) {
+  if (!signatures.length) return null;
+  return (
+    <section className="signatures" aria-label="Electronic signatures">
+      <h3>Electronic signatures</h3>
+      <ul>
+        {signatures.map((x) => (
+          <li key={x.command.commandId}>
+            <span className="sig-meaning">
+              {x.meaning[0].toUpperCase() + x.meaning.slice(1)}
+            </span>
+            <strong>{x.printedName}</strong>
+            <time dateTime={x.signedAt}>{signatureStamp(x.signedAt)}</time>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** Re-entering the password is the act of signing. A wrong password keeps the
+ * dialog open with the server's message; nothing was applied. */
+function SignDialog({
+  type,
+  sample: s,
+  signerName,
+  busy,
+  execute,
+  onClose,
+}: {
+  type: SigningCommandType;
+  sample: Sample;
+  signerName: string;
+  busy: boolean;
+  execute: Execute;
+  onClose: () => void;
+}) {
+  const [error, setError] = useState('');
+  const password = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    // After the dialog opens, which otherwise focuses its close button.
+    const frame = requestAnimationFrame(() => password.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  const approving = type === 'approve';
+  return (
+    <Modal
+      title={approving ? 'Sign Approval' : 'Sign submission for approval'}
+      onClose={onClose}
+    >
+      <form
+        className="form"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const target = { sampleId: s.id, revision: s.revision };
+          const entered = String(new FormData(e.currentTarget).get('password'));
+          setError('');
+          const saved = await execute(
+            approving
+              ? { type: 'approve', ...target, password: entered }
+              : { type: 'submitForApproval', ...target, password: entered },
+            { onError: setError },
+          );
+          if (saved) onClose();
+          else password.current?.select();
+        }}
+      >
+        <p className="sign-statement">
+          {approving
+            ? `I give Approval to the Results of Sample ${s.id}.`
+            : `I performed the Tests on Sample ${s.id} and submit their Results for approval.`}{' '}
+          This Electronic signature records{' '}
+          <strong>
+            {signatureMeanings[type]} {signerName}
+          </strong>{' '}
+          with the date and time.
+        </p>
+        {error && (
+          <p role="alert" className="flash inline error">
+            {error}
+          </p>
+        )}
+        <label>
+          Password for {signerName}
+          <input
+            ref={password}
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            required
+            maxLength={200}
+          />
+        </label>
+        <div className="form-foot">
+          <span className="dim">Your password is verified, never stored.</span>
+          <div className="sign-actions">
+            <button type="button" className="btn" onClick={onClose}>
+              Cancel
+            </button>
+            <button className="btn primary" disabled={busy}>
+              {busy
+                ? 'Signing…'
+                : approving
+                  ? 'Sign and approve'
+                  : 'Sign and submit'}
+            </button>
+          </div>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
