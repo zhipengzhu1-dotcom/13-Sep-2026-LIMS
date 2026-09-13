@@ -9,14 +9,21 @@ import type { OosInvestigation } from './investigations.ts';
 
 /** Lab users as the workspace shows them. Sign-in accounts (with password
  * hashes, server side only) are seeded from this list in src/accounts. */
+export const roles = ['coordinator', 'analyst', 'manager'] as const;
+export type Role = (typeof roles)[number];
+/** A lab user as the core and the workspace know them. */
+export type Person = {
+  readonly id: string;
+  readonly name: string;
+  readonly role: Role;
+};
 export const people = [
   { id: 'coordinator', name: 'Morgan Lee', role: 'coordinator' },
   { id: 'analyst', name: 'Alex Chen', role: 'analyst' },
   { id: 'analyst-2', name: 'Sam Rivera', role: 'analyst' },
   { id: 'manager', name: 'Taylor Brooks', role: 'manager' },
-] as const;
-export type Actor = (typeof people)[number];
-export type Role = Actor['role'];
+] as const satisfies readonly Person[];
+export type Actor = Person;
 
 export const materialTypes = ['raw material', 'finished product'] as const;
 export type MaterialType = (typeof materialTypes)[number];
@@ -147,6 +154,7 @@ export const sampleStatuses = [
   'Returned',
   'Approved',
   'Published',
+  'Amendment in progress',
   'Withdrawn',
 ] as const;
 export type SampleStatus = (typeof sampleStatuses)[number];
@@ -426,7 +434,7 @@ export type Snapshot = {
   signatures: Signature[];
   /** Records only; the bytes are downloaded per attachment. */
   attachments: Attachment[];
-  people: typeof people;
+  people: readonly Person[];
   clients: typeof clients;
   analytes: typeof analytes;
   methods: typeof methods;
@@ -664,6 +672,16 @@ export const commandSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     commandId,
+    type: z.literal('startAmendment'),
+    ...target,
+    reason: z
+      .string({ error: 'Give a reason for the Amendment.' })
+      .trim()
+      .min(3, 'Give a reason for the Amendment.')
+      .max(2000),
+  }),
+  z.object({
+    commandId,
     type: z.literal('recordReceiptDeviation'),
     ...target,
     ...receiptDeviation,
@@ -715,9 +733,11 @@ export type CommandOutcome = {
 );
 
 /**
- * Separation of duties (ADR-0003): whoever entered any Result on a Sample,
- * current or earlier, may not give it Approval. Shared so the core enforces it
- * and the workspace can explain a disabled Approve.
+ * Separation of duties (ADR-0003): whoever entered, corrected or retested any
+ * Result on a Sample, current or earlier, in its first Approval or in any
+ * Amendment, may not give it Approval. Every correction is its own Result, so
+ * its author is on record. Shared so the core enforces it and the workspace
+ * can explain a disabled Approve.
  */
 export function enteredResultOn(sample: Sample, actorId: string) {
   return sample.tests.some((t) =>

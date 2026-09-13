@@ -41,7 +41,8 @@ type Stage =
   | 'awaiting'
   | 'returned'
   | 'approved'
-  | 'published';
+  | 'published'
+  | 'amended';
 type SeedSample = SampleReceipt & {
   stage: Stage;
   values: number[];
@@ -52,6 +53,9 @@ type SeedSample = SampleReceipt & {
   confirmOos?: true;
   /** The Client's word on a Receipt deviation, recorded before any work. */
   instruction?: { decision: 'proceed' | 'withdraw'; contact: string };
+  /** An amended Sample: once version 1 is Published, the first Test's
+   * Result is corrected in an Amendment and version 2 is Published. */
+  amendment?: { reason: string; value: number; correction: string };
 };
 type SeedSubmission = Omit<
   SubmissionReceipt,
@@ -141,6 +145,30 @@ export function seed(lab: Laboratory) {
           priority: 'Routine',
           stage: 'published',
           values: [1.9, 0.6],
+        },
+        {
+          ...tablets,
+          clientSampleId: 'NS-LOS-25-02',
+          product: 'Losartan potassium tablets',
+          strength: '25 mg',
+          batch: 'LP-260806',
+          manufacturer: 'Northstar Pharma, Site 2',
+          manufactureDate: '2026-05-27',
+          expiryDate: '2028-05-26',
+          materialType: 'finished product',
+          maximumDailyDose: 100,
+          methodIds: ['NIT-001-v1', 'NIT-003-v1'],
+          dueDate: due(-3),
+          priority: 'Routine',
+          stage: 'amended',
+          values: [2.1, 0.7],
+          amendment: {
+            reason:
+              'Client query: the NIT-001 Result on the Certificate does not match the calculation worksheet.',
+            value: 12.1,
+            correction:
+              'Transcription error: the worksheet gives 12.1 ng/day; 2.1 was keyed in error.',
+          },
         },
       ],
     },
@@ -384,6 +412,7 @@ export function seed(lab: Laboratory) {
             openOos: _o,
             confirmOos: _c,
             instruction: _i,
+            amendment: _a,
             ...sample
           }) => sample,
         ),
@@ -391,7 +420,8 @@ export function seed(lab: Laboratory) {
       'coordinator',
     );
     receipt.samples.forEach((received, i) => {
-      const { stage, values, openOos, confirmOos, instruction } = samples[i];
+      const { stage, values, openOos, confirmOos, instruction, amendment } =
+        samples[i];
       if (instruction)
         received = lab.execute(
           {
@@ -418,40 +448,40 @@ export function seed(lab: Laboratory) {
         ).samples[0];
       };
       act({ type: 'assign', assignee: 'analyst' }, 'coordinator');
-      s.tests.forEach((t, j) => {
-        if (j >= values.length) return;
-        const entry = (value: number, run: number, reason = '') => {
-          // Illustrative only: the analyst converts ng/mL by hand.
-          const instrumentReading = Math.round(value * 1000) / 100;
-          const sequenceId = `SEQ-${s.id}-${pad(j + 1)}-${run}`;
-          const worksheet = lab.storeAttachment(
-            {
-              filename: `${s.id} ${t.methodCode} worksheet ${run}.csv`,
-              contentType: 'text/csv',
-              content: Buffer.from(
-                `Sample,Method,Sequence ID,Instrument reading (ng/mL),Result (${t.unit})\n${s.id},${t.methodCode},${sequenceId},${instrumentReading},${value}\n`,
-              ),
-            },
-            'analyst',
-          );
-          act(
-            {
-              type: 'enterResult',
-              testId: t.id,
-              value,
-              instrumentReading,
-              sequenceId,
-              attachmentId: worksheet.id,
-              reason,
-            },
-            'analyst',
-          );
-        };
+      const entry = (j: number, value: number, run: number, reason = '') => {
+        const t = s.tests[j];
+        // Illustrative only: the analyst converts ng/mL by hand.
+        const instrumentReading = Math.round(value * 1000) / 100;
+        const sequenceId = `SEQ-${s.id}-${pad(j + 1)}-${run}`;
+        const worksheet = lab.storeAttachment(
+          {
+            filename: `${s.id} ${t.methodCode} worksheet ${run}.csv`,
+            contentType: 'text/csv',
+            content: Buffer.from(
+              `Sample,Method,Sequence ID,Instrument reading (ng/mL),Result (${t.unit})\n${s.id},${t.methodCode},${sequenceId},${instrumentReading},${value}\n`,
+            ),
+          },
+          'analyst',
+        );
+        act(
+          {
+            type: 'enterResult',
+            testId: t.id,
+            value,
+            instrumentReading,
+            sequenceId,
+            attachmentId: worksheet.id,
+            reason,
+          },
+          'analyst',
+        );
+      };
+      values.forEach((value, j) => {
         if (stage === 'awaiting' && j === 0 && !openOos) {
           // One corrected Result, so the demo shows a superseded entry.
-          entry(values[j] - 0.5, 1);
-          entry(values[j], 2, 'Wrong injection selected; re-read sequence.');
-        } else entry(values[j], 1);
+          entry(j, value - 0.5, 1);
+          entry(j, value, 2, 'Wrong injection selected; re-read sequence.');
+        } else entry(j, value, 1);
       });
       if (stage === 'progress') return;
       act(
@@ -484,19 +514,8 @@ export function seed(lab: Laboratory) {
           'manager',
         );
       }
-      if (stage === 'approved' || stage === 'published')
-        act({ type: 'approve', password: passwordOf('manager') }, 'manager');
-      if (stage === 'published') {
-        if (confirmOos)
-          act(
-            {
-              type: 'recordClientOosNotification',
-              investigationId,
-              contact: 'Client QA contact (phone)',
-              notifiedAt: new Date().toISOString(),
-            },
-            'coordinator',
-          );
+      const published = stage === 'published' || stage === 'amended';
+      const publish = () =>
         act(
           {
             type: 'publish',
@@ -507,6 +526,34 @@ export function seed(lab: Laboratory) {
           },
           'coordinator',
         );
+      if (stage === 'approved' || published)
+        act({ type: 'approve', password: passwordOf('manager') }, 'manager');
+      if (published) {
+        if (confirmOos)
+          act(
+            {
+              type: 'recordClientOosNotification',
+              investigationId,
+              contact: 'Client QA contact (phone)',
+              notifiedAt: new Date().toISOString(),
+            },
+            'coordinator',
+          );
+        publish();
+      }
+      if (amendment) {
+        // Version 1 stays on file, superseded once version 2 is Published.
+        act(
+          { type: 'startAmendment', reason: amendment.reason },
+          'coordinator',
+        );
+        entry(0, amendment.value, 2, amendment.correction);
+        act(
+          { type: 'submitForApproval', password: passwordOf('analyst') },
+          'analyst',
+        );
+        act({ type: 'approve', password: passwordOf('manager') }, 'manager');
+        publish();
       }
       if (stage === 'returned')
         act(

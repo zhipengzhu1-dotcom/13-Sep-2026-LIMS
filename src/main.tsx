@@ -10,6 +10,7 @@ import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import type { Certificate, Publication } from './laboratory/certificate';
 import { renderCertificate } from './laboratory/certificate-renderer';
+import { amendmentOf, changeSummary } from './laboratory/amendments';
 import {
   auditsSample,
   conformity,
@@ -129,7 +130,9 @@ function baseSet(view: View, samples: Sample[], actor: string) {
     return samples.filter(
       (s) =>
         s.assignee === actor &&
-        (s.status === 'In progress' || s.status === 'Returned'),
+        (s.status === 'In progress' ||
+          s.status === 'Returned' ||
+          s.status === 'Amendment in progress'),
     );
   if (view === 'Approval queue')
     return samples.filter((s) => s.status === 'Awaiting approval');
@@ -145,6 +148,7 @@ const FILTERS = [
   'Awaiting approval',
   'Approved',
   'Published',
+  'Amendment in progress',
   'Withdrawn',
   'All',
 ] as const;
@@ -182,6 +186,7 @@ const STATUS_ORDER: Sample['status'][] = [
   'Awaiting approval',
   'Approved',
   'Published',
+  'Amendment in progress',
   'Withdrawn',
 ];
 type SortKey = 'due' | 'id' | 'status';
@@ -2183,7 +2188,8 @@ function SamplePanel({
   const tabIds = useId();
   const person = data.people.find((p) => p.id === actor)!;
   const canRecord =
-    s.assignee === actor && ['In progress', 'Returned'].includes(s.status);
+    s.assignee === actor &&
+    ['In progress', 'Returned', 'Amendment in progress'].includes(s.status);
   const canDecide =
     person.role === 'manager' && s.status === 'Awaiting approval';
   // Separation of duties (ADR-0003): the core refuses this Approval too.
@@ -2196,8 +2202,19 @@ function SamplePanel({
       s.status,
     );
   const canPublish = person.role === 'coordinator' && s.status === 'Approved';
+  const canAmend =
+    (person.role === 'coordinator' || person.role === 'manager') &&
+    s.status === 'Published';
   const history = data.audit.filter((e) => auditsSample(e, s));
   const recorded = s.tests.filter((t) => currentResult(t)).length;
+  // A Sample with a Certificate that is back at the bench or awaiting
+  // Approval is in an Amendment, as the core decides it.
+  const versions = data.certificates.filter((c) => c.sampleId === s.id);
+  const amendment =
+    versions.length && !['Approved', 'Published'].includes(s.status)
+      ? amendmentOf(history)
+      : null;
+  const amendmentChanges = amendment && changeSummary(s, history);
   return (
     <div className="sample">
       <header className="sample-head">
@@ -2365,6 +2382,21 @@ function SamplePanel({
                 {s.lastReturn.comment}
               </div>
             )}
+            {amendment && (
+              <div className="flash amendment inline" role="status">
+                <strong>
+                  Amendment of Certificate version {versions.at(-1)!.version},
+                  started by {personName(data, amendment.startedBy)},{' '}
+                  {stamp(amendment.startedAt)}:
+                </strong>{' '}
+                {amendment.reason}
+                <p className="amendment-changes">
+                  {amendmentChanges
+                    ? `Changes so far: ${amendmentChanges}`
+                    : 'No Result corrected yet. Correct each affected Result with a reason.'}
+                </p>
+              </div>
+            )}
             <TestSheet
               sample={s}
               canRecord={canRecord}
@@ -2395,10 +2427,21 @@ function SamplePanel({
               </span>
               <button
                 className="btn primary"
-                disabled={busy || recorded < s.tests.length}
+                disabled={
+                  busy ||
+                  recorded < s.tests.length ||
+                  (!!amendment && !amendmentChanges)
+                }
+                title={
+                  amendment && !amendmentChanges
+                    ? 'Correct at least one Result before submitting the Amendment.'
+                    : undefined
+                }
                 onClick={() => setSigning('submitForApproval')}
               >
-                Submit for approval…
+                {amendment
+                  ? 'Submit Amendment for approval…'
+                  : 'Submit for approval…'}
               </button>
             </>
           ) : canDecide ? (
@@ -2458,6 +2501,8 @@ function SamplePanel({
             </form>
           ) : canPublish ? (
             <PublishForm sample={s} data={data} busy={busy} execute={execute} />
+          ) : canAmend ? (
+            <AmendmentForm sample={s} busy={busy} execute={execute} />
           ) : (
             <span className="dim">
               {s.status === 'Published'
@@ -2488,6 +2533,55 @@ function SamplePanel({
         />
       )}
     </div>
+  );
+}
+
+/** Starts an Amendment of a Published Certificate. The assigned Analyst then
+ * corrects the affected Results, and the next version is approved and
+ * Published as before. */
+function AmendmentForm({
+  sample: s,
+  busy,
+  execute,
+}: {
+  sample: Sample;
+  busy: boolean;
+  execute: Execute;
+}) {
+  return (
+    <form
+      className="publish-form"
+      aria-label="Start an Amendment"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const f = new FormData(e.currentTarget);
+        void execute({
+          type: 'startAmendment',
+          sampleId: s.id,
+          revision: s.revision,
+          reason: String(f.get('reason') ?? ''),
+        });
+      }}
+    >
+      <span className="dim wide">
+        Published. This Sample is locked; a correction to its Certificate of
+        Analysis is made by an Amendment.
+      </span>
+      <label className="wide">
+        Reason for the Amendment
+        <textarea
+          name="reason"
+          required
+          minLength={3}
+          maxLength={2000}
+          rows={2}
+          placeholder="Required: the error found and how it came to light"
+        />
+      </label>
+      <button className="btn primary" disabled={busy}>
+        Start amendment
+      </button>
+    </form>
   );
 }
 
@@ -2654,6 +2748,7 @@ function CertificateVersions({
   useEffect(() => setOpen(null), [s.id]);
   const versions = data.certificates.filter((c) => c.sampleId === s.id);
   if (!versions.length) return null;
+  const opened = versions.find((c) => c.version === open);
   return (
     <section
       className="signatures certificates"
@@ -2669,6 +2764,13 @@ function CertificateVersions({
               <time dateTime={c.approvedAt}>
                 {signatureStamp(c.approvedAt)}
               </time>
+              {/* Every version after the first is issued by an Amendment. */}
+              {c.version > 1 && <span className="cert-tag">Amended</span>}
+              {c.supersededBy !== null && (
+                <span className="cert-tag superseded">
+                  Superseded by version {c.supersededBy}
+                </span>
+              )}
             </span>
             <button className="btn sm" onClick={() => setOpen(c.version)}>
               Open printable view
@@ -2685,6 +2787,7 @@ function CertificateVersions({
         <CertificateView
           sampleId={s.id}
           version={open}
+          supersededBy={opened?.supersededBy ?? null}
           onClose={() => setOpen(null)}
         />
       )}
@@ -2700,10 +2803,13 @@ function CertificateVersions({
 function CertificateView({
   sampleId,
   version,
+  supersededBy,
   onClose,
 }: {
   sampleId: string;
   version: number;
+  /** Shown in the toolbar only: the locked document is printed as issued. */
+  supersededBy: number | null;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -2750,6 +2856,11 @@ function CertificateView({
         <span>
           Certificate of Analysis · <span className="num">{sampleId}</span> ·
           Version {version}
+          {supersededBy !== null && (
+            <span className="cert-tag superseded">
+              Superseded by version {supersededBy}
+            </span>
+          )}
         </span>
         <div className="sign-actions">
           <button
@@ -3928,6 +4039,7 @@ const COMMAND_LABELS: Record<string, string> = {
   recordClientInstruction: 'Client instruction recorded',
   recordClientOosNotification: 'Client informed of confirmed OOS',
   publish: 'Published',
+  startAmendment: 'Amendment started',
 };
 
 const auditValue = (value: AuditValue) =>

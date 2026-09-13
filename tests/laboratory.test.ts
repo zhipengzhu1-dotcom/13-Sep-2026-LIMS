@@ -17,10 +17,12 @@ import {
   oosApprovalBlocker,
   oosPublishBlocker,
   oosRows,
+  people,
   publishQueue,
   qualify,
   newCommandId,
   type AuditEntry,
+  type Person,
   signatureMeanings,
   type Sample,
 } from '../src/laboratory/contracts.ts';
@@ -777,41 +779,6 @@ test('every command checks the role of the actor', (t) => {
     );
   }
   assert.equal(lab.snapshot().samples[0].status, 'Awaiting approval');
-});
-
-test('a Manager is never independent of Results they entered', (t) => {
-  const lab = memory(t);
-  const s = submitted(lab);
-  // Only an assigned Analyst can enter Results today, so the rule is checked
-  // through the shared predicate that approve enforces; #15 makes a Manager's
-  // own Amendment correction reachable through commands.
-  assert.equal(enteredResultOn(s, 'analyst'), true);
-  assert.equal(enteredResultOn(s, 'manager'), false);
-  assert.equal(
-    enteredResultOn(
-      {
-        ...s,
-        tests: s.tests.map((x, i) =>
-          i === 0
-            ? {
-                ...x,
-                results: [
-                  ...x.results,
-                  { ...x.results[0], enteredBy: 'manager' },
-                ],
-              }
-            : x,
-        ),
-      },
-      'manager',
-    ),
-    true,
-    'an earlier or later Result by the Manager counts, not only the current one',
-  );
-  assert.equal(
-    run(lab, { type: 'approve', ...target(s) }, 'manager').status,
-    'Approved',
-  );
 });
 
 test('Samples awaiting approval cannot change until a Manager returns them with a comment', (t) => {
@@ -2627,6 +2594,7 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
         .digest('hex'),
       content: undefined,
       publication: null,
+      supersededBy: null,
     },
   );
   assert.deepEqual(lab.certificate(s.id), certificate);
@@ -2638,6 +2606,7 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
       approvedAt: NOW,
       sha256: certificate.sha256,
       publication: null,
+      supersededBy: null,
     },
   ]);
   t.assert.snapshot(certificate.content);
@@ -3065,7 +3034,7 @@ test('Client notification is recorded only for a confirmed OOS', (t) => {
   assert.equal(run(lab, publish(s), 'coordinator').status, 'Published');
 });
 
-test('a Published Sample is locked against every command', (t) => {
+test('a Published Sample is locked against every command but starting an Amendment', (t) => {
   const lab = memory(t);
   let s = approvedWithConfirmedOos(lab);
   s = run(lab, notifyClient(s, 'OOS26-0001'), 'coordinator');
@@ -3122,4 +3091,354 @@ test('the Publish queue lists approved Samples by Due date', (t) => {
   );
   run(lab, publish(approved[2]), 'coordinator');
   assert.deepEqual(queue(), ['26-00002', '26-00001']);
+});
+
+const amendmentReason = 'Client query found a transcription error on NIT-001.';
+const startAmendment = (s: Sample, reason = amendmentReason) => ({
+  type: 'startAmendment',
+  ...target(s),
+  reason,
+});
+const versions = (lab: Laboratory, s: Sample) =>
+  lab.certificates(s.id).map((c) => [c.version, c.supersededBy]);
+
+test('an Amendment corrects a Published Certificate and issues version n+1 marked Amended, keeping version n', (t) => {
+  const lab = memory(t);
+  let s = submitted(lab);
+  const onlyPublished =
+    /Only a Published Certificate of Analysis can be amended/;
+  assert.throws(
+    () => run(lab, startAmendment(s), 'coordinator'),
+    onlyPublished,
+  );
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  assert.throws(
+    () => run(lab, startAmendment(s), 'manager'),
+    /Approved samples are locked/,
+    'an approved Certificate is Published before it can be amended',
+  );
+  s = run(lab, publish(s), 'coordinator');
+  const v1 = lab.certificate(s.id, 1);
+
+  // Starting: a Coordinator or Manager, with a reason.
+  assert.throws(
+    () => run(lab, startAmendment(s), 'analyst'),
+    (e: Error & { status: number }) =>
+      e.status === 403 && /coordinator or manager role/.test(e.message),
+  );
+  assert.throws(() => run(lab, startAmendment(s), 'unknown'), /Unknown user/);
+  for (const reason of ['', '  ', 'no'])
+    assert.throws(
+      () => run(lab, startAmendment(s, reason), 'coordinator'),
+      /Give a reason for the Amendment/,
+    );
+  assert.equal(lab.snapshot().samples[0].status, 'Published');
+  const started = audited(lab, startAmendment(s), 'manager');
+  assert.deepEqual(started.changes, [
+    [
+      'Sample 26-00001',
+      'status',
+      'Published',
+      'Amendment in progress',
+      amendmentReason,
+    ],
+  ]);
+  s = started.outcome.samples[0];
+  assert.equal(s.status, 'Amendment in progress');
+  assert.deepEqual(lab.certificates(s.id), [v1], 'starting issues nothing');
+  assert.throws(
+    () => run(lab, startAmendment(s), 'coordinator'),
+    onlyPublished,
+    'one Amendment at a time',
+  );
+
+  // Correcting: the assigned Analyst, each change with a reason.
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 3.1, 'Typo'), 'analyst-2'),
+    /assigned analyst/,
+  );
+  assert.throws(
+    () => run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst'),
+    /Correct at least one Result, with a reason, before submitting the Amendment/,
+  );
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 3.1), 'analyst'),
+    /Give a reason for changing the Result/,
+  );
+  const misread = 'Keyed from the wrong injection.';
+  const transcribed = 'Transcription error: the worksheet gives 3.1 ng/day.';
+  s = run(lab, result(s, 'NIT-001-v1', 3, misread), 'analyst');
+  s = run(lab, result(s, 'NIT-001-v1', 3.1, transcribed), 'analyst');
+  assert.deepEqual(
+    s.tests[0].results.map((r) => [r.value, r.status, r.enteredBy, r.reason]),
+    [
+      [2.5, 'superseded', 'analyst', ''],
+      [3, 'superseded', 'analyst', misread],
+      [3.1, 'current', 'analyst', transcribed],
+    ],
+  );
+
+  // Submitting and re-approving are signed, and a return keeps the Amendment.
+  assert.throws(
+    () =>
+      run(
+        lab,
+        { type: 'submitForApproval', ...target(s), password: 'wrong' },
+        'analyst',
+      ),
+    /password is incorrect/,
+  );
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  assert.equal(s.status, 'Awaiting approval');
+  s = run(
+    lab,
+    {
+      type: 'return',
+      ...target(s),
+      comment: 'Attach the corrected worksheet.',
+    },
+    'manager',
+  );
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  assert.throws(
+    () =>
+      run(lab, { type: 'approve', ...target(s), password: 'wrong' }, 'manager'),
+    /password is incorrect/,
+  );
+  const approval = audited(lab, { type: 'approve', ...target(s) }, 'manager');
+  s = approval.outcome.samples[0];
+  assert.equal(s.status, 'Approved');
+
+  const v2 = lab.certificate(s.id);
+  assert.equal(v2.version, 2);
+  const changeSummary =
+    'Impurity A (NIT-001 v1): Result 2.5 → 3.1 ng/day, qualifier < LOQ → quantified (reasons: "Keyed from the wrong injection."; "Transcription error: the worksheet gives 3.1 ng/day.")';
+  assert.deepEqual(v2.content.amendment, {
+    reason: amendmentReason,
+    changeSummary,
+  });
+  assert.deepEqual(
+    approval.changes.filter(([record]) => String(record).endsWith('/v2')),
+    [
+      ['Certificate of Analysis 26-00001/v2', 'version', null, 2, null],
+      ['Certificate of Analysis 26-00001/v2', 'sha256', null, v2.sha256, null],
+    ],
+  );
+  assert.deepEqual(
+    v2.content,
+    {
+      ...v1.content,
+      version: 2,
+      amendment: v2.content.amendment,
+      results: [
+        { ...v1.content.results[0], value: 3.1, qualifier: 'quantified' },
+        v1.content.results[1],
+      ],
+    },
+    'otherwise the same content, with this approval’s signatures',
+  );
+  assert.deepEqual(
+    v2.content.signatures.map((x) => [x.meaning, x.signerId]),
+    [
+      ['performed by', 'analyst'],
+      ['approved by', 'manager'],
+    ],
+  );
+  const document = renderCertificate(v2.content);
+  assert.equal(document.reference, 'Sample 26-00001 · Version 2');
+  assert.equal(document.marker, 'Amended');
+  assert.deepEqual(
+    document.sections.find((x) => x.heading === 'Amendment'),
+    {
+      kind: 'text',
+      heading: 'Amendment',
+      paragraphs: [`Reason: ${amendmentReason}`, `Changes: ${changeSummary}`],
+    },
+  );
+  assert.equal(renderCertificate(v1.content).marker, null);
+  assert.deepEqual(
+    lab.certificate(s.id, 1),
+    v1,
+    'version 1 is kept as issued, not superseded until version 2 is Published',
+  );
+  assert.deepEqual(versions(lab, s), [
+    [1, null],
+    [2, null],
+  ]);
+
+  // Publishing version 2 supersedes version 1, which stays retrievable.
+  s = run(lab, publish(s), 'coordinator');
+  assert.equal(s.status, 'Published');
+  assert.deepEqual(versions(lab, s), [
+    [1, 2],
+    [2, null],
+  ]);
+  assert.deepEqual(lab.certificate(s.id, 1), { ...v1, supersededBy: 2 });
+  assert.equal(lab.certificate(s.id).publication?.version, 2);
+  assert.deepEqual(
+    lab.snapshot().certificates.map((c) => [c.version, c.supersededBy]),
+    [
+      [1, 2],
+      [2, null],
+    ],
+  );
+
+  // A later Amendment summarises only its own corrections.
+  s = run(
+    lab,
+    startAmendment(s, 'NIT-003 sequence ID recorded against the wrong run.'),
+    'coordinator',
+  );
+  s = run(
+    lab,
+    {
+      ...result(s, 'NIT-003-v1', 2.5, 'Sequence ID of the reported run.'),
+      sequenceId: 'SEQ-0002',
+    },
+    'analyst',
+  );
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  assert.deepEqual(lab.certificate(s.id).content.amendment, {
+    reason: 'NIT-003 sequence ID recorded against the wrong run.',
+    changeSummary:
+      'Impurity B (NIT-003 v1): sequence ID SEQ-0001 → SEQ-0002 (reason: "Sequence ID of the reported run.")',
+  });
+  s = run(lab, publish(s), 'coordinator');
+  assert.deepEqual(versions(lab, s), [
+    [1, 2],
+    [2, 3],
+    [3, null],
+  ]);
+  assert.deepEqual(
+    lab.certificates(s.id).map((c) => [c.sha256, c.content.results[0].value]),
+    [
+      [v1.sha256, 2.5],
+      [v2.sha256, 3.1],
+      [lab.certificate(s.id, 3).sha256, 3.1],
+    ],
+    'every version keeps the content the Client received',
+  );
+});
+
+test('an Amendment does not correct a Result decided by an OOS investigation', (t) => {
+  const lab = memory(t);
+  let s = approvedWithConfirmedOos(lab);
+  s = run(lab, notifyClient(s, 'OOS26-0001'), 'coordinator');
+  s = run(lab, publish(s), 'coordinator');
+  s = run(lab, startAmendment(s), 'coordinator');
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 2.5, 'Recalculated.'), 'analyst'),
+    /confirmed OOS \(OOS26-0001\) and cannot be corrected/,
+  );
+  s = run(
+    lab,
+    result(s, 'NIT-003-v1', 0.9, 'Dilution factor corrected.'),
+    'analyst',
+  );
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  const [confirmed] = lab.certificate(s.id).content.results;
+  assert.equal(confirmed.conformity, 'Does not comply');
+  assert.deepEqual(confirmed.investigation, {
+    id: 'OOS26-0001',
+    outcome: 'Confirmed',
+  });
+  assert.equal(oosPublishBlocker(s), null, 'the Client was already informed');
+  assert.equal(run(lab, publish(s), 'coordinator').status, 'Published');
+});
+
+test('a Manager never approves a Sample on which they entered or corrected a Result, including in an Amendment', (t) => {
+  const folder = mkdtempSync(join(tmpdir(), 'lims-separation-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const file = join(folder, 'test.sqlite');
+  const open = (directory: readonly Person[] = people) =>
+    new Laboratory(file, {
+      clock: () => NOW,
+      credentials: accounts,
+      people: directory,
+    });
+  // Sam Rivera (analyst-2) works as an Analyst on two Samples.
+  const lab = open();
+  let [entered, amended] = execute(
+    lab,
+    { ...receipt, samples: [finishedProduct, finishedProduct] },
+    'coordinator',
+  ).samples;
+  entered = run(
+    lab,
+    { type: 'assign', ...target(entered), assignee: 'analyst-2' },
+    'coordinator',
+  );
+  for (const x of entered.tests)
+    entered = run(lab, result(entered, x.id, 2.5), 'analyst-2');
+  entered = run(
+    lab,
+    { type: 'submitForApproval', ...target(entered) },
+    'analyst-2',
+  );
+  // Alex Chen tests the other; Sam corrects it in its Amendment.
+  amended = run(lab, publish(throughApproval(lab, amended)), 'coordinator');
+  amended = run(lab, startAmendment(amended), 'coordinator');
+  amended = run(
+    lab,
+    { type: 'assign', ...target(amended), assignee: 'analyst-2' },
+    'coordinator',
+  );
+  amended = run(
+    lab,
+    result(amended, 'NIT-001-v1', 3.1, 'Transcription error.'),
+    'analyst-2',
+  );
+  amended = run(
+    lab,
+    { type: 'submitForApproval', ...target(amended) },
+    'analyst-2',
+  );
+  assert.equal(enteredResultOn(amended, 'analyst-2'), true);
+  lab.close();
+
+  // Sam is then given the Manager role; the record of their work remains.
+  const promoted = open(
+    people.map((p) =>
+      p.id === 'analyst-2' ? { ...p, role: 'manager' as const } : p,
+    ),
+  );
+  t.after(() => promoted.close());
+  const pending = promoted.snapshot().samples;
+  assert.deepEqual(
+    pending.map((x) => [x.id, x.status]),
+    [
+      [amended.id, 'Awaiting approval'],
+      [entered.id, 'Awaiting approval'],
+    ],
+  );
+  for (const x of pending)
+    assert.throws(
+      () => run(promoted, { type: 'approve', ...target(x) }, 'analyst-2'),
+      (e: Error & { status: number }) =>
+        e.status === 403 &&
+        /cannot approve a Sample on which they entered or corrected a Result/.test(
+          e.message,
+        ),
+    );
+  assert.deepEqual(promoted.snapshot().samples, pending, 'nothing changed');
+  assert.equal(promoted.certificates(amended.id).length, 1);
+
+  // Taylor Brooks entered nothing on either and approves both.
+  for (const x of pending)
+    assert.equal(
+      run(promoted, { type: 'approve', ...target(x) }, 'manager').status,
+      'Approved',
+    );
+  assert.equal(promoted.certificate(amended.id).version, 2);
+  assert.deepEqual(
+    promoted
+      .certificate(amended.id)
+      .content.signatures.map((x) => [x.meaning, x.signerId]),
+    [
+      ['performed by', 'analyst-2'],
+      ['approved by', 'manager'],
+    ],
+  );
 });

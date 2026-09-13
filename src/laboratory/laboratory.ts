@@ -11,6 +11,7 @@ import {
   seededAcceptableIntakes,
   type AcceptableIntake,
   type AcceptableIntakeEntry,
+  type Person,
   enteredResultOn,
   heldStatuses,
   methods,
@@ -48,6 +49,7 @@ import {
   type Publication,
 } from './certificate.ts';
 import type { Attachment } from './attachment-contracts.ts';
+import { amendmentOf, changeSummary } from './amendments.ts';
 import {
   AttachmentRejected,
   AttachmentStore,
@@ -55,7 +57,7 @@ import {
 } from './attachments.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 export class WorkflowError extends Error {
   constructor(
@@ -80,7 +82,11 @@ function requireRole(actor: Actor, role: Actor['role']) {
 }
 
 /** Statuses in which the assigned Analyst may enter Results or submit them. */
-const editableStatuses: readonly SampleStatus[] = ['In progress', 'Returned'];
+const editableStatuses: readonly SampleStatus[] = [
+  'In progress',
+  'Returned',
+  'Amendment in progress',
+];
 
 /** No one assigns or tests a Sample held for a Receipt deviation, or one the
  * Client withdrew. */
@@ -167,10 +173,13 @@ type Series = 'submission' | 'sample' | 'investigation';
  * lists a Sample's recorded Electronic signatures (oldest first), and
  * `certificates` / `issueCertificate` read and store locked Certificate
  * versions inside the same transaction, and `recordPublication` stores the
- * publication of one version.
+ * publication of one version. `people` is the user directory in force, and
+ * `history` a Sample's audit entries so far, this command's included.
  */
 type Context = {
   at: string;
+  people: readonly Person[];
+  history: (sample: Sample) => AuditEntry[];
   allocate: (series: Series) => number;
   audit: Audit;
   limitInForce: (analyteId: string) => AcceptableIntake | null;
@@ -197,7 +206,11 @@ const locks: Partial<
     // Publishing, and the Client notification a Confirmed OOS requires first.
     allows: ['publish', 'recordClientOosNotification'],
   },
-  Published: { message: 'Published Samples are locked.', allows: [] },
+  // A correction to a Published Certificate starts an Amendment.
+  Published: {
+    message: 'Published Samples are locked.',
+    allows: ['startAmendment'],
+  },
   Withdrawn: {
     message: 'The Client withdrew this Sample, so it is closed.',
     allows: [],
@@ -471,7 +484,7 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     );
   },
 
-  assign(command, actor, sample, { audit }) {
+  assign(command, actor, sample, { audit, people }) {
     requireRole(actor, 'coordinator');
     requireNotHeld(sample);
     if (sample.status === 'Awaiting approval')
@@ -499,6 +512,7 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     const previous = currentResult(test);
     // An investigated Result is decided by its investigation, never corrected
     // around it: an open one must be concluded, and a confirmed OOS stands.
+    // An Amendment is no exception (see amendments.ts).
     const investigated =
       previous?.investigationId &&
       sample.investigations.find((i) => i.id === previous.investigationId);
@@ -582,11 +596,20 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     test.results.push(next);
   },
 
-  submitForApproval(_command, actor, sample, { audit }) {
+  submitForApproval(_command, actor, sample, { audit, certificates, history }) {
     requireAssignedAnalyst(actor, sample);
     if (sample.tests.some((t) => !currentResult(t)))
       throw new WorkflowError(
         'Enter a Result for every Test before submitting.',
+      );
+    // A Sample with a Certificate is back at the bench only in an Amendment,
+    // which exists to correct a Result.
+    if (
+      certificates(sample.id).length &&
+      !changeSummary(sample, history(sample))
+    )
+      throw new WorkflowError(
+        'Correct at least one Result, with a reason, before submitting the Amendment.',
       );
     audit.set(
       auditRecord.sample(sample),
@@ -601,13 +624,22 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     _command,
     actor,
     sample,
-    { at, audit, submission, signatures, certificates, issueCertificate },
+    {
+      at,
+      audit,
+      submission,
+      signatures,
+      certificates,
+      issueCertificate,
+      history,
+    },
   ) {
     requireRole(actor, 'manager');
     requireAwaitingApproval(sample);
+    // Corrections, retests and Amendment corrections are Results too.
     if (enteredResultOn(sample, actor.id))
       throw new WorkflowError(
-        'A Manager cannot approve a Sample on which they entered a Result.',
+        'A Manager cannot approve a Sample on which they entered or corrected a Result.',
         403,
       );
     const blocked = oosApprovalBlocker(sample);
@@ -628,11 +660,23 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       signedAt: x.signedAt,
     });
     const version = (certificates(sample.id).at(-1)?.version ?? 0) + 1;
+    // Every version after the first is issued by an Amendment, which states
+    // why it was started and, from the audit trail, what it changed.
+    let amendment = null;
+    if (version > 1) {
+      const entries = history(sample);
+      const start = amendmentOf(entries);
+      const changes = changeSummary(sample, entries);
+      if (!start || !changes)
+        throw new Error(`Sample ${sample.id} has no Amendment to approve.`);
+      amendment = { reason: start.reason, changeSummary: changes };
+    }
     const certificate = issueCertificate(
       certificateContent({
         sample,
         submission: submission(sample.submissionId),
         version,
+        amendment,
         approvedAt: at,
         signatures: [
           manifestation(performed),
@@ -648,6 +692,28 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     const record = auditRecord.certificate(sample, version);
     audit.change(record, 'version', null, version);
     audit.change(record, 'sha256', null, certificate.sha256);
+  },
+
+  startAmendment(command, actor, sample, { audit }) {
+    if (actor.role !== 'coordinator' && actor.role !== 'manager')
+      throw new WorkflowError(
+        'This action requires the coordinator or manager role.',
+        403,
+      );
+    if (sample.status !== 'Published')
+      throw new WorkflowError(
+        'Only a Published Certificate of Analysis can be amended.',
+      );
+    // The reason is the reason for the change of status; the Certificate
+    // issued at the Amendment's Approval states it.
+    audit.set(
+      auditRecord.sample(sample),
+      sample,
+      'status',
+      'Amendment in progress',
+      command.reason,
+    );
+    sample.lastReturn = null;
   },
 
   return(command, actor, sample, { at, audit }) {
@@ -874,6 +940,9 @@ export type LaboratoryOptions = {
   credentials?: SignerCredentials | null;
   /** The Method reference data in force; defaults to the seeded Methods. */
   methods?: readonly Method[];
+  /** The user directory in force; defaults to the seeded people. A person's
+   * role may change over time, while the record keeps what they did. */
+  people?: readonly Person[];
 };
 
 function openInvestigation(sample: Sample, id: string) {
@@ -897,10 +966,12 @@ export class Laboratory {
   private credentials: SignerCredentials | null;
   /** Seeded Method reference data; replaceable so rules over it can be exercised. */
   private methods: readonly Method[];
+  private people: readonly Person[];
   constructor(path: string, options: LaboratoryOptions = {}) {
     this.clock = options.clock ?? (() => new Date().toISOString());
     this.credentials = options.credentials ?? null;
     this.methods = options.methods ?? methods;
+    this.people = options.people ?? people;
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, document TEXT NOT NULL);
@@ -945,7 +1016,7 @@ export class Laboratory {
    * stored file is immutable, so a retried upload only adds an unused copy.
    */
   storeAttachment(upload: Upload, actorId: string): Attachment {
-    const actor = people.find((p) => p.id === actorId);
+    const actor = this.people.find((p) => p.id === actorId);
     if (!actor) throw new WorkflowError('Unknown user.', 403);
     requireRole(actor, 'analyst');
     try {
@@ -969,7 +1040,7 @@ export class Laboratory {
       audit: this.audit.entries(),
       signatures: this.signatures(),
       attachments: this.attachments.list(),
-      people,
+      people: this.people,
       clients,
       analytes,
       methods: this.methods,
@@ -1015,14 +1086,21 @@ export class Laboratory {
         recipients: string | null;
         publishedAt: string | null;
       })[];
+    // A version is superseded once a later version of its Sample is
+    // Published; rows come by Sample, then version.
+    const published = rows.filter((row) => row.publishedAt !== null);
     return rows.map((row) => {
       const version = Number(row.version);
+      const later = published.find(
+        (p) => p.sampleId === row.sampleId && Number(p.version) > version,
+      );
       return {
         sampleId: row.sampleId,
         version,
         approvedAt: row.approvedAt,
         sha256: row.sha256,
         ...(withContent ? { content: row.content } : {}),
+        supersededBy: later ? Number(later.version) : null,
         publication:
           row.publishedAt === null
             ? null
@@ -1107,6 +1185,7 @@ export class Laboratory {
       sha256: createHash('sha256').update(document).digest('hex'),
       content: JSON.parse(document),
       publication: null,
+      supersededBy: null,
     };
     this.db
       .prepare(
@@ -1190,7 +1269,7 @@ export class Laboratory {
    * audit entries together. Nothing below this method may call BEGIN.
    */
   execute(input: unknown, actorId: string): CommandOutcome {
-    const actor = people.find((p) => p.id === actorId);
+    const actor = this.people.find((p) => p.id === actorId);
     if (!actor) throw new WorkflowError('Unknown user.', 403);
     const parsed = commandSchema.safeParse(input);
     if (!parsed.success)
@@ -1216,6 +1295,8 @@ export class Laboratory {
       });
       const context: Context = {
         at,
+        people: this.people,
+        history: (sample) => this.audit.entries(sample),
         allocate: (series) => this.allocate(series, at),
         audit,
         limitInForce: (analyteId) =>

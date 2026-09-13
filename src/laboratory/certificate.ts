@@ -159,6 +159,10 @@ export type Certificate = {
   content: CertificateContent;
   /** How and when this version was Published; null until it is. */
   publication: Publication | null;
+  /** The first later version that was Published, which superseded this one;
+   * null while this is the latest Published version (or none is). Derived,
+   * never stored: the locked content does not change. */
+  supersededBy: number | null;
 };
 
 /** A Certificate version without its content, as the workspace lists it. */

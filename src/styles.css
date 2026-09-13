@@ -461,6 +461,9 @@ kbd {
 .seg-published {
   --c: var(--accent);
 }
+.seg-amendment-in-progress {
+  --c: var(--returned);
+}
 .seg-on-hold {
   --c: var(--alert);
 }
@@ -723,6 +726,9 @@ body.resizing {
 .row.published td {
   color: var(--muted);
 }
+.row.amendment-in-progress {
+  --c: var(--returned);
+}
 .row.on-hold {
   --c: var(--alert);
 }
@@ -885,6 +891,10 @@ body.resizing {
 .status.published {
   --c: var(--accent);
   --w: var(--rule-soft);
+}
+.status.amendment-in-progress {
+  --c: var(--returned);
+  --w: var(--returned-wash);
 }
 
 .pips {
@@ -1935,6 +1945,29 @@ body.resizing {
 }
 .certificates .publication.pending {
   color: var(--muted);
+}
+.cert-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  color: var(--returned);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.cert-tag.superseded {
+  color: var(--muted);
+}
+.flash.amendment {
+  background: var(--returned-wash);
+  color: var(--returned);
+  overflow-wrap: anywhere;
+}
+.flash.amendment .amendment-changes {
+  margin: 4px 0 0;
+  color: var(--ink-2);
 }
 .publish-form {
   display: flex;
