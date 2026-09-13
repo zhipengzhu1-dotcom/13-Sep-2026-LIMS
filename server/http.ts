@@ -10,17 +10,10 @@ import {
   sessionCookie,
   type Sessions,
 } from './sessions.ts';
+import { HttpError } from './http-error.ts';
+import { handleAttachments } from './attachments.ts';
 
 const MAX_BODY_BYTES = 32768;
-
-class HttpError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
 
 export type Authentication = { accounts: Accounts; sessions: Sessions };
 
@@ -39,7 +32,8 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
       res.end(JSON.stringify(data));
     };
     try {
-      const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      const path = url.pathname;
       const route = `${req.method} ${path}`;
       const token = readSessionCookie(req.headers.cookie);
       /** The signed-in user, taken from the session and nothing else the
@@ -65,6 +59,8 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
         currentUser();
         return send(200, lab.snapshot());
       }
+      if (path === '/api/attachments' || path.startsWith('/api/attachments/'))
+        return await handleAttachments(lab, req, res, url, currentUser);
       if (
         ![
           'POST /api/sign-in',

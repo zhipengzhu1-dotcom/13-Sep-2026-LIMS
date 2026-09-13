@@ -143,19 +143,33 @@ export function seed(lab: Laboratory) {
       act({ type: 'assign', assignee: 'analyst' }, 'coordinator');
       s.tests.forEach((t, j) => {
         if (j >= values.length) return;
-        const entry = (value: number, run: number, reason = '') =>
+        const entry = (value: number, run: number, reason = '') => {
+          // Illustrative only: the analyst converts ng/mL by hand.
+          const instrumentReading = Math.round(value * 1000) / 100;
+          const sequenceId = `SEQ-${s.id}-${pad(j + 1)}-${run}`;
+          const worksheet = lab.storeAttachment(
+            {
+              filename: `${s.id} ${t.methodCode} worksheet ${run}.csv`,
+              contentType: 'text/csv',
+              content: Buffer.from(
+                `Sample,Method,Sequence ID,Instrument reading (ng/mL),Result (${t.unit})\n${s.id},${t.methodCode},${sequenceId},${instrumentReading},${value}\n`,
+              ),
+            },
+            'analyst',
+          );
           act(
             {
               type: 'enterResult',
               testId: t.id,
               value,
-              // Illustrative only: the analyst converts ng/mL by hand.
-              instrumentReading: Math.round(value * 1000) / 100,
-              sequenceId: `SEQ-${s.id}-${pad(j + 1)}-${run}`,
+              instrumentReading,
+              sequenceId,
+              attachmentId: worksheet.id,
               reason,
             },
             'analyst',
           );
+        };
         if (stage === 'awaiting' && j === 0) {
           // One corrected Result, so the demo shows a superseded entry.
           entry(values[j] - 0.5, 1);

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import { Laboratory, SCHEMA_VERSION } from '../src/laboratory/laboratory.ts';
 import {
   currentResult,
@@ -35,10 +36,38 @@ const receipt = {
 };
 const target = (s: Sample) => ({ sampleId: s.id, revision: s.revision });
 
+const worksheets = new WeakMap<Laboratory, string>();
+/** One stored calculation worksheet per lab, for Results that do not test
+ * attachments themselves. */
+function worksheet(lab: Laboratory) {
+  if (!worksheets.has(lab))
+    worksheets.set(
+      lab,
+      lab.storeAttachment(
+        {
+          filename: 'worksheet.csv',
+          contentType: 'text/csv',
+          content: Buffer.from('reading,result\n1.25,2.5\n'),
+        },
+        'analyst',
+      ).id,
+    );
+  return worksheets.get(lab)!;
+}
+
 /** Mints a fresh key per call — a distinct laboratory act. Tests that exercise
- * replay pass their own commandId instead. */
+ * replay pass their own commandId instead. An `enterResult` without its own
+ * `attachmentId` references the lab's stored worksheet. */
 function execute(lab: Laboratory, command: object, actor: string) {
-  return lab.execute({ commandId: newCommandId(), ...command }, actor);
+  const attachment =
+    (command as { type?: string }).type === 'enterResult' &&
+    !('attachmentId' in command)
+      ? { attachmentId: worksheet(lab) }
+      : {};
+  return lab.execute(
+    { commandId: newCommandId(), ...attachment, ...command },
+    actor,
+  );
 }
 /** Runs a command and unwraps the first Sample it touched. */
 function run(lab: Laboratory, command: object, actor: string): Sample {
@@ -534,7 +563,11 @@ test('a retried command is replayed, not applied a second time', () => {
     },
     'coordinator',
   ).samples[0];
-  const entry = { commandId: newCommandId(), ...result(s, 'NIT-001-v1', 1) };
+  const entry = {
+    commandId: newCommandId(),
+    attachmentId: worksheet(lab),
+    ...result(s, 'NIT-001-v1', 1),
+  };
   lab.execute(entry, 'analyst');
   const again = lab.execute(entry, 'analyst');
   assert.equal(again.outcome, 'replayed');
@@ -770,4 +803,111 @@ test('a correction supersedes the current Result and history keeps who, when and
   );
   assert.equal(currentResult(test)?.value, 3.5);
   assert.equal(test.results.filter((r) => r.status === 'current').length, 1);
+});
+
+test('a Result must reference a stored worksheet attachment', (t) => {
+  const lab = memory(t);
+  const s = assigned(lab);
+  const before = lab.snapshot();
+  assert.throws(
+    () =>
+      run(
+        lab,
+        { ...result(s, 'NIT-001-v1', 4), attachmentId: undefined },
+        'analyst',
+      ),
+    /attachmentId/,
+    'missing',
+  );
+  assert.throws(
+    () =>
+      run(lab, { ...result(s, 'NIT-001-v1', 4), attachmentId: ' ' }, 'analyst'),
+    /attachmentId/,
+    'blank',
+  );
+  assert.throws(
+    () =>
+      run(
+        lab,
+        { ...result(s, 'NIT-001-v1', 4), attachmentId: newCommandId() },
+        'analyst',
+      ),
+    /worksheet attachment was not found/,
+    'unknown',
+  );
+  assert.deepEqual(lab.snapshot(), before, 'nothing was recorded');
+
+  const content = Buffer.from('%PDF-1.7\nworksheet\n');
+  const stored = lab.storeAttachment(
+    {
+      filename: 'C:\\bench\\NIT-001 worksheet.pdf',
+      contentType: 'application/pdf',
+      content,
+    },
+    'analyst',
+  );
+  assert.deepEqual(
+    { ...stored, id: undefined },
+    {
+      id: undefined,
+      filename: 'NIT-001 worksheet.pdf',
+      contentType: 'application/pdf',
+      size: content.byteLength,
+      sha256: createHash('sha256').update(content).digest('hex'),
+      uploadedBy: 'analyst',
+      uploadedAt: '2026-09-10T12:00:00.000Z',
+    },
+  );
+  const entered = run(
+    lab,
+    { ...result(s, 'NIT-001-v1', 4), attachmentId: stored.id },
+    'analyst',
+  );
+  assert.equal(entered.tests[0].results[0].attachmentId, stored.id);
+  assert.deepEqual(lab.snapshot().attachments, [stored]);
+  assert.match(lab.snapshot().activity[0].detail, /NIT-001 worksheet\.pdf/);
+  const read = lab.readAttachment(stored.id)!;
+  assert.deepEqual(Buffer.from(read.content), content);
+  assert.equal(lab.readAttachment(newCommandId()), null);
+});
+
+test('only Analysts store worksheets, of an accepted type and size', (t) => {
+  const lab = memory(t);
+  const upload = (patch: object, actor = 'analyst') =>
+    lab.storeAttachment(
+      {
+        filename: 'sheet.csv',
+        contentType: 'text/csv',
+        content: Buffer.from('a,b\n'),
+        ...patch,
+      },
+      actor,
+    );
+  for (const actor of ['coordinator', 'manager'])
+    assert.throws(() => upload({}, actor), /analyst role/);
+  const refusals: [object, number][] = [
+    [{ filename: 'run.exe', contentType: 'application/octet-stream' }, 415],
+    [{ filename: 'sheet.pdf' }, 415],
+    [{ filename: 'image.png', contentType: 'image/png' }, 415],
+    [{ content: Buffer.from([0x61, 0, 0x62]) }, 415],
+    [{ content: new Uint8Array(0) }, 400],
+    [{ filename: '  ' }, 400],
+    [{ content: Buffer.alloc(10 * 1024 * 1024 + 1, 0x61) }, 413],
+  ];
+  for (const [patch, status] of refusals)
+    assert.throws(
+      () => upload(patch),
+      (e: Error & { status: number }) => e.status === status,
+      JSON.stringify(Object.keys(patch)),
+    );
+  assert.equal(lab.snapshot().attachments.length, 0);
+  const xlsx = upload({
+    filename: 'sheet.XLSX',
+    contentType:
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    content: Buffer.from([0x50, 0x4b, 0x03, 0x04, 1]),
+  });
+  assert.equal(xlsx.filename, 'sheet.XLSX');
+  const full = upload({ content: Buffer.alloc(10 * 1024 * 1024, 0x61) });
+  assert.equal(full.size, 10 * 1024 * 1024);
 });

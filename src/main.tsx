@@ -23,6 +23,11 @@ import {
   type SampleReceipt,
   type Test,
 } from './laboratory/contracts';
+import {
+  MAX_ATTACHMENT_BYTES,
+  attachmentAccept,
+  attachmentContentType,
+} from './laboratory/attachment-contracts';
 import './styles.css';
 
 type View =
@@ -1537,7 +1542,12 @@ function SamplePanel({
 /** The one place an `enterResult` command is built, so every entry row sends
  * a Result the same way. The unit and qualifier are never sent: the unit
  * follows the Material type and the core assigns the qualifier. */
-function resultDraft(s: Sample, t: Test, f: FormData): Draft {
+function resultDraft(
+  s: Sample,
+  t: Test,
+  f: FormData,
+  attachmentId: string,
+): Draft {
   return {
     type: 'enterResult',
     sampleId: s.id,
@@ -1546,6 +1556,7 @@ function resultDraft(s: Sample, t: Test, f: FormData): Draft {
     value: Number(f.get('value')),
     instrumentReading: Number(f.get('instrumentReading')),
     sequenceId: String(f.get('sequenceId') ?? ''),
+    attachmentId,
     reason: String(f.get('reason') ?? ''),
   };
 }
@@ -1587,11 +1598,60 @@ function ResultEntry({
   const value = typed.trim() === '' ? NaN : Number(typed);
   const preview =
     Number.isFinite(value) && value >= 0 ? qualify(value, t) : null;
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  // A file already stored is not sent twice, so resubmitting after a failed
+  // save repeats the same command rather than referencing a new copy.
+  const uploaded = useRef(new WeakMap<File, string>());
+  async function uploadWorksheet(file: File): Promise<string | null> {
+    const known = uploaded.current.get(file);
+    if (known) return known;
+    const contentType = attachmentContentType(file.name);
+    if (!contentType) {
+      setUploadError('Attach a PDF, XLSX, XLS, CSV, PNG or JPEG file.');
+      return null;
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setUploadError('Attachments are limited to 10 MB.');
+      return null;
+    }
+    setUploading(true);
+    try {
+      const response = await fetch(
+        `/api/attachments?filename=${encodeURIComponent(file.name)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': contentType },
+          body: file,
+        },
+      );
+      const body = await response.json();
+      if (!response.ok) {
+        setUploadError(body.error);
+        return null;
+      }
+      uploaded.current.set(file, body.attachment.id);
+      return body.attachment.id;
+    } catch {
+      setUploadError('The worksheet could not be uploaded. Try again.');
+      return null;
+    } finally {
+      setUploading(false);
+    }
+  }
   return (
     <form
       onSubmit={async (e) => {
         e.preventDefault();
-        if (await execute(resultDraft(s, t, new FormData(e.currentTarget))))
+        setUploadError('');
+        const form = new FormData(e.currentTarget);
+        const attachmentId = await uploadWorksheet(
+          form.get('worksheet') as File,
+        );
+        if (
+          attachmentId &&
+          (await execute(resultDraft(s, t, form, attachmentId)))
+        )
           onSaved();
       }}
     >
@@ -1635,16 +1695,49 @@ function ResultEntry({
         <span>Injection / sequence ID</span>
         <input name="sequenceId" required maxLength={200} />
       </label>
+      <label className="worksheet">
+        <span>Calculation worksheet</span>
+        <input
+          name="worksheet"
+          type="file"
+          required
+          accept={attachmentAccept}
+          onChange={() => setUploadError('')}
+        />
+      </label>
       {current && (
         <label className="grow">
           <span>Reason for correction</span>
           <input name="reason" required minLength={3} maxLength={1000} />
         </label>
       )}
-      <button className="btn sm primary" disabled={busy}>
-        Save
+      <button className="btn sm primary" disabled={busy || uploading}>
+        {uploading ? 'Uploading…' : 'Save'}
       </button>
+      {uploadError && (
+        <p className="upload-error" role="alert">
+          {uploadError}
+        </p>
+      )}
     </form>
+  );
+}
+
+/** Opens the stored worksheet a Result was calculated on. */
+function WorksheetLink({ data, id }: { data: Snapshot; id: string }) {
+  const attachment = data.attachments.find((a) => a.id === id);
+  return (
+    <a
+      className="link worksheet-link"
+      href={`/api/attachments/${encodeURIComponent(id)}`}
+      title={
+        attachment
+          ? `${attachment.filename} · ${Math.ceil(attachment.size / 1024)} KB · SHA-256 ${attachment.sha256}`
+          : undefined
+      }
+    >
+      {attachment?.filename ?? 'Worksheet'}
+    </a>
   );
 }
 
@@ -1695,6 +1788,8 @@ function TestSheet({
                     <ResultValue result={current} />
                     <span className="sub num">
                       {current.instrumentReading} ng/mL · {current.sequenceId}
+                      {' · '}
+                      <WorksheetLink data={data} id={current.attachmentId} />
                     </span>
                   </>
                 ) : (
@@ -1766,6 +1861,7 @@ function TestSheet({
                         <span className="dim num">
                           {r.instrumentReading} ng/mL · {r.sequenceId}
                         </span>
+                        <WorksheetLink data={data} id={r.attachmentId} />
                         <span>{personName(data, r.enteredBy)}</span>
                         <time className="dim" dateTime={r.enteredAt}>
                           {stamp(r.enteredAt)}

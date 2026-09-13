@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { Attachment } from './attachment-contracts.ts';
 
 /** Lab users as the workspace shows them. Sign-in accounts (with password
  * hashes, server side only) are seeded from this list in src/accounts. */
@@ -90,6 +91,8 @@ export type Result = {
   instrumentReading: number;
   /** The injection or sequence ID that traces the Result to raw data. */
   sequenceId: string;
+  /** The calculation worksheet the value was derived from (ADR-0002). */
+  attachmentId: string;
   enteredBy: string;
   enteredAt: string;
   /** Empty for a first Result; required when it replaces the current one. */
@@ -169,6 +172,8 @@ export type Snapshot = {
   submissions: Submission[];
   samples: Sample[];
   activity: Activity[];
+  /** Records only; the bytes are downloaded per attachment. */
+  attachments: Attachment[];
   people: typeof people;
   analytes: typeof analytes;
   methods: typeof methods;
@@ -228,6 +233,7 @@ export const commandSchema = z.discriminatedUnion('type', [
     value: z.number().finite().nonnegative(),
     instrumentReading: z.number().finite().nonnegative(),
     sequenceId: text,
+    attachmentId: text,
     reason: z.string().trim().max(1000),
   }),
   z.object({ commandId, type: z.literal('submitForApproval'), ...target }),

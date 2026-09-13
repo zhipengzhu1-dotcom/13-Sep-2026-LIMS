@@ -21,9 +21,15 @@ import {
   type Submission,
   type Test,
 } from './contracts.ts';
+import type { Attachment } from './attachment-contracts.ts';
+import {
+  AttachmentRejected,
+  AttachmentStore,
+  type Upload,
+} from './attachments.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export class WorkflowError extends Error {
   constructor(
@@ -92,9 +98,13 @@ type Series = 'submission' | 'sample';
  * own verb means. `at` is the single timestamp for the whole command, so every
  * row a command writes bears the same instant. `allocate` takes the next number
  * of a per-year sequence inside the same transaction, so a rejected command
- * consumes none.
+ * consumes none. `attachment` looks up a stored attachment record.
  */
-type Context = { at: string; allocate: (series: Series) => number };
+type Context = {
+  at: string;
+  allocate: (series: Series) => number;
+  attachment: (id: string) => Attachment | null;
+};
 
 /**
  * Receipt is the one verb that creates its subjects, so it returns the
@@ -214,13 +224,18 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     return detail;
   },
 
-  enterResult(command, actor, sample, { at }) {
+  enterResult(command, actor, sample, { at, attachment }) {
     requireAssignedAnalyst(actor, sample);
     const test = sample.tests.find((t) => t.id === command.testId);
     if (!test) throw new WorkflowError('Test not found.');
     const previous = currentResult(test);
     if (previous && command.reason.length < 3)
       throw new WorkflowError('Give a reason for changing the Result.');
+    const worksheet = attachment(command.attachmentId);
+    if (!worksheet)
+      throw new WorkflowError(
+        'The worksheet attachment was not found. Upload the calculation worksheet again.',
+      );
     if (previous) previous.status = 'superseded';
     // The unit and LOD/LOQ come from the Test, which took them from the
     // Material type at receipt; the qualifier is never entered.
@@ -233,13 +248,14 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       qualifier,
       instrumentReading: command.instrumentReading,
       sequenceId: command.sequenceId,
+      attachmentId: worksheet.id,
       enteredBy: actor.id,
       enteredAt: at,
       reason: command.reason,
     });
     const shown = (v: number, q: string) =>
       `${v} ${test.unit}${q === 'quantified' ? '' : ` (${q})`}`;
-    return `${test.analyteName} (${test.methodCode} v${test.methodVersion}): ${previous ? `${shown(previous.value, previous.qualifier)} → ` : ''}${shown(command.value, qualifier)}; reading ${command.instrumentReading} ng/mL, sequence ${command.sequenceId}${command.reason ? `; reason: ${command.reason}` : ''}.`;
+    return `${test.analyteName} (${test.methodCode} v${test.methodVersion}): ${previous ? `${shown(previous.value, previous.qualifier)} → ` : ''}${shown(command.value, qualifier)}; reading ${command.instrumentReading} ng/mL, sequence ${command.sequenceId}; worksheet ${worksheet.filename} (SHA-256 ${worksheet.sha256})${command.reason ? `; reason: ${command.reason}` : ''}.`;
   },
 
   submitForApproval(_command, actor, sample) {
@@ -280,6 +296,7 @@ type Subject = { submissionId: string | null; sampleIds: string[] };
 
 export class Laboratory {
   private db: DatabaseSync;
+  private attachments: AttachmentStore;
   constructor(
     path: string,
     private clock = () => new Date().toISOString(),
@@ -299,10 +316,34 @@ export class Laboratory {
       .prepare('PRAGMA user_version')
       .get() as { user_version: number };
     if (version === 0) this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
+    this.attachments = new AttachmentStore(this.db);
   }
 
   close() {
     this.db.close();
+  }
+
+  /**
+   * Stores a calculation worksheet so a later `enterResult` can reference it.
+   * Kept outside `execute`: it creates no laboratory record by itself, and the
+   * stored file is immutable, so a retried upload only adds an unused copy.
+   */
+  storeAttachment(upload: Upload, actorId: string): Attachment {
+    const actor = people.find((p) => p.id === actorId);
+    if (!actor) throw new WorkflowError('Unknown user.', 403);
+    requireRole(actor, 'analyst');
+    try {
+      return this.attachments.store(upload, actor.id, this.clock());
+    } catch (error) {
+      if (error instanceof AttachmentRejected)
+        throw new WorkflowError(error.message, error.status);
+      throw error;
+    }
+  }
+
+  /** An attachment's record and bytes, or null if there is none. */
+  readAttachment(id: string) {
+    return this.attachments.read(id);
   }
 
   snapshot(): Snapshot {
@@ -314,6 +355,7 @@ export class Laboratory {
           'SELECT id, sampleId, action, actor, at, detail FROM activity ORDER BY id DESC',
         )
         .all() as Activity[],
+      attachments: this.attachments.list(),
       people,
       analytes,
       methods,
@@ -344,6 +386,7 @@ export class Laboratory {
       const context: Context = {
         at: this.clock(),
         allocate: (series) => this.allocate(series, context.at),
+        attachment: (id) => this.attachments.find(id),
       };
       // Claim the key as the first statement inside the transaction, before any
       // validation or domain work. A suppressed insert returns no row, which is
