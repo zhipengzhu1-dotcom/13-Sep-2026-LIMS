@@ -2,13 +2,19 @@ import { createServer } from 'node:http';
 import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { resolve, extname, sep } from 'node:path';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
+import { Accounts } from '../src/accounts/accounts.ts';
+import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import { api } from './http.ts';
 import { seed } from './seed.ts';
+import { Sessions } from './sessions.ts';
 
 mkdirSync('data', { recursive: true });
-const lab = new Laboratory(resolve('data/prototype.sqlite'));
+const database = resolve('data/prototype.sqlite');
+const lab = new Laboratory(database);
+const accounts = new Accounts(database);
+accounts.seed(demoAccounts);
 seed(lab);
-const handleApi = api(lab);
+const handleApi = api(lab, { accounts, sessions: new Sessions() });
 const development = process.env.NODE_ENV !== 'production';
 const vite = development
   ? await (

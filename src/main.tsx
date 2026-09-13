@@ -339,7 +339,10 @@ function Splitter({
 
 function App() {
   const [data, setData] = useState<Snapshot | null>(null);
-  const [actor, setActor] = useState('coordinator');
+  // undefined while the session is being checked; null when signed out.
+  const [user, setUser] = useState<SessionUser | null | undefined>(undefined);
+  const [signInMessage, setSignInMessage] = useState('');
+  const actor = user?.id ?? '';
   const [view, setView] = useState<View>('Samples');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('Active');
@@ -388,8 +391,23 @@ function App() {
       // starts at its default width next visit.
     }
   }, [panelWidth]);
+  /** The server ended the session (sign-out elsewhere, inactivity, restart). */
+  function sessionEnded(message: string) {
+    pending.current = null;
+    setUser(null);
+    setData(null);
+    setSelected(null);
+    setIntake(false);
+    setError('');
+    setNotice('');
+    setSignInMessage(message);
+  }
   async function reload() {
     const response = await fetch('/api/workspace');
+    if (response.status === 401) {
+      sessionEnded('Your session has ended. Sign in to continue.');
+      return;
+    }
     if (!response.ok)
       throw new Error('The workspace is unavailable. Use Refresh to retry.');
     setData(await response.json());
@@ -399,7 +417,34 @@ function App() {
     setError('');
     reload().catch((e) => setError(e.message));
   }
-  useEffect(refresh, []);
+  function signedIn(next: SessionUser) {
+    setUser(next);
+    setSignInMessage('');
+    navigate(defaultViewForRole(next.role));
+    refresh();
+  }
+  async function signOut() {
+    try {
+      await fetch('/api/sign-out', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+    } finally {
+      sessionEnded('You have signed out.');
+    }
+  }
+  useEffect(() => {
+    fetch('/api/session')
+      .then(async (response) => {
+        if (!response.ok) return setUser(null);
+        signedIn((await response.json()).user);
+      })
+      .catch(() => {
+        setUser(null);
+        setSignInMessage('The server is unavailable. Try again shortly.');
+      });
+  }, []);
   async function execute(draft: Draft) {
     setBusy(true);
     setError('');
@@ -413,9 +458,15 @@ function App() {
     try {
       const response = await fetch('/api/commands', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Demo-Actor': actor },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(command),
       });
+      if (response.status === 401) {
+        sessionEnded(
+          'Your session has ended, so this change was not saved. Sign in to continue.',
+        );
+        return false;
+      }
       const result = await response.json();
       // A rejected command rolled back and released its key, so the next
       // attempt is a new act and mints a new one.
@@ -454,7 +505,7 @@ function App() {
     }
   }
 
-  const person = data?.people.find((p) => p.id === actor);
+  const person = user ?? undefined;
   const roleViews = viewsForRole(person?.role);
   const isQueue = ['Samples', 'My work', 'Review queue'].includes(view);
   const base = useMemo(
@@ -494,14 +545,6 @@ function App() {
     setFilter('Active');
     setSearch('');
     setSelected(null);
-  }
-  function switchActor(nextId: string) {
-    setActor(nextId);
-    setError('');
-    setNotice('');
-    navigate(
-      defaultViewForRole(data?.people.find((p) => p.id === nextId)?.role),
-    );
   }
   function toggleSort(key: SortKey) {
     setSort((s) => ({ key, asc: s.key === key ? !s.asc : true }));
@@ -563,6 +606,10 @@ function App() {
         .querySelector(`[data-sample="${selected}"]`)
         ?.scrollIntoView({ block: 'nearest' });
   }, [selected]);
+
+  if (user === undefined) return <p className="blank">Loading…</p>;
+  if (user === null)
+    return <SignIn message={signInMessage} onSignedIn={signedIn} />;
 
   return (
     <div className="app">
@@ -652,22 +699,22 @@ function App() {
                 Receive sample
               </button>
             )}
-            <label className="user">
+            <div className="user" aria-label="Signed-in user">
               <span className="avatar" aria-hidden="true">
-                {initials(person?.name)}
+                {initials(user.name)}
               </span>
-              <select
-                aria-label="Demo user"
-                value={actor}
-                onChange={(e) => switchActor(e.target.value)}
+              <span className="user-id">
+                <b>{user.name}</b>
+                <small>{user.role}</small>
+              </span>
+              <button
+                className="btn sm"
+                disabled={busy}
+                onClick={() => void signOut()}
               >
-                {data?.people.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.role})
-                  </option>
-                ))}
-              </select>
-            </label>
+                Sign out
+              </button>
+            </div>
           </div>
         </header>
         {isQueue && data && (
@@ -1658,6 +1705,96 @@ function ActivityTable({
         ))}
       </tbody>
     </table>
+  );
+}
+
+type SessionUser = { id: string; name: string; role: string };
+
+function SignIn({
+  message,
+  onSignedIn,
+}: {
+  message: string;
+  onSignedIn: (user: SessionUser) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return (
+    <main className="sign-in">
+      <form
+        className="form sign-in-card"
+        aria-labelledby="sign-in-title"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const f = new FormData(e.currentTarget);
+          setBusy(true);
+          setError('');
+          try {
+            const response = await fetch('/api/sign-in', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                username: String(f.get('username')),
+                password: String(f.get('password')),
+              }),
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error);
+            onSignedIn(result.user);
+          } catch (err) {
+            setError(
+              err instanceof Error && err.message
+                ? err.message
+                : 'Unable to sign in. Please try again.',
+            );
+            setBusy(false);
+          }
+        }}
+      >
+        <div className="sign-in-brand">
+          <span className="mark" aria-hidden="true">
+            b
+          </span>
+          <h1 id="sign-in-title">Sign in to Benchline</h1>
+        </div>
+        {(error || message) && (
+          <p
+            role={error ? 'alert' : 'status'}
+            className={'flash inline ' + (error ? 'error' : 'ok')}
+          >
+            {error || message}
+          </p>
+        )}
+        <label>
+          Username
+          <input
+            name="username"
+            autoComplete="username"
+            required
+            autoFocus
+            maxLength={100}
+          />
+        </label>
+        <label>
+          Password
+          <input
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            required
+            maxLength={200}
+          />
+        </label>
+        <button className="btn primary" disabled={busy}>
+          {busy ? 'Signing in…' : 'Sign in'}
+        </button>
+        <p className="sign-in-note">
+          Prototype demo accounts (password is the username followed by{' '}
+          <code>-demo</code>): <code>coordinator</code>, <code>analyst</code>,{' '}
+          <code>analyst-2</code>, <code>reviewer</code>.
+        </p>
+      </form>
+    </main>
   );
 }
 
