@@ -10,15 +10,24 @@ import { createRoot } from 'react-dom/client';
 import {
   auditsSample,
   conformity,
+  containerTypes,
   currentResult,
   decisionRule,
   enteredResultOn,
+  expiryKinds,
   limitInForce,
   materialTypes,
   newCommandId,
+  packageConditions,
+  priorities,
   qualify,
+  quantityUnits,
   reportingUnit,
+  shippingConditions,
   signatureMeanings,
+  stabilityConditionLabels,
+  stabilityConditions,
+  stabilityTimePoints,
   type AcceptableIntake,
   type AuditEntry,
   type AuditValue,
@@ -106,6 +115,17 @@ function matches(s: Sample, f: Filter) {
   if (f === 'In progress')
     return s.status === 'In progress' || s.status === 'Returned';
   return s.status === f;
+}
+
+/** Register filters beyond status. Empty means "any". */
+type Refine = { clientId: string; materialType: string; dueBy: string };
+const NO_REFINE: Refine = { clientId: '', materialType: '', dueBy: '' };
+function refines(s: Sample, r: Refine) {
+  return (
+    (!r.clientId || s.clientId === r.clientId) &&
+    (!r.materialType || s.materialType === r.materialType) &&
+    (!r.dueBy || s.dueDate <= r.dueBy)
+  );
 }
 
 const STATUS_ORDER: Sample['status'][] = [
@@ -348,6 +368,7 @@ function App() {
   const [view, setView] = useState<View>('Receiving');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('Active');
+  const [refine, setRefine] = useState<Refine>(NO_REFINE);
   const [sort, setSort] = useState<{ key: SortKey; asc: boolean }>({
     key: 'due',
     asc: true,
@@ -523,7 +544,8 @@ function App() {
     const rows = base.filter(
       (s) =>
         matches(s, filter) &&
-        `${s.id} ${s.submissionId} ${s.product} ${s.client} ${s.batch}`
+        refines(s, refine) &&
+        `${s.id} ${s.submissionId} ${s.product} ${s.client} ${s.clientSampleId} ${s.batch}`
           .toLowerCase()
           .includes(q),
     );
@@ -542,7 +564,7 @@ function App() {
         dir
       );
     });
-  }, [base, filter, search, sort]);
+  }, [base, filter, refine, search, sort]);
   const sample = data?.samples.find((s) => s.id === selected);
   const queueCount = (v: View) =>
     data && v !== 'Samples' && QUEUES.includes(v)
@@ -552,6 +574,7 @@ function App() {
   function navigate(next: View) {
     setView(next);
     setFilter('Active');
+    setRefine(NO_REFINE);
     setSearch('');
     setSelected(null);
   }
@@ -728,7 +751,9 @@ function App() {
         {isQueue && data && (
           <div className="filters" role="toolbar" aria-label="Filter by status">
             {FILTERS.map((f) => {
-              const n = base.filter((s) => matches(s, f)).length;
+              const n = base.filter(
+                (s) => refines(s, refine) && matches(s, f),
+              ).length;
               return (
                 <button
                   key={f}
@@ -743,6 +768,62 @@ function App() {
                 </button>
               );
             })}
+          </div>
+        )}
+        {isQueue && data && (
+          <div
+            className="refine"
+            role="group"
+            aria-label="Filter by Client, Material type and Due date"
+          >
+            <label>
+              Client
+              <select
+                value={refine.clientId}
+                onChange={(e) =>
+                  setRefine({ ...refine, clientId: e.target.value })
+                }
+              >
+                <option value="">All Clients</option>
+                {data.clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                    {c.kind === 'internal' ? ' (internal)' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Material type
+              <select
+                value={refine.materialType}
+                onChange={(e) =>
+                  setRefine({ ...refine, materialType: e.target.value })
+                }
+              >
+                <option value="">All</option>
+                {materialTypes.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Due on or before
+              <input
+                type="date"
+                value={refine.dueBy}
+                onChange={(e) =>
+                  setRefine({ ...refine, dueBy: e.target.value })
+                }
+              />
+            </label>
+            {(refine.clientId || refine.materialType || refine.dueBy) && (
+              <button className="btn sm" onClick={() => setRefine(NO_REFINE)}>
+                Clear filters
+              </button>
+            )}
           </div>
         )}
         {(error || notice) && !intake && (
@@ -865,7 +946,11 @@ function App() {
                           </td>
                           <td className="c-product" title={s.product}>
                             {s.product}
-                            <span className="batch">{s.materialType}</span>
+                            {s.strength && ` ${s.strength}`}
+                            <span className="batch">
+                              {s.materialType}
+                              {s.stability && ' · Stability'}
+                            </span>
                           </td>
                           <td className="c-client">
                             {s.client}
@@ -891,7 +976,7 @@ function App() {
                 {!visible.length && (
                   <div className="blank">
                     {base.length
-                      ? 'No samples match this filter. Choose All or clear the search.'
+                      ? 'No samples match these filters. Choose All, clear the filters or clear the search.'
                       : view === 'My work'
                         ? 'Nothing assigned to you needs work right now.'
                         : view === 'Approval queue'
@@ -1104,6 +1189,17 @@ function Modal({
   );
 }
 
+type ReceiptDraft = Extract<Draft, { type: 'receiveSubmission' }>;
+type SampleDraft = ReceiptDraft['samples'][number];
+
+/** A `datetime-local` value (local wall-clock time) for an instant. */
+function localDateTime(date: Date) {
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+/** One delivery: the Submission's receipt record and each of its Samples. The
+ * core validates everything again; the form only catches what it can early. */
 function Intake({
   data,
   disabled,
@@ -1120,48 +1216,217 @@ function Intake({
   const nextKey = useRef(1);
   const [rows, setRows] = useState([0]);
   const [types, setTypes] = useState<Record<number, MaterialType>>({});
+  const [stability, setStability] = useState<Record<number, boolean>>({});
+  const [correcting, setCorrecting] = useState(false);
   const [missing, setMissing] = useState('');
+  const typeOf = (key: number) => types[key] ?? 'finished product';
   return (
     <form
       className="form"
       onSubmit={(e) => {
         e.preventDefault();
         const f = new FormData(e.currentTarget);
-        const samples: SampleReceipt[] = rows.map((key) => ({
-          product: String(f.get(`product-${key}`)),
-          batch: String(f.get(`batch-${key}`)),
-          materialType: String(f.get(`materialType-${key}`)) as MaterialType,
-          methodIds: f.getAll(`methods-${key}`).map(String),
-          dueDate: String(f.get(`dueDate-${key}`)),
-          priority: f.get(`priority-${key}`) as 'Routine' | 'Urgent',
-        }));
+        const text = (name: string) => String(f.get(name) ?? '').trim();
+        const numberOrNull = (name: string) =>
+          text(name) === '' ? null : Number(text(name));
+        const dateOrNull = (name: string) => text(name) || null;
+        const samples = rows.map((key): SampleDraft => {
+          const materialType = typeOf(key);
+          const finished = materialType === 'finished product';
+          return {
+            clientSampleId: text(`clientSampleId-${key}`),
+            materialType,
+            product: text(`product-${key}`),
+            strength: text(`strength-${key}`),
+            batch: text(`batch-${key}`),
+            manufacturer: text(`manufacturer-${key}`),
+            manufactureDate: dateOrNull(`manufactureDate-${key}`),
+            expiryDate: dateOrNull(`expiryDate-${key}`),
+            expiryKind: text(`expiryKind-${key}`) as Sample['expiryKind'],
+            quantity: {
+              value: Number(text(`quantity-${key}`)),
+              unit: text(`quantityUnit-${key}`) as Sample['quantity']['unit'],
+            },
+            containers: {
+              count: Number(text(`containerCount-${key}`)),
+              type: text(
+                `containerType-${key}`,
+              ) as Sample['containers']['type'],
+            },
+            conditionOnReceipt: text(`conditionOnReceipt-${key}`),
+            storageCondition: text(`storageCondition-${key}`),
+            storageLocation: text(`storageLocation-${key}`),
+            methodIds: f.getAll(`methods-${key}`).map(String),
+            dueDate: text(`dueDate-${key}`),
+            priority: text(`priority-${key}`) as Sample['priority'],
+            remarks: text(`remarks-${key}`),
+            retentionInstruction: text(`retention-${key}`),
+            maximumDailyDose: finished
+              ? numberOrNull(`maximumDailyDose-${key}`)
+              : null,
+            stability:
+              finished && stability[key]
+                ? {
+                    studyId: text(`studyId-${key}`),
+                    timePoint: text(
+                      `timePoint-${key}`,
+                    ) as (typeof stabilityTimePoints)[number],
+                    condition: text(
+                      `condition-${key}`,
+                    ) as (typeof stabilityConditions)[number],
+                  }
+                : null,
+          };
+        });
         const empty = samples.findIndex((s) => !s.methodIds.length);
         if (empty !== -1) {
-          setMissing(`Request at least one Method for Sample ${empty + 1}.`);
+          setMissing(`Sample ${empty + 1}: request at least one Method.`);
           return;
         }
         setMissing('');
         void onSubmit({
           type: 'receiveSubmission',
-          client: String(f.get('client')),
+          clientId: text('clientId'),
+          clientReference: text('clientReference'),
+          receivedAt: correcting
+            ? {
+                at: new Date(text('receivedAt')).toISOString(),
+                reason: text('receivedAtReason'),
+              }
+            : null,
+          courier: text('courier'),
+          trackingNumber: text('trackingNumber'),
+          shippingCondition: text(
+            'shippingCondition',
+          ) as ReceiptDraft['shippingCondition'],
+          temperatureOnArrival: numberOrNull('temperatureOnArrival'),
+          packageCondition: text(
+            'packageCondition',
+          ) as ReceiptDraft['packageCondition'],
+          chainOfCustodyReference: text('chainOfCustodyReference'),
           samples,
         });
       }}
     >
-      <div className="fields">
-        <label className="span-2">
-          Client
-          <input
-            name="client"
-            required
-            maxLength={200}
-            autoFocus
-            placeholder="Northstar Pharma"
-          />
-        </label>
-      </div>
+      <fieldset className="intake-section">
+        <legend>Submission</legend>
+        <div className="fields">
+          <label>
+            Client
+            <select name="clientId" required defaultValue="" autoFocus>
+              <option value="" disabled>
+                Choose a Client
+              </option>
+              {(['external', 'internal'] as const).map((kind) => (
+                <optgroup
+                  key={kind}
+                  label={
+                    kind === 'external' ? 'External' : 'Internal departments'
+                  }
+                >
+                  {data.clients
+                    .filter((c) => c.kind === kind)
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+          <label>
+            Client reference or PO
+            <input name="clientReference" maxLength={200} />
+          </label>
+          <div className="span-2 received-at">
+            <span className="label">Received at</span>
+            {correcting ? (
+              <div className="fields">
+                <label>
+                  Actual date and time of arrival
+                  <input
+                    name="receivedAt"
+                    type="datetime-local"
+                    required
+                    max={localDateTime(new Date())}
+                  />
+                </label>
+                <label>
+                  Reason for the correction
+                  <input
+                    name="receivedAtReason"
+                    required
+                    minLength={3}
+                    maxLength={1000}
+                    placeholder="Delivered before the morning run; logged once unpacked"
+                  />
+                </label>
+              </div>
+            ) : (
+              <span className="dim">
+                Recorded automatically as the time you save.
+              </span>
+            )}
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={correcting}
+                onChange={(e) => setCorrecting(e.target.checked)}
+              />
+              Correct the received date and time (a reason is required and
+              recorded)
+            </label>
+          </div>
+          <label>
+            Courier
+            <input name="courier" maxLength={200} />
+          </label>
+          <label>
+            Tracking number
+            <input name="trackingNumber" maxLength={200} />
+          </label>
+          <label>
+            Shipping condition
+            <select name="shippingCondition" defaultValue="ambient">
+              {shippingConditions.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Temperature on arrival (°C)
+            <input
+              name="temperatureOnArrival"
+              type="number"
+              step="0.1"
+              min={-100}
+              max={100}
+              placeholder="Optional"
+            />
+          </label>
+          <label>
+            Package condition
+            <select name="packageCondition" defaultValue="intact">
+              {packageConditions.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Chain-of-custody reference
+            <input name="chainOfCustodyReference" maxLength={200} />
+          </label>
+        </div>
+      </fieldset>
       {rows.map((key, i) => {
-        const unit = reportingUnit(types[key] ?? 'finished product');
+        const materialType = typeOf(key);
+        const finished = materialType === 'finished product';
+        const unit = reportingUnit(materialType);
         return (
           <fieldset key={key} className="intake-sample">
             <legend>
@@ -1177,24 +1442,11 @@ function Intake({
               )}
             </legend>
             <div className="fields">
-              <label className="span-2">
-                Product
-                <input
-                  name={`product-${key}`}
-                  required
-                  maxLength={200}
-                  placeholder="Losartan potassium tablets 50 mg"
-                />
-              </label>
-              <label>
-                Batch or lot
-                <input name={`batch-${key}`} required maxLength={200} />
-              </label>
               <label>
                 Material type
                 <select
                   name={`materialType-${key}`}
-                  value={types[key] ?? 'finished product'}
+                  value={materialType}
                   onChange={(e) =>
                     setTypes({
                       ...types,
@@ -1210,32 +1462,201 @@ function Intake({
                 </select>
               </label>
               <label>
+                Client sample ID
+                <input name={`clientSampleId-${key}`} maxLength={200} />
+              </label>
+              <label>
+                Product name
+                <input
+                  name={`product-${key}`}
+                  required
+                  maxLength={200}
+                  placeholder="Losartan potassium tablets"
+                />
+              </label>
+              <label>
+                Strength
+                <input
+                  name={`strength-${key}`}
+                  maxLength={200}
+                  placeholder="50 mg"
+                />
+              </label>
+              <label>
+                Batch or lot
+                <input name={`batch-${key}`} required maxLength={200} />
+              </label>
+              <label>
+                Manufacturer
+                <input name={`manufacturer-${key}`} maxLength={200} />
+              </label>
+              <label>
+                Manufacture date
+                <input name={`manufactureDate-${key}`} type="date" />
+              </label>
+              <fieldset className="pair">
+                <legend>Expiry or retest date</legend>
+                <select
+                  name={`expiryKind-${key}`}
+                  aria-label="Expiry or retest"
+                  defaultValue="expiry"
+                >
+                  {expiryKinds.map((k) => (
+                    <option key={k} value={k}>
+                      {k}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  name={`expiryDate-${key}`}
+                  type="date"
+                  aria-label="Expiry or retest date"
+                />
+              </fieldset>
+              <fieldset className="pair">
+                <legend>Quantity received</legend>
+                <input
+                  name={`quantity-${key}`}
+                  type="number"
+                  step="any"
+                  min={0}
+                  required
+                  aria-label="Quantity received"
+                />
+                <select
+                  name={`quantityUnit-${key}`}
+                  aria-label="Quantity unit"
+                  defaultValue="g"
+                >
+                  {quantityUnits.map((u) => (
+                    <option key={u} value={u}>
+                      {u}
+                    </option>
+                  ))}
+                </select>
+              </fieldset>
+              <fieldset className="pair">
+                <legend>Containers</legend>
+                <input
+                  name={`containerCount-${key}`}
+                  type="number"
+                  step={1}
+                  min={1}
+                  defaultValue={1}
+                  required
+                  aria-label="Number of containers"
+                />
+                <select
+                  name={`containerType-${key}`}
+                  aria-label="Container type"
+                  defaultValue={containerTypes[0]}
+                >
+                  {containerTypes.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </fieldset>
+              <label className="span-2">
+                Condition on receipt
+                <input
+                  name={`conditionOnReceipt-${key}`}
+                  required
+                  maxLength={200}
+                  placeholder="Intact, seals unbroken"
+                />
+              </label>
+              <label>
+                Storage condition
+                <input
+                  name={`storageCondition-${key}`}
+                  maxLength={200}
+                  placeholder="Room temperature, 15–25 °C"
+                />
+              </label>
+              <label>
+                Storage location
+                <input name={`storageLocation-${key}`} maxLength={200} />
+              </label>
+              {finished && (
+                <label>
+                  Maximum daily dose (mg/day)
+                  <input
+                    name={`maximumDailyDose-${key}`}
+                    type="number"
+                    step="any"
+                    min={0}
+                    required
+                    placeholder="Supplied by the Client"
+                  />
+                </label>
+              )}
+              <label>
                 Due date
                 <input name={`dueDate-${key}`} type="date" required />
               </label>
               <fieldset className="priority">
                 <legend>Priority</legend>
-                <label>
-                  <input
-                    type="radio"
-                    name={`priority-${key}`}
-                    value="Routine"
-                    defaultChecked
-                  />
-                  Routine
-                </label>
-                <label>
-                  <input type="radio" name={`priority-${key}`} value="Urgent" />
-                  Urgent
-                </label>
+                {priorities.map((p) => (
+                  <label key={p}>
+                    <input
+                      type="radio"
+                      name={`priority-${key}`}
+                      value={p}
+                      defaultChecked={p === 'Routine'}
+                    />
+                    {p}
+                  </label>
+                ))}
               </fieldset>
             </div>
+            {finished && (
+              <div className="stability">
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={!!stability[key]}
+                    onChange={(e) =>
+                      setStability({ ...stability, [key]: e.target.checked })
+                    }
+                  />
+                  Stability sample
+                </label>
+                {stability[key] && (
+                  <div className="fields three">
+                    <label>
+                      Study ID
+                      <input name={`studyId-${key}`} required maxLength={200} />
+                    </label>
+                    <label>
+                      Time point
+                      <select name={`timePoint-${key}`} defaultValue="Initial">
+                        {stabilityTimePoints.map((p) => (
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Storage condition
+                      <select name={`condition-${key}`} defaultValue="RT">
+                        {stabilityConditions.map((c) => (
+                          <option key={c} value={c}>
+                            {c} · {stabilityConditionLabels[c]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
             <fieldset className="tests">
               <legend>Requested Methods · reported in {unit}</legend>
               {data.methods
-                .filter((m) =>
-                  m.materialTypes.includes(types[key] ?? 'finished product'),
-                )
+                .filter((m) => m.materialTypes.includes(materialType))
                 .map((m) => (
                   <label key={m.id}>
                     <input
@@ -1253,6 +1674,20 @@ function Intake({
                   </label>
                 ))}
             </fieldset>
+            <div className="fields">
+              <label className="span-2">
+                Remarks
+                <textarea name={`remarks-${key}`} rows={2} maxLength={2000} />
+              </label>
+              <label className="span-2">
+                Retention or disposal instruction
+                <input
+                  name={`retention-${key}`}
+                  maxLength={200}
+                  placeholder="Retain 12 months after publishing, then destroy"
+                />
+              </label>
+            </div>
           </fieldset>
         );
       })}
@@ -1282,6 +1717,139 @@ function Intake({
   );
 }
 
+const SAMPLE_TABS = ['Results', 'Receipt', 'History'] as const;
+
+const fullStamp = (value: string) =>
+  new Date(value).toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZoneName: 'short',
+  });
+
+/** The receipt record of a Sample and its Submission, as received. */
+function ReceiptRecord({
+  sample: s,
+  data,
+}: {
+  sample: Sample;
+  data: Snapshot;
+}) {
+  const submission = data.submissions.find((x) => x.id === s.submissionId);
+  const rows = (entries: [string, React.ReactNode][]) =>
+    entries.map(([term, value]) => (
+      <div key={term}>
+        <dt>{term}</dt>
+        <dd>
+          {value === '' || value === null ? (
+            <span className="dim">—</span>
+          ) : (
+            value
+          )}
+        </dd>
+      </div>
+    ));
+  return (
+    <div className="receipt">
+      {submission && (
+        <section aria-label={`Submission ${submission.id}`}>
+          <h3>Submission {submission.id}</h3>
+          <dl>
+            {rows([
+              [
+                'Client',
+                `${submission.client} (${submission.clientKind === 'internal' ? 'internal department' : 'external'})`,
+              ],
+              ['Client reference or PO', submission.clientReference],
+              [
+                'Received at',
+                <>
+                  {fullStamp(submission.receivedAt)}
+                  {submission.receivedAtCorrection && (
+                    <span className="correction">
+                      Corrected from{' '}
+                      {fullStamp(submission.receivedAtCorrection.recordedAt)}:{' '}
+                      {submission.receivedAtCorrection.reason}
+                    </span>
+                  )}
+                </>,
+              ],
+              [
+                'Received by',
+                personName(data, submission.receivedBy) ??
+                  submission.receivedBy,
+              ],
+              ['Courier', submission.courier],
+              ['Tracking number', submission.trackingNumber],
+              ['Shipping condition', submission.shippingCondition],
+              [
+                'Temperature on arrival',
+                submission.temperatureOnArrival === null
+                  ? ''
+                  : `${submission.temperatureOnArrival} °C`,
+              ],
+              ['Package condition', submission.packageCondition],
+              [
+                'Chain-of-custody reference',
+                submission.chainOfCustodyReference,
+              ],
+            ])}
+          </dl>
+        </section>
+      )}
+      <section aria-label={`Sample ${s.id}`}>
+        <h3>Sample {s.id}</h3>
+        <dl>
+          {rows([
+            ['Client sample ID', s.clientSampleId],
+            ['Material type', s.materialType],
+            ['Product name', s.product],
+            ['Strength', s.strength],
+            ['Batch or lot', s.batch],
+            ['Manufacturer', s.manufacturer],
+            [
+              'Manufacture date',
+              s.manufactureDate && longDate(s.manufactureDate),
+            ],
+            [
+              s.expiryKind === 'retest' ? 'Retest date' : 'Expiry date',
+              s.expiryDate && longDate(s.expiryDate),
+            ],
+            ['Quantity received', `${s.quantity.value} ${s.quantity.unit}`],
+            ['Containers', `${s.containers.count} × ${s.containers.type}`],
+            ['Condition on receipt', s.conditionOnReceipt],
+            ['Storage condition', s.storageCondition],
+            ['Storage location', s.storageLocation],
+            ...(s.materialType === 'finished product'
+              ? ([
+                  [
+                    'Maximum daily dose',
+                    s.maximumDailyDose === null
+                      ? ''
+                      : `${s.maximumDailyDose} mg/day`,
+                  ],
+                  [
+                    'Stability sample',
+                    s.stability
+                      ? `${s.stability.studyId} · ${s.stability.timePoint} · ${s.stability.condition} (${stabilityConditionLabels[s.stability.condition]})`
+                      : 'No',
+                  ],
+                ] as [string, React.ReactNode][])
+              : []),
+            ['Due date', longDate(s.dueDate)],
+            ['Priority', s.priority],
+            ['Remarks', s.remarks],
+            ['Retention or disposal', s.retentionInstruction],
+          ])}
+        </dl>
+      </section>
+    </div>
+  );
+}
+
 function SamplePanel({
   sample: s,
   data,
@@ -1297,7 +1865,7 @@ function SamplePanel({
   execute: Execute;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<'Results' | 'History'>('Results');
+  const [tab, setTab] = useState<(typeof SAMPLE_TABS)[number]>('Results');
   const [signing, setSigning] = useState<SigningCommandType | null>(null);
   useEffect(() => setSigning(null), [s.id]);
   const tabIds = useId();
@@ -1331,7 +1899,10 @@ function SamplePanel({
             ×
           </button>
         </div>
-        <h2>{s.product}</h2>
+        <h2>
+          {s.product}
+          {s.strength && ` ${s.strength}`}
+        </h2>
         <dl className="meta">
           <div>
             <dt>Client</dt>
@@ -1410,15 +1981,17 @@ function SamplePanel({
         role="tablist"
         aria-label="Sample details"
         onKeyDown={(e) => {
-          // Roving focus between the two tabs, per the ARIA tabs pattern.
+          // Roving focus between the tabs, per the ARIA tabs pattern.
           if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
           e.preventDefault();
-          const next = tab === 'Results' ? 'History' : 'Results';
+          const step = e.key === 'ArrowRight' ? 1 : SAMPLE_TABS.length - 1;
+          const next =
+            SAMPLE_TABS[(SAMPLE_TABS.indexOf(tab) + step) % SAMPLE_TABS.length];
           setTab(next);
           document.getElementById(`${tabIds}-tab-${next}`)?.focus();
         }}
       >
-        {(['Results', 'History'] as const).map((t) => (
+        {SAMPLE_TABS.map((t) => (
           <button
             key={t}
             id={`${tabIds}-tab-${t}`}
@@ -1429,11 +2002,13 @@ function SamplePanel({
             onClick={() => setTab(t)}
           >
             {t}
-            <span className="tab-n">
-              {t === 'Results'
-                ? `${recorded}/${s.tests.length}`
-                : history.length}
-            </span>
+            {t !== 'Receipt' && (
+              <span className="tab-n">
+                {t === 'Results'
+                  ? `${recorded}/${s.tests.length}`
+                  : history.length}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -1445,6 +2020,8 @@ function SamplePanel({
       >
         {tab === 'History' ? (
           <AuditTable entries={history} data={data} />
+        ) : tab === 'Receipt' ? (
+          <ReceiptRecord sample={s} data={data} />
         ) : (
           <>
             {s.status === 'Returned' && s.lastReturn && (

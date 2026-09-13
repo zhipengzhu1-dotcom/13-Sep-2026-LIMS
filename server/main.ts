@@ -15,7 +15,7 @@ discardOutdatedDemoDatabase(database);
 const accounts = new Accounts(database);
 accounts.seed(demoAccounts);
 // The core verifies Electronic signatures against these accounts' hashes.
-const lab = new Laboratory(database, undefined, accounts);
+const lab = new Laboratory(database, { credentials: accounts });
 seed(lab);
 const handleApi = api(lab, { accounts, sessions: new Sessions() });
 const development = process.env.NODE_ENV !== 'production';

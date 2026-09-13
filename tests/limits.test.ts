@@ -16,6 +16,10 @@ const finishedProduct = {
   product: 'Demo tablets 10 mg',
   batch: 'B-001',
   materialType: 'finished product',
+  quantity: { value: 60, unit: 'units' },
+  containers: { count: 2, type: 'bottle' },
+  conditionOnReceipt: 'Intact',
+  maximumDailyDose: 40,
   methodIds: ['NIT-001-v1', 'NIT-003-v1'],
   dueDate: '2026-10-01',
   priority: 'Routine',
@@ -25,6 +29,7 @@ const rawMaterial = {
   product: 'Demo API',
   batch: 'API-001',
   materialType: 'raw material',
+  maximumDailyDose: null,
   methodIds: ['NIT-001-v1'],
 };
 const target = (s: Sample) => ({ sampleId: s.id, revision: s.revision });
@@ -38,7 +43,9 @@ function assigned(lab: Laboratory, sample: object = finishedProduct) {
     lab,
     {
       type: 'receiveSubmission',
-      client: 'Fictional Pharma',
+      clientId: 'northstar',
+      shippingCondition: 'ambient',
+      packageCondition: 'intact',
       samples: [sample],
     },
     'coordinator',
@@ -61,7 +68,7 @@ const result = (s: Sample, testId: string, value: number, reason = '') => ({
 /** A lab whose clock the test moves. */
 function clocked(t: { after: (fn: () => void) => void }) {
   const clock = { now: '2026-09-10T12:00:00.000Z' };
-  const lab = new Laboratory(':memory:', () => clock.now);
+  const lab = new Laboratory(':memory:', { clock: () => clock.now });
   t.after(() => lab.close());
   return { lab, clock };
 }

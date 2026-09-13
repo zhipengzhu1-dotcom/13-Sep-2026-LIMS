@@ -8,6 +8,7 @@ import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
   newCommandId,
   type SampleReceipt,
+  type SubmissionReceipt,
 } from '../src/laboratory/contracts.ts';
 
 /**
@@ -34,6 +35,11 @@ const passwordOf = (id: string) =>
   demoAccounts.find((a) => a.id === id)!.password;
 
 type Stage = 'received' | 'progress' | 'awaiting' | 'returned' | 'approved';
+type SeedSample = SampleReceipt & { stage: Stage; values: number[] };
+type SeedSubmission = Omit<
+  SubmissionReceipt,
+  'commandId' | 'type' | 'samples'
+> & { samples: SeedSample[] };
 
 /** Drives the public command seam, so demo records carry a real audit trail
  * and real Electronic signatures. */
@@ -41,17 +47,44 @@ export function seed(lab: Laboratory) {
   if (lab.snapshot().submissions.length) return;
   const due = (days: number) =>
     new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
-  const submissions: {
-    client: string;
-    samples: (SampleReceipt & { stage: Stage; values: number[] })[];
-  }[] = [
+  const tablets = {
+    quantity: { value: 120, unit: 'units' },
+    containers: { count: 2, type: 'bottle' },
+    conditionOnReceipt: 'Intact, seals unbroken',
+    storageCondition: 'Room temperature, 15–25 °C',
+    storageLocation: 'Sample store R2, shelf 3',
+    retentionInstruction: 'Retain 12 months after publishing, then destroy',
+  } as const;
+  const api = {
+    quantity: { value: 25, unit: 'g' },
+    containers: { count: 1, type: 'jar' },
+    conditionOnReceipt: 'Intact, double-bagged',
+    storageCondition: 'Room temperature, 15–25 °C',
+    storageLocation: 'Sample store R1, shelf 1',
+    retentionInstruction: 'Return unused material to the Client',
+  } as const;
+  const submissions: SeedSubmission[] = [
     {
-      client: 'Northstar Pharma',
+      clientId: 'northstar',
+      clientReference: 'PO-448120',
+      courier: 'World Courier',
+      trackingNumber: 'WC-7731-0042',
+      shippingCondition: 'ambient',
+      temperatureOnArrival: 21.4,
+      packageCondition: 'intact',
+      chainOfCustodyReference: 'COC-NS-2609',
       samples: [
         {
-          product: 'Losartan potassium tablets 50 mg',
+          ...tablets,
+          clientSampleId: 'NS-LOS-50-01',
+          product: 'Losartan potassium tablets',
+          strength: '50 mg',
           batch: 'LP-260811',
+          manufacturer: 'Northstar Pharma, Site 2',
+          manufactureDate: '2026-06-02',
+          expiryDate: '2028-06-01',
           materialType: 'finished product',
+          maximumDailyDose: 100,
           methodIds: ['NIT-001-v1', 'NIT-003-v1'],
           dueDate: due(4),
           priority: 'Routine',
@@ -59,9 +92,16 @@ export function seed(lab: Laboratory) {
           values: [2.4, 0.8],
         },
         {
-          product: 'Losartan potassium tablets 100 mg',
+          ...tablets,
+          clientSampleId: 'NS-LOS-100-01',
+          product: 'Losartan potassium tablets',
+          strength: '100 mg',
           batch: 'LP-260812',
+          manufacturer: 'Northstar Pharma, Site 2',
+          manufactureDate: '2026-06-09',
+          expiryDate: '2028-06-08',
           materialType: 'finished product',
+          maximumDailyDose: 100,
           methodIds: ['NIT-001-v1', 'NIT-003-v1'],
           dueDate: due(1),
           priority: 'Urgent',
@@ -71,11 +111,30 @@ export function seed(lab: Laboratory) {
       ],
     },
     {
-      client: 'Meridian Therapeutics',
+      clientId: 'meridian',
+      clientReference: 'MT-REQ-0917',
+      courier: 'DHL Express',
+      trackingNumber: '1Z-448-221-907',
+      shippingCondition: 'refrigerated',
+      temperatureOnArrival: 5.8,
+      packageCondition: 'intact',
+      chainOfCustodyReference: 'COC-MT-0917',
+      // Logged after the delivery was unpacked, so the arrival time is
+      // corrected with a reason rather than left at the time of saving.
+      receivedAt: {
+        at: new Date(Date.now() - 3 * 3600000).toISOString(),
+        reason:
+          'Delivered before the morning instrument run; logged once unpacked.',
+      },
       samples: [
         {
+          ...api,
+          clientSampleId: 'MF-API-02',
           product: 'Metformin hydrochloride · API',
           batch: 'MF-260802',
+          manufacturer: 'Meridian Therapeutics',
+          expiryDate: '2029-08-01',
+          expiryKind: 'retest',
           materialType: 'raw material',
           methodIds: ['NIT-002-v1', 'NIT-005-v1'],
           dueDate: due(3),
@@ -84,9 +143,14 @@ export function seed(lab: Laboratory) {
           values: [0.02],
         },
         {
+          ...api,
+          clientSampleId: 'VS-API-30',
           product: 'Valsartan · API',
           batch: 'VS-260830',
+          manufacturer: 'Meridian Therapeutics',
           materialType: 'raw material',
+          storageCondition: 'Refrigerated, 2–8 °C',
+          storageLocation: 'Fridge F1',
           methodIds: ['NIT-004-v1'],
           dueDate: due(6),
           priority: 'Routine',
@@ -96,22 +160,55 @@ export function seed(lab: Laboratory) {
       ],
     },
     {
-      client: 'Aster Laboratories',
+      clientId: 'aster',
+      clientReference: 'AL-2026-311',
+      courier: 'FedEx',
+      trackingNumber: '7489 2231 0045',
+      shippingCondition: 'ambient',
+      packageCondition: 'intact',
+      chainOfCustodyReference: 'COC-AL-311',
       samples: [
         {
-          product: 'Sitagliptin tablets 100 mg',
+          ...tablets,
+          product: 'Sitagliptin tablets',
+          strength: '100 mg',
           batch: 'SG-260905',
           materialType: 'finished product',
+          maximumDailyDose: 100,
           methodIds: ['NIT-001-v1', 'NIT-004-v1', 'NIT-005-v1'],
           dueDate: due(0),
           priority: 'Urgent',
+          remarks: 'Client asks for a verbal update once Results are approved.',
           stage: 'received',
           values: [],
         },
+      ],
+    },
+    {
+      clientId: 'formulation-development',
+      clientReference: 'FD-STAB-014',
+      shippingCondition: 'ambient',
+      packageCondition: 'intact',
+      chainOfCustodyReference: 'COC-FD-014-6M',
+      samples: [
         {
-          product: 'Ranolazine extended-release tablets 500 mg',
-          batch: 'RN-260907',
+          ...tablets,
+          quantity: { value: 60, unit: 'units' },
+          containers: { count: 1, type: 'blister pack' },
+          clientSampleId: 'STAB-014-ACC-6M',
+          product: 'Ranolazine extended-release tablets',
+          strength: '500 mg',
+          batch: 'RN-260107',
+          manufacturer: 'In-house pilot plant',
+          manufactureDate: '2026-01-07',
+          expiryDate: '2028-01-06',
           materialType: 'finished product',
+          maximumDailyDose: 2000,
+          stability: {
+            studyId: 'STAB-014',
+            timePoint: '6M',
+            condition: 'ACC',
+          },
           methodIds: ['NIT-002-v1'],
           dueDate: due(8),
           priority: 'Routine',
@@ -121,12 +218,12 @@ export function seed(lab: Laboratory) {
       ],
     },
   ];
-  for (const { client, samples } of submissions) {
+  for (const { samples, ...submission } of submissions) {
     const receipt = lab.execute(
       {
         commandId: newCommandId(),
         type: 'receiveSubmission',
-        client,
+        ...submission,
         samples: samples.map(({ stage: _s, values: _v, ...sample }) => sample),
       },
       'coordinator',

@@ -13,12 +13,17 @@ const json = { 'Content-Type': 'application/json' };
 const receipt = () => ({
   commandId: newCommandId(),
   type: 'receiveSubmission',
-  client: 'Fictional',
+  clientId: 'northstar',
+  shippingCondition: 'ambient',
+  packageCondition: 'intact',
   samples: [
     {
       product: 'Demo',
       batch: '001',
       materialType: 'raw material',
+      quantity: { value: 5, unit: 'g' },
+      containers: { count: 1, type: 'jar' },
+      conditionOnReceipt: 'Intact',
       methodIds: ['NIT-001-v1'],
       dueDate: '2026-10-01',
       priority: 'Routine',
@@ -31,7 +36,7 @@ const receipt = () => ({
 async function serve(t: TestContext) {
   const accounts = new Accounts(':memory:');
   accounts.seed(demoAccounts);
-  const lab = new Laboratory(':memory:', undefined, accounts);
+  const lab = new Laboratory(':memory:', { credentials: accounts });
   const clock = { now: Date.parse('2026-09-13T09:00:00Z') };
   const server = createServer(
     api(lab, { accounts, sessions: new Sessions(() => clock.now) }),
@@ -172,7 +177,7 @@ test('cross-origin, malformed and oversized writes are still rejected', async (t
     (
       await post(
         '/api/commands',
-        { ...receipt(), client: 'x'.repeat(40000) },
+        { ...receipt(), clientReference: 'x'.repeat(40000) },
         session,
       )
     ).status,

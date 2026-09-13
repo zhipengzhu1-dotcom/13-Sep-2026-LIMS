@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   acceptableIntakeEntrySchema,
   analytes,
+  clients,
   commandSchema,
   conformity,
   currentResult,
@@ -34,7 +35,7 @@ import {
 import { AuditTrail, auditRecord, type Audit } from './audit.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export class WorkflowError extends Error {
   constructor(
@@ -99,6 +100,22 @@ function fingerprintOf(command: { commandId: string }): Uint8Array {
   );
 }
 
+/** A schema issue in words a Coordinator can act on: an issue inside a
+ * receipt names its Sample by position rather than by array index. */
+function describeIssue({
+  path,
+  message,
+}: {
+  path: PropertyKey[];
+  message: string;
+}) {
+  if (path[0] === 'samples' && typeof path[1] === 'number') {
+    const field = path.slice(2).map(String).join('.');
+    return `Sample ${path[1] + 1}${field ? `, ${field}` : ''}: ${message}`;
+  }
+  return `${path.map(String).join('.')}: ${message}`;
+}
+
 type CommandOf<T extends Command['type']> = Extract<Command, { type: T }>;
 type SampleCommandType = Exclude<Command['type'], 'receiveSubmission'>;
 
@@ -120,6 +137,8 @@ type Context = {
   allocate: (series: Series) => number;
   audit: Audit;
   limitInForce: (analyteId: string) => AcceptableIntake | null;
+  /** The Method reference data in force. */
+  methods: readonly Method[];
 };
 
 /**
@@ -161,15 +180,65 @@ function testOf(method: Method, unit: ReportingUnit): Test {
   };
 }
 
+/**
+ * The received date and time is the server time of the receipt unless the
+ * Coordinator corrects it. A correction needs a reason, may not lie after the
+ * moment of saving, and keeps the server time it replaced on the record.
+ */
+function receivedAtOf(
+  correction: CommandOf<'receiveSubmission'>['receivedAt'],
+  serverTime: string,
+): Pick<Submission, 'receivedAt' | 'receivedAtCorrection'> {
+  if (!correction)
+    return { receivedAt: serverTime, receivedAtCorrection: null };
+  if (correction.reason.length < 3)
+    throw new WorkflowError(
+      'Give a reason for correcting the received date and time.',
+    );
+  const corrected = new Date(correction.at).toISOString();
+  if (corrected > serverTime)
+    throw new WorkflowError(
+      'The received date and time cannot be later than the time of saving.',
+    );
+  return {
+    receivedAt: corrected,
+    receivedAtCorrection: { recordedAt: serverTime, reason: correction.reason },
+  };
+}
+
 const receiveSubmission: ReceiptHandler = (
   command,
   actor,
-  { at, allocate, audit },
+  { at, allocate, audit, methods },
 ) => {
   requireRole(actor, 'coordinator');
+  const client = clients.find((c) => c.id === command.clientId);
+  if (!client) throw new WorkflowError('Choose a Client from the Client list.');
+  const received = receivedAtOf(command.receivedAt, at);
   // Every Sample is checked before any identifier is allocated.
   const requested = command.samples.map((receipt, i) => {
     const label = command.samples.length > 1 ? `Sample ${i + 1}: ` : '';
+    const finished = receipt.materialType === 'finished product';
+    if (finished && receipt.maximumDailyDose === null)
+      throw new WorkflowError(
+        `${label}Enter the Maximum daily dose (mg/day) supplied by the Client for a finished product.`,
+      );
+    if (!finished && receipt.maximumDailyDose !== null)
+      throw new WorkflowError(
+        `${label}A raw material does not take a Maximum daily dose.`,
+      );
+    if (!finished && receipt.stability)
+      throw new WorkflowError(
+        `${label}Only a finished product can be a Stability sample.`,
+      );
+    if (
+      receipt.manufactureDate &&
+      receipt.expiryDate &&
+      receipt.expiryDate <= receipt.manufactureDate
+    )
+      throw new WorkflowError(
+        `${label}The ${receipt.expiryKind} date must be after the manufacture date.`,
+      );
     if (new Set(receipt.methodIds).size !== receipt.methodIds.length)
       throw new WorkflowError(`${label}Request each Method only once.`);
     return receipt.methodIds.map((id) => {
@@ -186,23 +255,30 @@ const receiveSubmission: ReceiptHandler = (
   const yy = at.slice(2, 4);
   const submission: Submission = {
     id: `S${yy}-${pad(allocate('submission'), 4)}`,
-    client: command.client,
-    receivedAt: at,
+    clientId: client.id,
+    client: client.name,
+    clientKind: client.kind,
+    clientReference: command.clientReference,
+    ...received,
     receivedBy: actor.id,
+    courier: command.courier,
+    trackingNumber: command.trackingNumber,
+    shippingCondition: command.shippingCondition,
+    temperatureOnArrival: command.temperatureOnArrival,
+    packageCondition: command.packageCondition,
+    chainOfCustodyReference: command.chainOfCustodyReference,
     sampleIds: [],
   };
   const samples = command.samples.map((receipt, i): Sample => {
     const unit = reportingUnit(receipt.materialType);
+    const { methodIds: _methodIds, ...record } = receipt;
     const sample: Sample = {
       id: `${yy}-${pad(allocate('sample'), 5)}`,
       submissionId: submission.id,
-      client: command.client,
-      product: receipt.product,
-      batch: receipt.batch,
-      materialType: receipt.materialType,
-      dueDate: receipt.dueDate,
-      priority: receipt.priority,
-      receivedAt: at,
+      clientId: client.id,
+      client: client.name,
+      ...record,
+      receivedAt: received.receivedAt,
       receivedBy: actor.id,
       assignee: null,
       status: 'Received',
@@ -213,9 +289,23 @@ const receiveSubmission: ReceiptHandler = (
     submission.sampleIds.push(sample.id);
     return sample;
   });
-  audit.compare(auditRecord.submission(submission), null, submission, {
-    omit: ['id', 'sampleIds'],
-  });
+  // The Submission is created at the server time; a corrected received-at is
+  // then its own entry, from the server time it replaced, with the reason.
+  const submissionRecord = auditRecord.submission(submission);
+  audit.compare(
+    submissionRecord,
+    null,
+    { ...submission, receivedAt: at },
+    { omit: ['id', 'sampleIds', 'receivedAtCorrection'] },
+  );
+  if (submission.receivedAtCorrection)
+    audit.change(
+      submissionRecord,
+      'receivedAt',
+      submission.receivedAtCorrection.recordedAt,
+      submission.receivedAt,
+      submission.receivedAtCorrection.reason,
+    );
   for (const sample of samples) {
     audit.compare(auditRecord.sample(sample), null, sample, {
       omit: ['id', 'tests', 'revision', 'lastReturn'],
@@ -359,6 +449,15 @@ const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
   },
 };
 
+export type LaboratoryOptions = {
+  /** The server time; defaults to the system clock. */
+  clock?: () => string;
+  /** Verifies signers' passwords. Absent, every Electronic signature is refused. */
+  credentials?: SignerCredentials | null;
+  /** The Method reference data in force; defaults to the seeded Methods. */
+  methods?: readonly Method[];
+};
+
 /** The Submission and Samples a command acted on, kept with its key so a
  * replay returns the same subjects. */
 type Subject = { submissionId: string | null; sampleIds: string[] };
@@ -366,12 +465,15 @@ type Subject = { submissionId: string | null; sampleIds: string[] };
 export class Laboratory {
   private db: DatabaseSync;
   private audit: AuditTrail;
-  constructor(
-    path: string,
-    private clock = () => new Date().toISOString(),
-    /** Absent, every Electronic signature is refused. */
-    private credentials: SignerCredentials | null = null,
-  ) {
+  private clock: () => string;
+  /** Absent, every Electronic signature is refused. */
+  private credentials: SignerCredentials | null;
+  /** Seeded Method reference data; replaceable so rules over it can be exercised. */
+  private methods: readonly Method[];
+  constructor(path: string, options: LaboratoryOptions = {}) {
+    this.clock = options.clock ?? (() => new Date().toISOString());
+    this.credentials = options.credentials ?? null;
+    this.methods = options.methods ?? methods;
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, document TEXT NOT NULL);
@@ -416,8 +518,9 @@ export class Laboratory {
           .all() as (Omit<Signature, 'command'> & { command: string })[]
       ).map((row) => ({ ...row, command: JSON.parse(row.command) })),
       people,
+      clients,
       analytes,
-      methods,
+      methods: this.methods,
       acceptableIntakes: this.acceptableIntakes(),
     };
   }
@@ -494,9 +597,7 @@ export class Laboratory {
     const parsed = commandSchema.safeParse(input);
     if (!parsed.success)
       throw new WorkflowError(
-        parsed.error.issues
-          .map((i) => `${i.path.join('.')}: ${i.message}`)
-          .join('; '),
+        parsed.error.issues.map(describeIssue).join('; '),
       );
     const command = parsed.data;
     // The password is taken out once, here. Only the unsigned command is
@@ -521,6 +622,7 @@ export class Laboratory {
         audit,
         limitInForce: (analyteId) =>
           limitInForce(this.acceptableIntakes(), analyteId, at),
+        methods: this.methods,
       };
       // Verified before the key is claimed or a replay answered, so a wrong
       // password applies nothing, is never reported as an earlier success, and
