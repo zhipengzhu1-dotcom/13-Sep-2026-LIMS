@@ -3,10 +3,12 @@ import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { resolve, extname, sep } from 'node:path';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { api } from './http.ts';
-import { seed } from './seed.ts';
+import { discardOutdatedDemoDatabase, seed } from './seed.ts';
 
 mkdirSync('data', { recursive: true });
-const lab = new Laboratory(resolve('data/prototype.sqlite'));
+const databaseFile = resolve('data/prototype.sqlite');
+discardOutdatedDemoDatabase(databaseFile);
+const lab = new Laboratory(databaseFile);
 seed(lab);
 const handleApi = api(lab);
 const development = process.env.NODE_ENV !== 'production';

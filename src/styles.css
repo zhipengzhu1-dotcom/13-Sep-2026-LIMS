@@ -20,16 +20,16 @@
   --received: #6b7671;
   --progress: #2a4fc4;
   --returned: #a4610a;
-  --review: #6a3fb5;
-  --investigate: #b42a6c;
+  --awaiting: #6a3fb5;
+  --alert: #b42a6c;
   --approved: #2d7a4c;
   --late: #c0341d;
 
   --received-wash: #e6e9e7;
   --progress-wash: #e3e9fa;
   --returned-wash: #f8ecd8;
-  --review-wash: #ece5f7;
-  --investigate-wash: #f7e2ec;
+  --awaiting-wash: #ece5f7;
+  --alert-wash: #f7e2ec;
   --approved-wash: #e0f0e6;
 
   --row: 30px;
@@ -63,15 +63,15 @@
     --received: #9aa5a0;
     --progress: #7d9bff;
     --returned: #e3a54c;
-    --review: #b595ef;
-    --investigate: #f07aae;
+    --awaiting: #b595ef;
+    --alert: #f07aae;
     --approved: #6cc591;
     --late: #ff7a62;
     --received-wash: #262d2a;
     --progress-wash: #1f2745;
     --returned-wash: #3a2c16;
-    --review-wash: #2e2446;
-    --investigate-wash: #43202f;
+    --awaiting-wash: #2e2446;
+    --alert-wash: #43202f;
     --approved-wash: #1b3526;
   }
 }
@@ -214,7 +214,7 @@ kbd {
   height: 16px;
   padding: 0 4px;
   border-radius: 8px;
-  background: var(--investigate);
+  background: var(--alert);
   color: #fff;
   font-size: 10px;
   font-weight: 700;
@@ -407,11 +407,8 @@ kbd {
 .seg-returned {
   --c: var(--returned);
 }
-.seg-in-review {
-  --c: var(--review);
-}
-.seg-investigate {
-  --c: var(--investigate);
+.seg-awaiting-approval {
+  --c: var(--awaiting);
 }
 .seg-approved {
   --c: var(--approved);
@@ -446,12 +443,12 @@ kbd {
   color: var(--approved);
 }
 .flash.error {
-  background: var(--investigate-wash);
+  background: var(--alert-wash);
   color: var(--late);
 }
 .flash.warn {
-  background: var(--investigate-wash);
-  color: var(--investigate);
+  background: var(--alert-wash);
+  color: var(--alert);
 }
 .flash.returned {
   background: var(--returned-wash);
@@ -657,11 +654,8 @@ body.resizing {
 .row.returned {
   --c: var(--returned);
 }
-.row.in-review {
-  --c: var(--review);
-}
-.row.investigate {
-  --c: var(--investigate);
+.row.awaiting-approval {
+  --c: var(--awaiting);
 }
 .row.approved {
   --c: var(--approved);
@@ -694,7 +688,8 @@ body.resizing {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.c-client .batch {
+.c-client .batch,
+.c-product .batch {
   margin-left: 8px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -739,13 +734,9 @@ body.resizing {
   --c: var(--returned);
   --w: var(--returned-wash);
 }
-.status.in-review {
-  --c: var(--review);
-  --w: var(--review-wash);
-}
-.status.investigate {
-  --c: var(--investigate);
-  --w: var(--investigate-wash);
+.status.awaiting-approval {
+  --c: var(--awaiting);
+  --w: var(--awaiting-wash);
 }
 .status.approved {
   --c: var(--approved);
@@ -765,12 +756,8 @@ body.resizing {
   background: var(--rule-soft);
   box-shadow: inset 0 0 0 1px var(--rule);
 }
-.pips .pass {
+.pips .entered {
   background: var(--approved);
-  box-shadow: none;
-}
-.pips .fail {
-  background: var(--investigate);
   box-shadow: none;
 }
 .who {
@@ -953,12 +940,12 @@ body.resizing {
   background: var(--sunk);
   min-height: 50px;
 }
-.review {
+.decision {
   width: 100%;
   display: grid;
   gap: 8px;
 }
-.review textarea {
+.decision textarea {
   width: 100%;
   resize: vertical;
   border: 1px solid var(--rule);
@@ -966,7 +953,7 @@ body.resizing {
   padding: 6px 8px;
   background: var(--raised);
 }
-.review-actions {
+.decision-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -1002,53 +989,6 @@ body.resizing {
   font-weight: 500;
   margin-left: 2px;
   color: var(--muted);
-}
-.value.out {
-  color: var(--investigate);
-}
-.c-gauge {
-  width: 96px;
-}
-.gauge {
-  position: relative;
-  display: block;
-  width: 84px;
-  height: 14px;
-}
-.gauge::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 6px;
-  height: 2px;
-  background: var(--rule);
-}
-/* Track spans min−25% … max+25% of the window, so the window is the middle
- * two-thirds; see SpecGauge. */
-.gauge-window {
-  position: absolute;
-  left: 16.667%;
-  right: 16.667%;
-  top: 2px;
-  height: 10px;
-  background: var(--approved-wash);
-  border-left: 1.5px solid var(--approved);
-  border-right: 1.5px solid var(--approved);
-}
-.gauge-mark {
-  position: absolute;
-  top: 0;
-  width: 3px;
-  height: 14px;
-  margin-left: -1.5px;
-  border-radius: 1px;
-  background: var(--ink);
-}
-.gauge-mark.out {
-  background: var(--investigate);
-  width: 4px;
-  margin-left: -2px;
 }
 .rec {
   display: flex;
@@ -1146,18 +1086,21 @@ body.resizing {
   font-weight: 600;
   text-transform: capitalize;
 }
-.a-receive {
+.a-receiveSubmission {
   color: var(--received);
 }
 .a-assign,
-.a-record {
+.a-enterResult {
   color: var(--progress);
 }
-.a-submit {
-  color: var(--review);
+.a-submitForApproval {
+  color: var(--awaiting);
 }
-.a-review {
+.a-approve {
   color: var(--approved);
+}
+.a-return {
+  color: var(--returned);
 }
 
 /* ---------- status bar ---------- */
@@ -1313,6 +1256,21 @@ body.resizing {
 }
 .tests label:last-child {
   border-bottom: 0;
+}
+.intake-sample {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px 12px !important;
+  border: 1px solid var(--rule) !important;
+  border-radius: 4px;
+}
+.intake-sample > legend {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 0 4px !important;
+  font-weight: 700;
+  color: var(--ink);
 }
 .tests input,
 .priority input {

@@ -1,20 +1,27 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import {
+  analytes,
   commandSchema,
+  enteredResultOn,
   methods,
   people,
-  hasException,
+  reportingUnit,
   type Actor,
   type Activity,
   type Command,
   type CommandOutcome,
+  type Method,
+  type ReportingUnit,
   type Sample,
+  type SampleStatus,
   type Snapshot,
+  type Submission,
+  type Test,
 } from './contracts.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export class WorkflowError extends Error {
   constructor(
@@ -27,18 +34,28 @@ export class WorkflowError extends Error {
 
 function requireRole(actor: Actor, role: Actor['role']) {
   if (actor.role !== role)
-    throw new WorkflowError(`This action requires a ${role}.`, 403);
+    throw new WorkflowError(`This action requires the ${role} role.`, 403);
 }
+
+/** Statuses in which the assigned Analyst may enter Results or submit them. */
+const editableStatuses: readonly SampleStatus[] = ['In progress', 'Returned'];
 
 function requireAssignedAnalyst(actor: Actor, sample: Sample) {
   requireRole(actor, 'analyst');
   if (sample.assignee !== actor.id)
     throw new WorkflowError(
-      'Only the assigned analyst can record or submit results.',
+      'Only the assigned analyst can enter or submit Results.',
       403,
     );
-  if (!['In progress', 'Returned'].includes(sample.status))
+  if (!editableStatuses.includes(sample.status))
     throw new WorkflowError('Results cannot be changed at this stage.');
+}
+
+function requireAwaitingApproval(sample: Sample) {
+  if (sample.status !== 'Awaiting approval')
+    throw new WorkflowError(
+      'Only Samples awaiting approval can be approved or returned.',
+    );
 }
 
 /** The 16 raw bytes of a UUID. #54 stores the key as a BLOB in a WITHOUT ROWID
@@ -62,66 +79,127 @@ function fingerprintOf(command: Command): Uint8Array {
 }
 
 type CommandOf<T extends Command['type']> = Extract<Command, { type: T }>;
-type MutatingType = Exclude<Command['type'], 'receive'>;
+type SampleCommandType = Exclude<Command['type'], 'receiveSubmission'>;
+
+/** A per-year identifier sequence. */
+type Series = 'submission' | 'sample';
 
 /**
  * What a handler is given. The entry point has already opened the transaction,
  * resolved the actor and validated the command; a handler decides only what its
  * own verb means. `at` is the single timestamp for the whole command, so every
- * row a command writes bears the same instant.
+ * row a command writes bears the same instant. `allocate` takes the next number
+ * of a per-year sequence inside the same transaction, so a rejected command
+ * consumes none.
  */
-type Context = { at: string; nextSequence: () => number };
+type Context = { at: string; allocate: (series: Series) => number };
 
 /**
- * Receipt is the one verb that creates its subject, so it returns the sample.
- * Every other verb is handed the loaded sample and mutates it in place,
- * returning only the activity detail.
+ * Receipt is the one verb that creates its subjects, so it returns the
+ * Submission and its Samples, each with its activity detail.
  */
-type ReceiveHandler = (
-  command: CommandOf<'receive'>,
+type ReceiptHandler = (
+  command: CommandOf<'receiveSubmission'>,
   actor: Actor,
   context: Context,
-) => { sample: Sample; detail: string };
+) => { submission: Submission; samples: Sample[]; details: string[] };
 
-type MutatingHandler<T extends MutatingType> = (
+/**
+ * Every other verb acts on one Sample: it is handed the loaded Sample, mutates
+ * it in place and returns only the activity detail.
+ */
+type SampleHandler<T extends SampleCommandType> = (
   command: CommandOf<T>,
   actor: Actor,
   sample: Sample,
   context: Context,
 ) => string;
 
-const receive: ReceiveHandler = (command, actor, { at, nextSequence }) => {
+const pad = (n: number, width: number) => String(n).padStart(width, '0');
+
+function testOf(method: Method, unit: ReportingUnit): Test {
+  const analyte = analytes.find((a) => a.id === method.analyteId)!;
+  return {
+    id: method.id,
+    methodId: method.id,
+    methodCode: method.code,
+    methodVersion: method.version,
+    analyteId: analyte.id,
+    analyteName: analyte.name,
+    technique: method.technique,
+    unit,
+    results: [],
+  };
+}
+
+const receiveSubmission: ReceiptHandler = (
+  command,
+  actor,
+  { at, allocate },
+) => {
   requireRole(actor, 'coordinator');
-  const selected = methods.filter((m) => command.methodIds.includes(m.id));
-  if (selected.length !== command.methodIds.length)
-    throw new WorkflowError('Choose unique, available methods.');
-  const sample: Sample = {
-    id: `LAB-${at.slice(0, 4)}-${String(nextSequence()).padStart(4, '0')}`,
-    product: command.product,
+  // Every Sample is checked before any identifier is allocated.
+  const requested = command.samples.map((receipt, i) => {
+    const label = command.samples.length > 1 ? `Sample ${i + 1}: ` : '';
+    if (new Set(receipt.methodIds).size !== receipt.methodIds.length)
+      throw new WorkflowError(`${label}Request each Method only once.`);
+    return receipt.methodIds.map((id) => {
+      const method = methods.find((m) => m.id === id);
+      if (!method)
+        throw new WorkflowError(`${label}Method ${id} is not available.`);
+      if (!method.materialTypes.includes(receipt.materialType))
+        throw new WorkflowError(
+          `${label}${method.code} v${method.version} does not apply to a ${receipt.materialType}.`,
+        );
+      return method;
+    });
+  });
+  const yy = at.slice(2, 4);
+  const submission: Submission = {
+    id: `S${yy}-${pad(allocate('submission'), 4)}`,
     client: command.client,
-    batch: command.batch,
-    dueDate: command.dueDate,
-    priority: command.priority,
-    notes: command.notes,
     receivedAt: at,
     receivedBy: actor.id,
-    assignee: null,
-    status: 'Received',
-    revision: 1,
-    tests: selected.map((m) => ({ ...m, results: [] })),
+    sampleIds: [],
   };
+  const samples = command.samples.map((receipt, i): Sample => {
+    const unit = reportingUnit(receipt.materialType);
+    const sample: Sample = {
+      id: `${yy}-${pad(allocate('sample'), 5)}`,
+      submissionId: submission.id,
+      client: command.client,
+      product: receipt.product,
+      batch: receipt.batch,
+      materialType: receipt.materialType,
+      dueDate: receipt.dueDate,
+      priority: receipt.priority,
+      receivedAt: at,
+      receivedBy: actor.id,
+      assignee: null,
+      status: 'Received',
+      lastReturn: null,
+      tests: requested[i].map((m) => testOf(m, unit)),
+      revision: 1,
+    };
+    submission.sampleIds.push(sample.id);
+    return sample;
+  });
   return {
-    sample,
-    detail: `Received ${sample.product}, batch ${sample.batch}; ${selected.length} test(s).`,
+    submission,
+    samples,
+    details: samples.map(
+      (s) =>
+        `Received under ${submission.id}: ${s.product}, batch ${s.batch}, ${s.materialType}; ${s.tests.length} Test(s).`,
+    ),
   };
 };
 
-const mutating: { [T in MutatingType]: MutatingHandler<T> } = {
+const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
   assign(command, actor, sample) {
     requireRole(actor, 'coordinator');
-    if (sample.status === 'In review')
+    if (sample.status === 'Awaiting approval')
       throw new WorkflowError(
-        'Return the sample before changing its assignment.',
+        'Return the Sample before changing its assignment.',
       );
     const analyst = people.find(
       (p) => p.id === command.assignee && p.role === 'analyst',
@@ -133,54 +211,59 @@ const mutating: { [T in MutatingType]: MutatingHandler<T> } = {
     return detail;
   },
 
-  record(command, actor, sample, { at }) {
+  enterResult(command, actor, sample, { at }) {
     requireAssignedAnalyst(actor, sample);
     const test = sample.tests.find((t) => t.id === command.testId);
     if (!test) throw new WorkflowError('Test not found.');
     const previous = test.results.at(-1);
     if (previous && command.reason.length < 3)
-      throw new WorkflowError('Give a reason for changing the result.');
-    const inSpec = command.value >= test.min && command.value <= test.max;
+      throw new WorkflowError('Give a reason for changing the Result.');
+    // The unit comes from the Test, which took it from the Material type.
     test.results.push({
       value: command.value,
-      reference: command.reference,
+      unit: test.unit,
+      enteredBy: actor.id,
+      enteredAt: at,
       reason: command.reason,
-      analyst: actor.id,
-      recordedAt: at,
-      inSpec,
     });
-    return `${test.name}: ${previous ? `${previous.value} → ` : ''}${command.value} ${test.unit}; ${inSpec ? 'within specification' : 'outside specification'}; reference: ${command.reference}${command.reason ? `; reason: ${command.reason}` : ''}.`;
+    return `${test.analyteName} (${test.methodCode} v${test.methodVersion}): ${previous ? `${previous.value} → ` : ''}${command.value} ${test.unit}${command.reason ? `; reason: ${command.reason}` : ''}.`;
   },
 
-  submit(_command, actor, sample) {
+  submitForApproval(_command, actor, sample) {
     requireAssignedAnalyst(actor, sample);
     if (sample.tests.some((t) => !t.results.length))
-      throw new WorkflowError('Record every requested test before submitting.');
-    sample.status = 'In review';
-    return 'Submitted all test results for independent review.';
+      throw new WorkflowError(
+        'Enter a Result for every Test before submitting.',
+      );
+    sample.status = 'Awaiting approval';
+    sample.lastReturn = null;
+    return 'Submitted all Results for approval.';
   },
 
-  review(command, actor, sample) {
-    requireRole(actor, 'reviewer');
-    if (sample.status !== 'In review')
-      throw new WorkflowError('Only submitted samples can be reviewed.');
-    // Dynamic separation of duties: whoever recorded any result on this sample
-    // may not be the second person who reviews it.
-    if (sample.tests.some((t) => t.results.some((r) => r.analyst === actor.id)))
+  approve(_command, actor, sample) {
+    requireRole(actor, 'manager');
+    requireAwaitingApproval(sample);
+    if (enteredResultOn(sample, actor.id))
       throw new WorkflowError(
-        'An analyst cannot review their own results.',
+        'A Manager cannot approve a Sample on which they entered a Result.',
         403,
       );
-    // Scans every result, not the latest: a later passing revision must never
-    // erase an earlier out-of-specification flag.
-    if (command.decision === 'approve' && hasException(sample))
-      throw new WorkflowError(
-        'Current or historical out-of-specification results need investigation. Routine approval is blocked.',
-      );
-    sample.status = command.decision === 'approve' ? 'Approved' : 'Returned';
-    return `${command.decision === 'approve' ? 'Approved' : 'Returned for correction'}: ${command.comment}`;
+    sample.status = 'Approved';
+    return 'Approved.';
+  },
+
+  return(command, actor, sample, { at }) {
+    requireRole(actor, 'manager');
+    requireAwaitingApproval(sample);
+    sample.status = 'Returned';
+    sample.lastReturn = { comment: command.comment, by: actor.id, at };
+    return `Returned to the analyst: ${command.comment}`;
   },
 };
+
+/** The Submission and Samples a command acted on, kept with its key so a
+ * replay returns the same subjects. */
+type Subject = { submissionId: string | null; sampleIds: string[] };
 
 export class Laboratory {
   private db: DatabaseSync;
@@ -190,20 +273,12 @@ export class Laboratory {
   ) {
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL;
+      CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, document TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS samples (id TEXT PRIMARY KEY, document TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, sampleId TEXT NOT NULL, action TEXT NOT NULL, actor TEXT NOT NULL, at TEXT NOT NULL, detail TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS commands (commandId BLOB PRIMARY KEY, actorId TEXT NOT NULL, commandType TEXT NOT NULL, fingerprint BLOB NOT NULL, receivedAt TEXT NOT NULL) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS sequences (series TEXT NOT NULL, year INTEGER NOT NULL, value INTEGER NOT NULL, PRIMARY KEY (series, year)) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, sampleId TEXT NOT NULL, action TEXT NOT NULL, actor TEXT NOT NULL, at TEXT NOT NULL, detail TEXT NOT NULL, commandId BLOB NOT NULL);
+      CREATE TABLE IF NOT EXISTS commands (commandId BLOB PRIMARY KEY, actorId TEXT NOT NULL, commandType TEXT NOT NULL, fingerprint BLOB NOT NULL, receivedAt TEXT NOT NULL, subject TEXT) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS commandReplays (id INTEGER PRIMARY KEY, commandId BLOB NOT NULL REFERENCES commands(commandId), at TEXT NOT NULL, actorId TEXT NOT NULL);`);
-    // Additive and idempotent: #46 put commandId on every stream, and the
-    // replay path resolves a command's subject through it.
-    const activityColumns = this.db
-      .prepare('PRAGMA table_info(activity)')
-      .all() as { name: string }[];
-    if (!activityColumns.some((c) => c.name === 'commandId'))
-      this.db.exec('ALTER TABLE activity ADD COLUMN commandId BLOB');
-    this.db.exec(
-      'CREATE INDEX IF NOT EXISTS idx_activity_commandId ON activity(commandId)',
-    );
     // Stamp the schema version only on a database that has none. A migration
     // runner owns this value afterwards; overwriting it here would silently
     // undo a migration and defeat the version gate the runner reads.
@@ -219,17 +294,15 @@ export class Laboratory {
 
   snapshot(): Snapshot {
     return {
-      samples: (
-        this.db
-          .prepare('SELECT document FROM samples ORDER BY id DESC')
-          .all() as { document: string }[]
-      ).map((r) => JSON.parse(r.document)),
+      submissions: this.documents('submissions'),
+      samples: this.documents('samples'),
       activity: this.db
         .prepare(
           'SELECT id, sampleId, action, actor, at, detail FROM activity ORDER BY id DESC',
         )
         .all() as Activity[],
       people,
+      analytes,
       methods,
     };
   }
@@ -237,8 +310,8 @@ export class Laboratory {
   /**
    * The single entry point, and the only place that opens a transaction.
    * It resolves the actor, validates the command, loads and guards the subject,
-   * dispatches to exactly one handler, and writes the sample and its activity
-   * row together. Nothing below this method may call BEGIN.
+   * dispatches to exactly one handler, and writes the records and their
+   * activity rows together. Nothing below this method may call BEGIN.
    */
   execute(input: unknown, actorId: string): CommandOutcome {
     const actor = people.find((p) => p.id === actorId);
@@ -257,7 +330,7 @@ export class Laboratory {
     try {
       const context: Context = {
         at: this.clock(),
-        nextSequence: () => this.nextSequence(),
+        allocate: (series) => this.allocate(series, context.at),
       };
       // Claim the key as the first statement inside the transaction, before any
       // validation or domain work. A suppressed insert returns no row, which is
@@ -274,12 +347,24 @@ export class Laboratory {
         this.db.exec('COMMIT');
         return outcome;
       }
-      let sample: Sample;
-      let detail: string;
-      if (command.type === 'receive') {
-        ({ sample, detail } = receive(command, actor, context));
+      let submission: Submission | null = null;
+      let samples: Sample[];
+      if (command.type === 'receiveSubmission') {
+        const receipt = receiveSubmission(command, actor, context);
+        ({ submission, samples } = receipt);
+        this.save('submissions', submission.id, submission);
+        samples.forEach((s, i) =>
+          this.persist(
+            s,
+            command.type,
+            actor,
+            context,
+            receipt.details[i],
+            key,
+          ),
+        );
       } else {
-        sample = this.load(command.sampleId);
+        const sample = this.load(command.sampleId);
         if (sample.revision !== command.revision)
           throw new WorkflowError(
             'This sample changed. Refresh the workspace before saving again.',
@@ -290,13 +375,23 @@ export class Laboratory {
         // One cast, localised here, because TypeScript cannot correlate the
         // narrowed command with the handler selected by its own discriminant.
         // Each handler in the registry is individually typed to its own verb.
-        const handler = mutating[command.type] as MutatingHandler<MutatingType>;
-        detail = handler(command, actor, sample, context);
+        const handler = sampleHandlers[
+          command.type
+        ] as SampleHandler<SampleCommandType>;
+        const detail = handler(command, actor, sample, context);
         sample.revision++;
+        this.persist(sample, command.type, actor, context, detail, key);
+        samples = [sample];
       }
-      this.persist(sample, command.type, actor, context.at, detail, key);
+      const subject: Subject = {
+        submissionId: submission?.id ?? null,
+        sampleIds: samples.map((s) => s.id),
+      };
+      this.db
+        .prepare('UPDATE commands SET subject=? WHERE commandId=?')
+        .run(JSON.stringify(subject), key);
       this.db.exec('COMMIT');
-      return { outcome: 'applied', sample };
+      return { outcome: 'applied', submission, samples };
     } catch (error) {
       // The claim rolls back with everything else, so only committed effects are
       // deduplicated and a rejected command may be resubmitted under the same key.
@@ -318,12 +413,13 @@ export class Laboratory {
   ): CommandOutcome {
     const original = this.db
       .prepare(
-        'SELECT actorId, fingerprint, receivedAt FROM commands WHERE commandId=?',
+        'SELECT actorId, fingerprint, receivedAt, subject FROM commands WHERE commandId=?',
       )
       .get(key) as {
       actorId: string;
       fingerprint: Uint8Array;
       receivedAt: string;
+      subject: string | null;
     };
     if (
       Buffer.compare(
@@ -342,14 +438,12 @@ export class Laboratory {
         'This request reuses the identifier of a change made by someone else.',
         422,
       );
-    const row = this.db
-      .prepare('SELECT sampleId FROM activity WHERE commandId=? LIMIT 1')
-      .get(key) as { sampleId: string } | undefined;
-    if (!row)
+    if (!original.subject)
       throw new WorkflowError(
         'That change is still being applied. Reload the workspace before trying again.',
         409,
       );
+    const subject = JSON.parse(original.subject) as Subject;
     this.db
       .prepare(
         'INSERT INTO commandReplays (commandId, at, actorId) VALUES (?, ?, ?)',
@@ -357,40 +451,65 @@ export class Laboratory {
       .run(key, at, actor.id);
     return {
       outcome: 'replayed',
-      sample: this.load(row.sampleId),
+      submission: subject.submissionId
+        ? this.find<Submission>('submissions', subject.submissionId)
+        : null,
+      samples: subject.sampleIds.map((id) => this.load(id)),
       originallyAppliedAt: original.receivedAt,
       originalActorId: original.actorId,
     };
   }
 
-  private load(sampleId: string): Sample {
-    const row = this.db
-      .prepare('SELECT document FROM samples WHERE id=?')
-      .get(sampleId) as { document: string } | undefined;
-    if (!row) throw new WorkflowError('Sample not found.', 404);
-    return JSON.parse(row.document);
+  private documents<T>(table: 'submissions' | 'samples'): T[] {
+    return (
+      this.db
+        .prepare(`SELECT document FROM ${table} ORDER BY id DESC`)
+        .all() as { document: string }[]
+    ).map((r) => JSON.parse(r.document));
   }
 
-  private nextSequence(): number {
-    const { n } = this.db
-      .prepare('SELECT COUNT(*) AS n FROM samples')
-      .get() as { n: number };
-    return Number(n) + 1;
+  private find<T>(table: 'submissions' | 'samples', id: string): T | null {
+    const row = this.db
+      .prepare(`SELECT document FROM ${table} WHERE id=?`)
+      .get(id) as { document: string } | undefined;
+    return row ? JSON.parse(row.document) : null;
+  }
+
+  private load(sampleId: string): Sample {
+    const sample = this.find<Sample>('samples', sampleId);
+    if (!sample) throw new WorkflowError('Sample not found.', 404);
+    return sample;
+  }
+
+  /** The next number in a per-year sequence. It is a stored counter, never a
+   * row count, and it resets because each calendar year has its own row. */
+  private allocate(series: Series, at: string): number {
+    const { value } = this.db
+      .prepare(
+        `INSERT INTO sequences (series, year, value) VALUES (?, ?, 1)
+         ON CONFLICT(series, year) DO UPDATE SET value = value + 1 RETURNING value`,
+      )
+      .get(series, Number(at.slice(0, 4))) as { value: number };
+    return Number(value);
+  }
+
+  private save(table: 'submissions' | 'samples', id: string, document: object) {
+    this.db
+      .prepare(
+        `INSERT INTO ${table} (id, document) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET document=excluded.document`,
+      )
+      .run(id, JSON.stringify(document));
   }
 
   private persist(
     sample: Sample,
     action: Command['type'],
     actor: Actor,
-    at: string,
+    { at }: Context,
     detail: string,
     commandId: Uint8Array,
   ) {
-    this.db
-      .prepare(
-        'INSERT INTO samples (id, document) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET document=excluded.document',
-      )
-      .run(sample.id, JSON.stringify(sample));
+    this.save('samples', sample.id, sample);
     this.db
       .prepare(
         'INSERT INTO activity (sampleId, action, actor, at, detail, commandId) VALUES (?, ?, ?, ?, ?, ?)',

@@ -17,14 +17,18 @@ test('HTTP transport validates writes and returns a persisted workspace', async 
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const command = {
     commandId: newCommandId(),
-    type: 'receive',
-    product: 'Demo',
+    type: 'receiveSubmission',
     client: 'Fictional',
-    batch: '001',
-    dueDate: '2026-10-01',
-    priority: 'Routine',
-    notes: '',
-    methodIds: ['assay'],
+    samples: [
+      {
+        product: 'Demo',
+        batch: '001',
+        materialType: 'raw material',
+        methodIds: ['NIT-001-v1'],
+        dueDate: '2026-10-01',
+        priority: 'Routine',
+      },
+    ],
   };
   const headers = {
     'Content-Type': 'application/json',
@@ -41,6 +45,7 @@ test('HTTP transport validates writes and returns a persisted workspace', async 
     200,
   );
   const snapshot = await (await fetch(url + '/api/workspace')).json();
+  assert.equal(snapshot.submissions.length, 1);
   assert.equal(snapshot.samples.length, 1);
   assert.equal(snapshot.activity.length, 1);
   assert.equal(
@@ -73,7 +78,7 @@ test('HTTP transport validates writes and returns a persisted workspace', async 
       await fetch(url + '/api/commands', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ ...command, notes: 'x'.repeat(40000) }),
+        body: JSON.stringify({ ...command, client: 'x'.repeat(40000) }),
       })
     ).status,
     413,
