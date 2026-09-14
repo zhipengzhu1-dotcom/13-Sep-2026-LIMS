@@ -3947,10 +3947,11 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
   );
   // ISO/IEC 17025 7.8.8.1: the Retest's value change is a change to the
   // report, so the summary names it; its link to OOS26-0002 is on the trail
-  // but is no change to report.
+  // but is no change to report. The correction and the Retest are separate
+  // steps, so the Invalidated value 28 is shown, each with its own reason.
   assert.equal(
     v2.content.amendment!.changeSummary,
-    'Impurity A (NIT-001 v1): Result 30 → 2.5 ng/day, qualifier quantified → < LOQ, Conformity statement Does not comply → Complies, worksheet replaced (reason: "Recalculated with the dilution factor on the worksheet."; Retest after OOS26-0002, Invalidated: Dilution error in the standard.)',
+    'Impurity A (NIT-001 v1): Result 30 → 28 ng/day (reason: "Recalculated with the dilution factor on the worksheet."); Result 28 → 2.5 ng/day, qualifier quantified → < LOQ, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0002, Invalidated: Dilution error in the standard.)',
   );
   assert.deepEqual(
     lab
