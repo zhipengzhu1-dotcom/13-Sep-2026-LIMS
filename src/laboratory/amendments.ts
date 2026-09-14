@@ -81,11 +81,10 @@ const shown = (value: AuditValue) => (value === null ? '—' : String(value));
 
 /**
  * What an Amendment changed, from the Result entries written since it was
- * started: per corrected Test, each step in order. A run of corrections is
- * one step, each field's value before the first → after the last, with the
- * reasons given. A Retest is a step of its own, never netted with the steps
- * around it, so the Invalidated result's value is always shown. Null when no
- * Result was corrected.
+ * started: per corrected Test, each step in order. Every correction and every
+ * Retest is a step of its own, never netted with the steps around it, so each
+ * change shows its own reason and the Invalidated result's value is always
+ * shown. Null when no Result was corrected.
  */
 export function changeSummary(
   sample: Sample,
@@ -107,17 +106,14 @@ export function changeSummary(
       (e) => e.recordId === `${sample.id}/${test.id}`,
     );
     if (!entries.length) return [];
-    // Steps, from the commands in the order they were recorded: a Retest
-    // starts a step of its own; a correction joins a run of corrections.
+    // Steps, one per command in the order they were recorded.
     const view = resultsView(sample);
-    const steps: { entries: AuditEntry[]; retest?: RetestLineage }[] = [];
-    for (const commandId of new Set(entries.map((e) => e.commandId))) {
+    const steps: { entries: AuditEntry[]; retest?: RetestLineage }[] = [
+      ...new Set(entries.map((e) => e.commandId)),
+    ].map((commandId) => {
       const command = entries.filter((e) => e.commandId === commandId);
-      const retest = view.retestRecordedBy(command);
-      const last = steps.at(-1);
-      if (!retest && last && !last.retest) last.entries.push(...command);
-      else steps.push({ entries: command, retest });
-    }
+      return { entries: command, retest: view.retestRecordedBy(command) };
+    });
     const step = ({ entries, retest }: (typeof steps)[number]) => {
       const changes = summarised.flatMap(({ path, label, unit }) => {
         const own = entries.filter((e) => e.field === `result.${path}`);
@@ -134,24 +130,18 @@ export function changeSummary(
           unit === 'test' ? ` ${test.unit}` : unit ? ` ${unit}` : '';
         return [`${label} ${shown(from)} → ${shown(to)}${suffix}`];
       });
-      // A Retest cites the investigation it follows; then each reason typed
-      // with the step once, quoted, as the Analyst gave it.
-      const quoted = [
-        ...new Set(
-          entries.flatMap((e) => (e.reason === null ? [] : [`"${e.reason}"`])),
-        ),
-      ];
+      // A Retest cites the investigation it follows; then the reason typed
+      // with the step, quoted, as the Analyst gave it.
+      const typed = entries.find((e) => e.reason !== null)?.reason;
       const why = [
         ...(retest
           ? [
               `Retest after ${retest.investigation.id}, Invalidated: ${retest.investigation.assignableCause}`,
             ]
           : []),
-        ...(quoted.length
-          ? [
-              `${quoted.length > 1 ? 'reasons' : 'reason'}: ${quoted.join('; ')}`,
-            ]
-          : []),
+        ...(typed === undefined || typed === null
+          ? []
+          : [`reason: "${typed}"`]),
       ];
       const reasons = why.length ? ` (${why.join('; ')})` : '';
       return `${changes.length ? changes.join(', ') : 're-entered unchanged'}${reasons}`;

@@ -3664,7 +3664,7 @@ test('an Amendment corrects a Published Certificate and issues version n+1 marke
   const v2 = lab.certificate(s.id);
   assert.equal(v2.version, 2);
   const changeSummary =
-    'Impurity A (NIT-001 v1): Result 2.5 → 3.1 ng/day, qualifier < LOQ → quantified (reasons: "Keyed from the wrong injection."; "Transcription error: the worksheet gives 3.1 ng/day.")';
+    'Impurity A (NIT-001 v1): Result 2.5 → 3 ng/day, qualifier < LOQ → quantified (reason: "Keyed from the wrong injection."); Result 3 → 3.1 ng/day (reason: "Transcription error: the worksheet gives 3.1 ng/day.")';
   assert.deepEqual(v2.content.amendment, {
     reason: amendmentReason,
     changeSummary,
