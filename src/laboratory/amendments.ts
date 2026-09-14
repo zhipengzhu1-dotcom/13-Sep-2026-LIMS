@@ -1,3 +1,4 @@
+import type { CertificateSummary } from './certificate.ts';
 import type { AuditEntry, AuditValue, Result, Sample } from './contracts.ts';
 import { resultsView, testLabel, type RetestLineage } from './results.ts';
 
@@ -46,6 +47,16 @@ export function amendmentOf(
       sequence: latest.sequence,
     }
   );
+}
+
+/** The Certificate version an Amendment replaces: the Published version it
+ * started from, which is the latest Published one, since only a Published
+ * Certificate can be amended and nothing is Published during an Amendment.
+ * Null when no version was Published. */
+export function replacedVersion(
+  versions: readonly Pick<CertificateSummary, 'version' | 'publication'>[],
+): number | null {
+  return versions.filter((c) => c.publication).at(-1)?.version ?? null;
 }
 
 /** Result fields a change summary names, in the order it names them. Only

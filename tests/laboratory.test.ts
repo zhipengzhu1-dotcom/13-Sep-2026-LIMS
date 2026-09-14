@@ -3797,7 +3797,9 @@ test('a Certificate issued before its report content was recorded reads back and
   } = structuredClone(lab.certificate(s.id).content);
   delete earlier.client.contact;
   for (const r of earlier.results) delete r.analysedOn;
-  const stored = JSON.stringify({ ...earlier, version: 2 });
+  // An amended version, issued before the version it replaces was recorded.
+  const amendment = { reason: 'Client query.', changeSummary: 'Result 1 → 2.' };
+  const stored = JSON.stringify({ ...earlier, version: 2, amendment });
   const sha256 = createHash('sha256').update(stored).digest('hex');
   lab.close();
   const db = new DatabaseSync(file);
@@ -3822,8 +3824,18 @@ test('a Certificate issued before its report content was recorded reads back and
       'Sample',
       'Results',
       'Decision rule',
+      'Amendment',
       'Electronic signatures',
     ],
+  );
+  assert.equal(document.marker, 'Amended', 'no replaced version is stated');
+  assert.deepEqual(
+    document.sections.find((x) => x.heading === 'Amendment'),
+    {
+      kind: 'text',
+      heading: 'Amendment',
+      paragraphs: ['Reason: Client query.', 'Changes: Result 1 → 2.'],
+    },
   );
   const table = document.sections.find((x) => x.kind === 'table');
   assert.deepEqual(table?.kind === 'table' && table.columns, [
@@ -4451,7 +4463,10 @@ test('an Amendment corrects a Published Certificate and issues version n+1 marke
   assert.equal(v2.version, 2);
   const changeSummary =
     'Impurity A (NIT-001 v1): Result 2.5 → 3.1 ng/day, qualifier < LOQ → quantified: 2.5 → 3, qualifier < LOQ → quantified (reason: "Keyed from the wrong injection."); 3 → 3.1 (reason: "Transcription error: the worksheet gives 3.1 ng/day.")';
+  // ISO/IEC 17025 7.8.8.3: the version replaced is the Published version the
+  // Amendment started from, locked into the content and its hash.
   assert.deepEqual(v2.content.amendment, {
+    replacesVersion: 1,
     reason: amendmentReason,
     changeSummary,
   });
@@ -4510,13 +4525,16 @@ test('an Amendment corrects a Published Certificate and issues version n+1 marke
     ['Performed by', 'Amended by', 'Approved by'],
   );
   assert.equal(document.reference, 'Sample 26-00001 · Version 2');
-  assert.equal(document.marker, 'Amended');
+  assert.equal(document.marker, 'Amended, replaces version 1');
   assert.deepEqual(
     document.sections.find((x) => x.heading === 'Amendment'),
     {
       kind: 'text',
       heading: 'Amendment',
-      paragraphs: [`Reason: ${amendmentReason}`, `Changes: ${changeSummary}`],
+      paragraphs: [
+        `Reason: ${amendmentReason}`,
+        `Changes from version 1: ${changeSummary}`,
+      ],
     },
   );
   assert.equal(renderCertificate(v1.content).marker, null);
@@ -4564,6 +4582,7 @@ test('an Amendment corrects a Published Certificate and issues version n+1 marke
   s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
   assert.deepEqual(lab.certificate(s.id).content.amendment, {
+    replacesVersion: 2,
     reason: 'NIT-003 sequence ID recorded against the wrong run.',
     changeSummary:
       'Impurity B (NIT-003 v1): sequence ID SEQ-0001 → SEQ-0002 (reason: "Sequence ID of the reported run.")',
@@ -4709,7 +4728,7 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
     'version 1 keeps its labels as issued',
   );
   const amended = renderCertificate(v2.content);
-  assert.equal(amended.marker, 'Amended');
+  assert.equal(amended.marker, 'Amended, replaces version 1');
   const rows = amended.sections.find((x) => x.kind === 'table');
   assert.deepEqual(rows?.kind === 'table' && rows.rows[0], [
     'Impurity A',

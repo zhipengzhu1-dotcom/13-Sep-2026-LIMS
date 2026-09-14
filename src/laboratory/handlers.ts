@@ -37,7 +37,7 @@ import {
   type Publication,
 } from './certificate.ts';
 import type { Attachment } from './attachment-contracts.ts';
-import { amendmentOf, changeSummary } from './amendments.ts';
+import { amendmentOf, changeSummary, replacedVersion } from './amendments.ts';
 import { type Upload } from './attachments.ts';
 import { WorkflowError, requireRole } from './workflow-error.ts';
 import {
@@ -561,7 +561,8 @@ export const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     // "performed by" and, for a version issued by an Amendment, the "amended
     // by" of the submission that led here; this Approval's own signature is
     // recorded by the entry point with the same signer and time.
-    const version = (certificates(sample.id).at(-1)?.version ?? 0) + 1;
+    const issued = certificates(sample.id);
+    const version = (issued.at(-1)?.version ?? 0) + 1;
     const signed = signatures(sample.id);
     const latest = (meaning: SignatureMeaning) => {
       const found = signed.filter((x) => x.meaning === meaning).at(-1);
@@ -575,15 +576,21 @@ export const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       };
     };
     // Every version after the first is issued by an Amendment, which states
-    // why it was started and, from the audit trail, what it changed.
+    // the version it replaces, why it was started and, from the audit trail,
+    // what it changed.
     let amendment = null;
     if (version > 1) {
       const entries = history(sample);
       const start = amendmentOf(entries);
       const changes = changeSummary(sample, entries);
-      if (!start || !changes)
+      const replaces = replacedVersion(issued);
+      if (!start || !changes || replaces === null)
         throw new Error(`Sample ${sample.id} has no Amendment to approve.`);
-      amendment = { reason: start.reason, changeSummary: changes };
+      amendment = {
+        replacesVersion: replaces,
+        reason: start.reason,
+        changeSummary: changes,
+      };
     }
     const certificate = issueCertificate(
       certificateContent({

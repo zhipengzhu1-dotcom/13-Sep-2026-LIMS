@@ -1,6 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { type Certificate } from '../laboratory/certificate';
-import { amendmentOf, changeSummary } from '../laboratory/amendments';
+import {
+  amendmentOf,
+  changeSummary,
+  replacedVersion,
+} from '../laboratory/amendments';
 import {
   actsAs,
   auditsSample,
@@ -266,7 +270,7 @@ export function SamplePanel({
             {amendment && (
               <div className="flash amendment inline" role="status">
                 <strong>
-                  Amendment of Certificate version {versions.at(-1)!.version},
+                  Amendment of Certificate version {replacedVersion(versions)},
                   started by {personName(data, amendment.startedBy)},{' '}
                   {stamp(amendment.startedAt)}:
                 </strong>{' '}

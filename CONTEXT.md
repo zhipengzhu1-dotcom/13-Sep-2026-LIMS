@@ -145,7 +145,7 @@ Delivering an approved Sample's Certificate of Analysis to the Client and record
 _Avoid_: Release, send out
 
 **Amendment**:
-A new version of a published Certificate of Analysis, corrected by the Analyst with a reason, re-approved by a Manager and published by the Coordinator; it is marked Amended and the superseded version stays on file.
+A new version of a published Certificate of Analysis, corrected by the Analyst with a reason, re-approved by a Manager and published by the Coordinator; it is marked Amended, states the version it replaces (the Published version the Amendment started from), and the superseded version stays on file.
 _Avoid_: Correction, reissue, revision
 
 ### The lab and its system

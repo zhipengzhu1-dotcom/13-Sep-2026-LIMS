@@ -133,8 +133,15 @@ export type CertificateContent = {
    * none of them and renders as it did.
    */
   issuedAt?: string;
-  /** Null for version 1; an Amendment states why and what changed. */
-  amendment: { reason: string; changeSummary: string } | null;
+  /** Null for version 1; an Amendment states the version it replaces, why
+   * and what changed. */
+  amendment: {
+    /** The Published version the Amendment started from (ISO/IEC 17025
+     * 7.8.8.3); absent on a version amended before it was recorded. */
+    replacesVersion?: number;
+    reason: string;
+    changeSummary: string;
+  } | null;
   laboratory: { name: string; address: string; accreditation: string };
   client: {
     id: string;

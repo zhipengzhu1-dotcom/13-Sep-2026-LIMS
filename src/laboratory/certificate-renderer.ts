@@ -41,7 +41,9 @@ export type CertificateDocument = {
   title: string;
   /** `Sample 26-00001 · Version 1`. */
   reference: string;
-  /** `Amended` for a version issued by an Amendment, otherwise null. */
+  /** `Amended, replaces version 1` for a version issued by an Amendment
+   * (`Amended` if it was issued before the replaced version was recorded),
+   * otherwise null. */
   marker: string | null;
   laboratory: { name: string; lines: string[] };
   sections: DocumentSection[];
@@ -271,13 +273,23 @@ export function renderCertificate(
       heading: 'Statements',
       paragraphs: content.statements,
     });
+  // A version amended before the replaced version was recorded prints
+  // no version in its marker or change summary.
+  const replaces = content.amendment?.replacesVersion;
+  const replaced =
+    replaces === undefined
+      ? { marker: 'Amended', changes: 'Changes' }
+      : {
+          marker: `Amended, replaces version ${replaces}`,
+          changes: `Changes from version ${replaces}`,
+        };
   if (content.amendment)
     sections.push({
       kind: 'text',
       heading: 'Amendment',
       paragraphs: [
         `Reason: ${content.amendment.reason}`,
-        `Changes: ${content.amendment.changeSummary}`,
+        `${replaced.changes}: ${content.amendment.changeSummary}`,
       ],
     });
   sections.push({
@@ -292,7 +304,7 @@ export function renderCertificate(
   return {
     title: 'Certificate of Analysis',
     reference: `Sample ${content.sampleId} · Version ${content.version}`,
-    marker: content.amendment ? 'Amended' : null,
+    marker: content.amendment ? replaced.marker : null,
     laboratory: {
       name: content.laboratory.name,
       lines: [content.laboratory.address, content.laboratory.accreditation],
