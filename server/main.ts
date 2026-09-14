@@ -6,12 +6,25 @@ import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import { api, expireSessions } from './http.ts';
 import { discardOutdatedDemoDatabase, seed } from './seed.ts';
+import { migrate } from './migrations.ts';
 import { Sessions } from './sessions.ts';
 
+const development = process.env.NODE_ENV !== 'production';
 mkdirSync('data', { recursive: true });
 const database = resolve('data/prototype.sqlite');
-// Discard before either store opens the file, so old accounts go with it.
-discardOutdatedDemoDatabase(database);
+// Both run before either store opens the file: a discarded demo file takes
+// its old accounts with it, and a migration's new tables are not pre-empted
+// by the stores' own CREATE statements.
+if (development) discardOutdatedDemoDatabase(database);
+const migration = migrate(database);
+if (migration.outcome === 'refused') {
+  console.error(`Benchline did not start: ${migration.reason}`);
+  process.exit(1);
+}
+if (migration.outcome === 'migrated')
+  console.log(
+    `Database migrated from schema version ${migration.from} to ${migration.to}: ${migration.applied.join('; ')}`,
+  );
 const accounts = new Accounts(database, {
   // Outbound mail settings come with production mode (#30). Until then a
   // lockout notice is printed here and, since nobody was emailed, recorded as
@@ -44,7 +57,6 @@ const handleApi = api(lab, { accounts, sessions });
 // An abandoned session is recorded as expired soon after it expires, not only
 // when the next request arrives.
 const sweep = setInterval(() => expireSessions(lab, sessions), 60_000);
-const development = process.env.NODE_ENV !== 'production';
 const vite = development
   ? await (
       await import('vite')

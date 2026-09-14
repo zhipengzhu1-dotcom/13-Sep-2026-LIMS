@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { WorkflowError } from '../src/laboratory/workflow-error.ts';
+import { migrate } from './migrations.ts';
 
 /**
  * Unlocks a Locked account from the lab server, so a lone Admin who locked
@@ -27,6 +28,11 @@ export function unlockFromServer({
       'The unlock command is for the demo only. In production the System administrator unlocks accounts (#66).',
       403,
     );
+  // As the server does, so the stores never open a file ahead of its
+  // migrations.
+  const migration = migrate(database);
+  if (migration.outcome === 'refused')
+    throw new WorkflowError(migration.reason, 409);
   const accounts = new Accounts(database);
   const lab = new Laboratory(database, {
     credentials: accounts,

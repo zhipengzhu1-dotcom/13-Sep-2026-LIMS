@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { unlockFromServer } from '../server/unlock.ts';
+import { migrate } from '../server/migrations.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -382,7 +383,9 @@ test('a lone Admin who locked themselves out is unlocked by the demo server comm
   const folder = mkdtempSync(join(tmpdir(), 'lims-unlock-'));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
   const database = join(folder, 'benchline.sqlite');
+  /** What the server does on start. */
   const open = () => {
+    assert.notEqual(migrate(database).outcome, 'refused');
     const accounts = new Accounts(database);
     accounts.seed(demoAccounts);
     const laboratory = new Laboratory(database, {

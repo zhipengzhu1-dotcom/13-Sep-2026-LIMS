@@ -52,9 +52,6 @@ import {
 
 export { WorkflowError } from './workflow-error.ts';
 
-/** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 19;
-
 /**
  * Verifies a signer's password against their stored hash. The accounts store
  * implements it; the core asks it once per signing command, before the
@@ -161,13 +158,6 @@ export class Laboratory {
     this.acceptableIntakeStore = new AcceptableIntakeStore(this.db);
     this.certificateStore = new CertificateStore(this.db);
     this.signatureStore = new SignatureStore(this.db);
-    // Stamp the schema version only on a database that has none. A migration
-    // runner owns this value afterwards; overwriting it here would silently
-    // undo a migration and defeat the version gate the runner reads.
-    const { user_version: version } = this.db
-      .prepare('PRAGMA user_version')
-      .get() as { user_version: number };
-    if (version === 0) this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
     this.audit = new AuditTrail(this.db);
     this.attachments = new AttachmentStore(this.db);
   }

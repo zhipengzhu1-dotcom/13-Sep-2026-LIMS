@@ -1,29 +1,26 @@
 import { existsSync, rmSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import {
-  SCHEMA_VERSION,
-  type Laboratory,
-} from '../src/laboratory/laboratory.ts';
+import type { Laboratory } from '../src/laboratory/laboratory.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
   newCommandId,
   type SampleReceipt,
   type SubmissionReceipt,
 } from '../src/laboratory/contracts.ts';
+import { BASELINE_VERSION, userVersion } from './migrations.ts';
 
 /**
- * The demo database carries no data worth keeping. One written for an older
- * schema is deleted, so the server starts on a fresh, reseeded file instead of
- * mixing the old model's rows into the new one.
+ * A demo database written before versioned migrations carries no data worth
+ * keeping and no migration can bring it up to date, so the development server
+ * deletes it and starts on a fresh, reseeded file. Any later database is
+ * migrated, never discarded.
  */
 export function discardOutdatedDemoDatabase(file: string) {
   if (!existsSync(file)) return;
   const db = new DatabaseSync(file);
-  const { user_version: version } = db.prepare('PRAGMA user_version').get() as {
-    user_version: number;
-  };
+  const version = userVersion(db);
   db.close();
-  if (version >= SCHEMA_VERSION) return;
+  if (version >= BASELINE_VERSION) return;
   for (const suffix of ['', '-wal', '-shm'])
     rmSync(file + suffix, { force: true });
 }

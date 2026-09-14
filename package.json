@@ -11,6 +11,7 @@
     "build": "tsc --noEmit && vite build",
     "start": "NODE_ENV=production tsx server/main.ts",
     "unlock": "tsx server/unlock.ts",
+    "rehearse-migration": "tsx server/rehearse-migration.ts",
     "test": "tsx --test tests/*.test.ts",
     "check": "npm run build && npm test",
     "format": "prettier --write src server tests docs *.md *.json *.ts index.html",

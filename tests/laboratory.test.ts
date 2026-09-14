@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { discardOutdatedDemoDatabase, seed } from '../server/seed.ts';
+import { migrate } from '../server/migrations.ts';
 import { renderCertificate } from '../src/laboratory/certificate-renderer.ts';
 import type { CertificateResult } from '../src/laboratory/certificate.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
@@ -925,13 +926,14 @@ test('records and the audit trail survive database reopen', (t) => {
   );
 });
 
-test('the demo database is kept across restarts, and one from an older build is discarded and reseeded', (t) => {
+test('the demo database is kept across restarts, and one from before versioned migrations is discarded and reseeded', (t) => {
   const folder = mkdtempSync(join(tmpdir(), 'lims-demo-database-'));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
   const file = join(folder, 'prototype.sqlite');
-  /** What the server does on start. */
+  /** What the development server does on start. */
   const start = () => {
     discardOutdatedDemoDatabase(file);
+    assert.notEqual(migrate(file).outcome, 'refused');
     const lab = new Laboratory(file, { credentials: accounts });
     seed(lab);
     return lab;
