@@ -2,7 +2,7 @@ import {
   auditWriter,
   type Audit,
   type AuditChange,
-} from '../src/laboratory/audit.ts';
+} from '../src/laboratory/audit-writer.ts';
 
 /**
  * An audit writer for tests that keeps its entries in memory, oldest first.
