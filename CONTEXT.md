@@ -68,7 +68,7 @@ The maximum acceptable level of an Analyte in a finished product: the Acceptable
 _Avoid_: Spec, threshold
 
 **Out-of-specification (OOS) investigation**:
-The recorded inquiry opened when a Result exceeds its Limit, opened and closed by the Manager after the assigned Analyst's Laboratory error check; it concludes either that the Result is Invalidated or that the OOS is confirmed, and Approval waits until it is closed. A Result that exceeds its Limit is never corrected except through its investigation, and a confirmed OOS is communicated to the Client before Publishing.
+The recorded inquiry opened when a Result exceeds its Limit, opened and closed by the Manager after the assigned Analyst's Laboratory error check; it concludes either that the Result is Invalidated or that the OOS is confirmed, meaning no assignable laboratory cause was found and the Client's full-scale investigation follows, and Approval waits until it is closed. A Result that exceeds its Limit is never corrected except through its investigation, and a confirmed OOS is communicated to the Client before Publishing.
 _Avoid_: Exception, investigate, deviation
 
 **Laboratory error check**:
@@ -76,7 +76,7 @@ The assigned Analyst's recorded review of their own work on a Result under OOS i
 _Avoid_: Lab check, Phase I, self-review
 
 **Invalidated result**:
-A Result an OOS investigation found to have an assignable laboratory cause, which only a Laboratory error check that identified an error can support; it stays on record, marked with that cause, and is followed by a Retest.
+A Result an OOS investigation found to have an assignable laboratory cause: a laboratory error the Laboratory error check identified and the Manager confirmed caused the value; it stays on record, marked with that cause, and is followed by a Retest.
 _Avoid_: Deleted result, void, superseded result
 
 **Retest**:
