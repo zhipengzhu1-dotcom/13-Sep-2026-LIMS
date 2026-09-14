@@ -53,41 +53,29 @@ export function amendmentOf(
  * follows (`result.retestAfter`) is on the audit trail but is no change to
  * the report, while the Retest's value is. */
 const summarised: readonly {
-  field: string;
+  /** The Result field's path, as the audit trail names it after `result.`. */
+  path: string;
   label: string;
   unit?: string;
-  /** The field's value on a Result, as the audit trail writes it. */
-  of: (r: Result) => AuditValue;
 }[] = [
-  { field: 'result.value', label: 'Result', unit: 'test', of: (r) => r.value },
-  { field: 'result.qualifier', label: 'qualifier', of: (r) => r.qualifier },
-  {
-    field: 'result.limit.value',
-    label: 'Limit',
-    unit: 'ng/day',
-    of: (r) => r.limit?.value ?? null,
-  },
-  {
-    field: 'result.conformity',
-    label: 'Conformity statement',
-    of: (r) => r.conformity,
-  },
-  {
-    field: 'result.instrumentReading',
-    label: 'instrument reading',
-    unit: 'ng/mL',
-    of: (r) => r.instrumentReading,
-  },
-  { field: 'result.sequenceId', label: 'sequence ID', of: (r) => r.sequenceId },
+  { path: 'value', label: 'Result', unit: 'test' },
+  { path: 'qualifier', label: 'qualifier' },
+  { path: 'limit.value', label: 'Limit', unit: 'ng/day' },
+  { path: 'conformity', label: 'Conformity statement' },
+  { path: 'instrumentReading', label: 'instrument reading', unit: 'ng/mL' },
+  { path: 'sequenceId', label: 'sequence ID' },
   // A worksheet is named by an internal ID, so the summary says only that
   // it was replaced; the audit trail keeps both IDs.
-  {
-    field: 'result.attachmentId',
-    label: 'worksheet',
-    unit: 'replaced',
-    of: (r) => r.attachmentId,
-  },
+  { path: 'attachmentId', label: 'worksheet', unit: 'replaced' },
 ];
+
+/** A Result's value at `path`, as the audit trail writes it. */
+const valueAt = (result: Result, path: string): AuditValue => {
+  let value: unknown = result;
+  for (const key of path.split('.'))
+    value = (value as Record<string, unknown> | null)?.[key] ?? null;
+  return value as AuditValue;
+};
 
 const shown = (value: AuditValue) => (value === null ? '—' : String(value));
 
@@ -121,11 +109,11 @@ export function changeSummary(
     const view = resultsView(sample);
     const retestBy = (commandId: string) =>
       view.retestRecordedBy(entries.filter((e) => e.commandId === commandId));
-    const changes = summarised.flatMap(({ field, label, unit, of }) => {
-      const own = entries.filter((e) => e.field === field);
+    const changes = summarised.flatMap(({ path, label, unit }) => {
+      const own = entries.filter((e) => e.field === `result.${path}`);
       if (!own.length) return [];
       const retest = retestBy(own[0].commandId);
-      const from = retest ? of(retest.invalidated) : own[0].oldValue;
+      const from = retest ? valueAt(retest.invalidated, path) : own[0].oldValue;
       const to = own.at(-1)!.newValue;
       if (from === to) return [];
       if (unit === 'replaced') return [`${label} replaced`];

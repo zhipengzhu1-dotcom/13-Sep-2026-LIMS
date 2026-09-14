@@ -170,7 +170,7 @@ export function renderCertificate(
     rows: content.results.map((r): DocumentCell[] => [
       r.analyte,
       `${r.methodCode} v${r.methodVersion} (${r.technique})`,
-      reportedValue(r, r),
+      reportedValue({ lod: r.lod, loq: r.loq }, r),
       r.unit,
       ...(finished
         ? [r.limit ? `${r.limit.value} ${r.limit.unit}` : none]

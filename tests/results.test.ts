@@ -1567,8 +1567,12 @@ test('the Approval refusal asks separation of duties before the OOS gate', () =>
       'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
     investigationId: null,
   });
-  assert.deepEqual(view.approvalRefusal('manager'), view.approvalBlocker);
-  assert.equal(view.approvalRefusal('manager')?.code, 'investigation open');
+  assert.deepEqual(view.approvalRefusal('manager'), {
+    code: 'investigation open',
+    reason:
+      'OOS investigation OOS26-0001 is open. Approval waits until it is closed.',
+    investigationId: 'OOS26-0001',
+  });
   assert.equal(
     resultsView(staged('complying')).approvalRefusal('manager'),
     null,

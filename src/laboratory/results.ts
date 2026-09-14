@@ -179,13 +179,25 @@ export type InvestigationResults = {
   readonly findingsForClient: string;
 };
 
+/** A person's own work on a Result, as Bench work names it. */
+export type ResultAct =
+  'entered' | 'corrected' | 'retested' | 'corrected a Retest';
+
+/** How the separation-of-duties refusal names each act, before the Test. */
+const resultActWording: Record<ResultAct, string> = {
+  entered: 'entered a Result on',
+  corrected: 'corrected a Result on',
+  retested: 'retested',
+  'corrected a Retest': 'corrected a Retest on',
+};
+
 /** An act that counts as Bench work: the person's own work on a Result, or
  * their Laboratory error check of it (ADR-0005). Opening or concluding an
  * investigation is not Bench work. */
 export type BenchWorkEntry =
   | {
       person: string;
-      act: 'entered' | 'corrected' | 'retested' | 'corrected a Retest';
+      act: ResultAct;
       testId: string;
       resultSequence: number;
     }
@@ -571,15 +583,13 @@ export function resultsView(sample: Sample): SampleResults {
           // correction, an invalidated one by Retest. A correction of a
           // Retest keeps its link, so it is still the Retest's work.
           const before = test.results[i - 1];
+          let act: ResultAct = 'corrected';
+          if (!before) act = 'entered';
+          else if (before.status === 'invalidated') act = 'retested';
+          else if (result.retestAfter) act = 'corrected a Retest';
           return {
             person: result.enteredBy,
-            act: !before
-              ? 'entered'
-              : before.status === 'invalidated'
-                ? 'retested'
-                : result.retestAfter
-                  ? 'corrected a Retest'
-                  : 'corrected',
+            act,
             testId: test.id,
             resultSequence: result.sequence,
           };
@@ -644,15 +654,9 @@ export function separationOfDutiesRefusal(
       investigationId: entry.investigationId,
     };
   const label = testLabel(resultsView(sample).test(entry.testId).test);
-  const did =
-    entry.act === 'retested'
-      ? `retested ${label}`
-      : entry.act === 'corrected a Retest'
-        ? `corrected a Retest on ${label}`
-        : `${entry.act} a Result on ${label}`;
   return {
     code: 'separation of duties',
-    reason: `You ${did}, ${then}`,
+    reason: `You ${resultActWording[entry.act]} ${label}, ${then}`,
     investigationId: null,
   };
 }
