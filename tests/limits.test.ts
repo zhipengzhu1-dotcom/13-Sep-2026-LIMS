@@ -48,13 +48,19 @@ function worksheet(lab: Laboratory) {
     );
   return worksheets.get(lab)!;
 }
+/** Runs a command; an `enterResult` references the lab's worksheet and is
+ * analysed on the day its Sample was received, unless the test says. */
 function run(lab: Laboratory, command: object, actor: string): Sample {
-  const attachment =
-    (command as { type?: string }).type === 'enterResult'
-      ? { attachmentId: worksheet(lab) }
+  const entry = command as { type?: string; sampleId?: string };
+  const received = lab
+    .snapshot()
+    .samples.find((x) => x.id === entry.sampleId)?.receivedAt;
+  const defaults =
+    entry.type === 'enterResult'
+      ? { attachmentId: worksheet(lab), analysedOn: received?.slice(0, 10) }
       : {};
   return lab.execute(
-    { commandId: newCommandId(), ...attachment, ...command },
+    { commandId: newCommandId(), ...defaults, ...command },
     actor,
   ).samples[0];
 }
@@ -64,6 +70,7 @@ function assigned(lab: Laboratory, sample: object = finishedProduct) {
     {
       type: 'receiveSubmission',
       clientId: 'northstar',
+      clientContact: 'Dana Wells, QA Northstar',
       shippingCondition: 'ambient',
       packageCondition: 'intact',
       samples: [sample],
@@ -206,12 +213,13 @@ test('a < LOD or < LOQ Result complies only when that LOD or LOQ is below the Li
 
 test('the entry in force is the latest effective on or before the day the Result is entered', (t) => {
   const { lab, clock } = clocked(t);
+  // Received before the first Result, which is analysed that day.
+  clock.now = '2023-08-03T23:59:59.999Z';
   let s = assigned(lab);
   append(lab, entry('impurity-a', 18, '2026-10-01'));
   append(lab, entry('impurity-a', 30, '2025-01-01'));
   append(lab, entry('impurity-a', 31, '2025-01-01'));
   // Seeded: 26.5 ng/day from 2023-08-04.
-  clock.now = '2023-08-03T23:59:59.999Z';
   assert.throws(
     () => run(lab, result(s, 'NIT-001-v1', 20), 'analyst'),
     /No Acceptable intake is in force for Impurity A/,
@@ -542,8 +550,8 @@ test('raw material Results link no Limit and show Report', (t) => {
 
 test('a finished product Result with no Acceptable intake in force is refused and records nothing', (t) => {
   const { lab, clock } = clocked(t);
-  const s = assigned(lab);
   clock.now = '2023-08-03T12:00:00.000Z';
+  const s = assigned(lab);
   worksheet(lab);
   const before = lab.snapshot();
   assert.throws(

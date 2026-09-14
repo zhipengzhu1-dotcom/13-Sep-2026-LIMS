@@ -65,6 +65,7 @@ const summarised: readonly {
   { path: 'qualifier', label: 'qualifier', row: true },
   { path: 'limit.value', label: 'Limit', unit: 'ng/day', row: true },
   { path: 'conformity', label: 'Conformity statement', row: true },
+  { path: 'analysedOn', label: 'analysis date', row: true },
   { path: 'instrumentReading', label: 'instrument reading', unit: 'ng/mL' },
   { path: 'sequenceId', label: 'sequence ID' },
   // A worksheet is named by an internal ID, so the summary says only that

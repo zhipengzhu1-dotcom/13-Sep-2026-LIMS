@@ -1,4 +1,9 @@
-import type { CertificateContent, CertificateResult } from './certificate.ts';
+import {
+  clientSuppliedMark,
+  type CertificateContent,
+  type CertificateResult,
+  type ClientSuppliedField,
+} from './certificate.ts';
 import { isFinishedProduct } from './contracts.ts';
 import { reportedValue } from './results.ts';
 
@@ -66,6 +71,22 @@ export function certificateInvestigationText(
   return `${i.id}, ${i.outcome}, for Result ${value} ${i.result.unit}`;
 }
 
+/** The dates of testing: the one analysis date, or the first to the last,
+ * noting Results entered before analysis dates were recorded. */
+function testingDates(results: CertificateResult[]) {
+  const dates = [
+    ...new Set(results.flatMap((r) => (r.analysedOn ? [r.analysedOn] : []))),
+  ].sort();
+  if (!dates.length) return notRecorded;
+  const range =
+    dates.length === 1 ? dates[0] : `${dates[0]} to ${dates.at(-1)}`;
+  return results.some((r) => !r.analysedOn)
+    ? `${range} (not recorded for every Result)`
+    : range;
+}
+
+const notRecorded = 'Not recorded';
+
 function limitSource(limit: NonNullable<CertificateResult['limit']>) {
   return `${limit.sourceTitle}, revision ${limit.sourceRevisionDate}, in force from ${limit.effectiveFrom}${limit.illustrative ? ' (illustrative value)' : ''}`;
 }
@@ -75,23 +96,43 @@ export function renderCertificate(
 ): CertificateDocument {
   const finished = isFinishedProduct(content.materialType);
   const sample = content.sample;
+  // A version issued before ISO/IEC 17025 7.8.2's report content was
+  // recorded renders as it did: no Certificate section, contact, analysis
+  // dates, statements or marks.
+  const withReportContent = content.issuedAt !== undefined;
+  const mark = (field: ClientSuppliedField, label: string) =>
+    content.clientSupplied?.includes(field)
+      ? `${label} ${clientSuppliedMark}`
+      : label;
   const sampleFields: DocumentField[] = [
     { label: 'Lab Sample ID', value: sample.id },
-    { label: 'Client sample ID', value: text(sample.clientSampleId) },
-    { label: 'Product', value: sample.product },
-    { label: 'Strength', value: text(sample.strength) },
-    { label: 'Batch / lot', value: sample.batch },
-    { label: 'Manufacturer', value: text(sample.manufacturer) },
-    { label: 'Manufacture date', value: text(sample.manufactureDate) },
     {
-      label: `${capital(sample.expiryKind)} date`,
+      label: mark('clientSampleId', 'Client sample ID'),
+      value: text(sample.clientSampleId),
+    },
+    { label: mark('product', 'Product'), value: sample.product },
+    { label: mark('strength', 'Strength'), value: text(sample.strength) },
+    { label: mark('batch', 'Batch / lot'), value: sample.batch },
+    {
+      label: mark('manufacturer', 'Manufacturer'),
+      value: text(sample.manufacturer),
+    },
+    {
+      label: mark('manufactureDate', 'Manufacture date'),
+      value: text(sample.manufactureDate),
+    },
+    {
+      label: mark('expiryDate', `${capital(sample.expiryKind)} date`),
       value: text(sample.expiryDate),
     },
-    { label: 'Material type', value: capital(content.materialType) },
+    {
+      label: mark('materialType', 'Material type'),
+      value: capital(content.materialType),
+    },
     ...(finished
       ? [
           {
-            label: 'Maximum daily dose',
+            label: mark('maximumDailyDose', 'Maximum daily dose'),
             value:
               content.maximumDailyDose === null
                 ? none
@@ -109,7 +150,17 @@ export function renderCertificate(
     },
     { label: 'Condition on receipt', value: sample.conditionOnReceipt },
   ];
-  const sections: DocumentSection[] = [
+  const sections: DocumentSection[] = [];
+  if (withReportContent)
+    sections.push({
+      kind: 'fields',
+      heading: 'Certificate',
+      fields: [
+        { label: 'Date of issue', value: utcStamp(content.issuedAt!) },
+        { label: 'Dates of testing', value: testingDates(content.results) },
+      ],
+    });
+  sections.push(
     {
       kind: 'fields',
       heading: 'Client and Submission',
@@ -118,8 +169,16 @@ export function renderCertificate(
           label: 'Client',
           value: `${content.client.name}${content.client.kind === 'internal' ? ' (internal)' : ''}`,
         },
+        ...(withReportContent
+          ? [
+              {
+                label: mark('clientContact', 'Client contact'),
+                value: content.client.contact ?? notRecorded,
+              },
+            ]
+          : []),
         {
-          label: 'Client reference',
+          label: mark('clientReference', 'Client reference'),
           value: text(content.submission.clientReference),
         },
         { label: 'Submission', value: content.submission.id },
@@ -127,16 +186,22 @@ export function renderCertificate(
       ],
     },
     { kind: 'fields', heading: 'Sample', fields: sampleFields },
-  ];
+  );
   if (content.stability)
     sections.push({
       kind: 'fields',
       heading: 'Stability study',
       fields: [
-        { label: 'Study ID', value: content.stability.studyId },
-        { label: 'Time point', value: content.stability.timePoint },
         {
-          label: 'Storage condition',
+          label: mark('stability', 'Study ID'),
+          value: content.stability.studyId,
+        },
+        {
+          label: mark('stability', 'Time point'),
+          value: content.stability.timePoint,
+        },
+        {
+          label: mark('stability', 'Storage condition'),
           value: `${content.stability.condition} (${content.stability.conditionLabel})`,
         },
       ],
@@ -161,6 +226,7 @@ export function renderCertificate(
     columns: [
       'Analyte',
       'Method',
+      ...(withReportContent ? ['Analysis date'] : []),
       'Result',
       'Unit',
       ...(finished ? ['Limit'] : []),
@@ -170,6 +236,7 @@ export function renderCertificate(
     rows: content.results.map((r): DocumentCell[] => [
       r.analyte,
       `${r.methodCode} v${r.methodVersion} (${r.technique})`,
+      ...(withReportContent ? [r.analysedOn ?? notRecorded] : []),
       reportedValue({ lod: r.lod, loq: r.loq }, r),
       r.unit,
       ...(finished
@@ -185,8 +252,18 @@ export function renderCertificate(
   sections.push({
     kind: 'text',
     heading: 'Decision rule',
-    paragraphs: [content.decisionRule, content.individualJudgement],
+    paragraphs: [
+      content.decisionRule,
+      ...(content.uncertaintyStatement ? [content.uncertaintyStatement] : []),
+      content.individualJudgement,
+    ],
   });
+  if (content.statements)
+    sections.push({
+      kind: 'text',
+      heading: 'Statements',
+      paragraphs: content.statements,
+    });
   if (content.amendment)
     sections.push({
       kind: 'text',

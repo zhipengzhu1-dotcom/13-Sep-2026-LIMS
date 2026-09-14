@@ -114,6 +114,7 @@ const input = (fields: Partial<RecordResultInput> = {}): RecordResultInput => ({
   value: 2.5,
   instrumentReading: 1.25,
   sequenceId: 'SEQ-0001',
+  analysedOn: '2026-09-10',
   reason: '',
   limit,
   worksheet: { id: 'ATT-1' },
@@ -184,6 +185,7 @@ const firstEntryChanges = [
   [RECORD, 'result.instrumentReading', null, 1.25, null],
   [RECORD, 'result.sequenceId', null, 'SEQ-0001', null],
   [RECORD, 'result.attachmentId', null, 'ATT-1', null],
+  [RECORD, 'result.analysedOn', null, '2026-09-10', null],
   [RECORD, 'result.limit.entry', null, 1, null],
   [RECORD, 'result.limit.value', null, 26.5, null],
   [RECORD, 'result.conformity', null, 'Complies', null],
@@ -294,6 +296,26 @@ const accepted: Accepted[] = [
     statuses: ['superseded', 'current'],
   },
   {
+    name: 'a correction of only the analysis date is recorded with its reason',
+    arrange: (s) => {
+      s.receivedAt = '2026-09-08T09:00:00.000Z';
+      record(s, { analysedOn: '2026-09-08' });
+    },
+    fields: { analysedOn: '2026-09-09', reason: 'Wrong run date typed' },
+    kind: 'correction',
+    changes: [
+      [RECORD, 'result.value', 2.5, 2.5, 'Wrong run date typed'],
+      [
+        RECORD,
+        'result.analysedOn',
+        '2026-09-08',
+        '2026-09-09',
+        'Wrong run date typed',
+      ],
+    ],
+    statuses: ['superseded', 'current'],
+  },
+  {
     name: 'a confirmed OOS is corrected once the Sample has a Certificate',
     arrange: (s) => {
       record(s, { value: 30 });
@@ -335,6 +357,7 @@ const accepted: Accepted[] = [
       [RECORD, 'result.instrumentReading', null, 1.25, null],
       [RECORD, 'result.sequenceId', null, 'SEQ-0001', null],
       [RECORD, 'result.attachmentId', null, 'ATT-2', null],
+      [RECORD, 'result.analysedOn', null, '2026-09-10', null],
       [RECORD, 'result.limit.entry', null, 1, null],
       [RECORD, 'result.limit.value', null, 26.5, null],
       [RECORD, 'result.conformity', null, 'Complies', null],
@@ -359,6 +382,7 @@ const accepted: Accepted[] = [
       [RECORD, 'result.instrumentReading', null, 1.25, null],
       [RECORD, 'result.sequenceId', null, 'SEQ-0001', null],
       [RECORD, 'result.attachmentId', null, 'ATT-2', null],
+      [RECORD, 'result.analysedOn', null, '2026-09-10', null],
       [RECORD, 'result.limit.entry', null, 1, null],
       [RECORD, 'result.limit.value', null, 26.5, null],
       [RECORD, 'result.conformity', null, 'Does not comply', null],
@@ -396,6 +420,7 @@ const accepted: Accepted[] = [
       [RECORD, 'result.instrumentReading', null, 1.25, null],
       [RECORD, 'result.sequenceId', null, 'SEQ-0001', null],
       [RECORD, 'result.attachmentId', null, 'ATT-1', null],
+      [RECORD, 'result.analysedOn', null, '2026-09-10', null],
       [RECORD, 'result.conformity', null, 'Report', null],
     ],
     statuses: ['current'],
@@ -425,6 +450,7 @@ for (const c of accepted)
     assert.equal(current.value, c.fields.value ?? 2.5);
     assert.equal(current.enteredBy, 'analyst');
     assert.equal(current.enteredAt, AT);
+    assert.equal(current.analysedOn, c.fields.analysedOn ?? '2026-09-10');
     assert.equal(current.sequence, c.statuses.length);
     assert.equal(current.investigationId, null);
     assert.equal(current.retestAfter, c.retestAfter ?? null);
@@ -532,6 +558,34 @@ const refused: Refused[] = [
     },
     reason:
       'OOS investigation OOS26-0001 is open on this Result, so it cannot be corrected.',
+  },
+  {
+    name: 'a Result analysed later than the date of saving',
+    arrange: () => {},
+    fields: { analysedOn: '2026-09-11' },
+    blocker: null,
+    reason:
+      'The analysis date cannot be later than the date of saving (2026-09-10).',
+  },
+  {
+    name: 'a Result analysed before the Sample was received',
+    arrange: () => {},
+    fields: { analysedOn: '2026-09-09' },
+    blocker: null,
+    reason:
+      'The analysis date cannot be before the Sample was received (2026-09-10).',
+  },
+  {
+    // A date-only correction is still a correction, so ADR-0006 refuses it
+    // outside the investigation like any other.
+    name: 'a correction of only the analysis date of a Result over its Limit with no investigation',
+    arrange: (s) => {
+      s.receivedAt = '2026-09-08T09:00:00.000Z';
+      record(s, { value: 30, analysedOn: '2026-09-08' });
+    },
+    fields: { value: 30, analysedOn: '2026-09-09', reason: 'Wrong run date' },
+    blocker: uninvestigatedCorrection,
+    reason: uninvestigatedCorrection.reason,
   },
   {
     name: 'a finished product Result with no Limit in force',
@@ -1938,6 +1992,21 @@ test('an Amendment change summary gives a Retest the investigation it follows as
   assert.equal(
     changeSummary(s, amendment.history),
     'Impurity A (NIT-001 v1): Result 30 → 12 ng/day, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.)',
+  );
+});
+
+test('an Amendment change summary names a corrected analysis date, which the Certificate prints', () => {
+  const s = sampleOf();
+  s.receivedAt = '2026-09-08T09:00:00.000Z';
+  record(s, { analysedOn: '2026-09-08' });
+  const amendment = amendmentHistory(s);
+  amendment.enter({
+    analysedOn: '2026-09-09',
+    reason: 'Run date typed wrong.',
+  });
+  assert.equal(
+    changeSummary(s, amendment.history),
+    'Impurity A (NIT-001 v1): analysis date 2026-09-08 → 2026-09-09 (reason: "Run date typed wrong.")',
   );
 });
 

@@ -267,6 +267,9 @@ export type RecordResultInput = {
   value: number;
   instrumentReading: number;
   sequenceId: string;
+  /** YYYY-MM-DD, UTC; no later than the date of saving and no earlier than
+   * the Sample's receipt. */
+  analysedOn: string;
   /** Required for a correction; kept as given otherwise. */
   reason: string;
   /** The Acceptable intake entry in force now for the Test's Analyte. Used
@@ -692,6 +695,17 @@ export function recordResult(
   }
   if (previous && input.reason.length < 3)
     throw new WorkflowError('Give a reason for changing the Result.');
+  // Calendar dates compare as UTC days, like every date the record prints.
+  const today = at.slice(0, 10);
+  if (input.analysedOn > today)
+    throw new WorkflowError(
+      `The analysis date cannot be later than the date of saving (${today}).`,
+    );
+  const receivedOn = new Date(sample.receivedAt).toISOString().slice(0, 10);
+  if (input.analysedOn < receivedOn)
+    throw new WorkflowError(
+      `The analysis date cannot be before the Sample was received (${receivedOn}).`,
+    );
   // Finished products are judged against the entry in force now; raw
   // materials have no Limit.
   const finished = isFinishedProduct(sample.materialType);
@@ -730,6 +744,7 @@ export function recordResult(
     instrumentReading: input.instrumentReading,
     sequenceId: input.sequenceId,
     attachmentId: input.worksheet.id,
+    analysedOn: input.analysedOn,
     enteredBy: actor,
     enteredAt: at,
     reason: input.reason,

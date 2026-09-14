@@ -18,6 +18,10 @@ _Avoid_: Specimen, item
 The party a Submission is tested for, either an external customer or an internal department of the company.
 _Avoid_: Customer (in data), requester
 
+**Client contact**:
+The person at the Client a Submission's Certificates of Analysis are for, recorded by the Coordinator at receipt as the Client gives it.
+_Avoid_: Requester, customer contact
+
 **Material type**:
 Whether a Sample is a raw material (drug substance or API) or a finished product; it determines the reporting unit (ppm for raw materials, ng/day for finished products).
 _Avoid_: Matrix, sample type
@@ -55,6 +59,10 @@ _Avoid_: Analysis, job
 **Result**:
 The reported outcome of a Test in the Material type's reporting unit: a number, or a number qualified as `< LOD` or `< LOQ`. The analyst calculates it from the instrument's ng/mL reading.
 _Avoid_: Reading, measurement, raw data
+
+**Analysis date**:
+The UTC calendar date the Analyst ran a Result's analysis, entered with the Result and printed in its row of the Certificate of Analysis; never later than the day it is recorded or earlier than the day the Sample was received. Correcting it is a correction of the Result.
+_Avoid_: Test date, run date
 
 **LOD / LOQ**:
 The Method's fixed, validated limit of detection and limit of quantitation; where a Result falls against them decides whether it is reported as `< LOD`, `< LOQ` or a quantified number. They are held in ppm, and in ng/day they are the ppm values at the Method's Maximum-dose ceiling.
@@ -129,11 +137,11 @@ Exactly what an Electronic signature attests to, kept unchanged as it stood at t
 _Avoid_: Signed record, signature payload, snapshot
 
 **Certificate of Analysis**:
-The locked, signed report of a Sample's approved Results that is issued to the Client.
+The locked, signed report of a Sample's approved Results for the Client. It is issued at the Approval that locks it, which is its date of issue, and marks the information the Client supplied.
 _Avoid_: CoA (in prose), report, results sheet
 
 **Publish**:
-Issuing an approved Sample's Certificate of Analysis to the Client.
+Delivering an approved Sample's Certificate of Analysis to the Client and recording how and when; it never changes the Certificate's date of issue.
 _Avoid_: Release, send out
 
 **Amendment**:

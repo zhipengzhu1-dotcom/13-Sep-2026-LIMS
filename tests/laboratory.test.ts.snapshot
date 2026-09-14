@@ -3,6 +3,7 @@ exports[`Approval freezes Certificate version 1 for a finished product with a Re
   "sampleId": "26-00001",
   "version": 1,
   "approvedAt": "2026-09-10T12:00:00.000Z",
+  "issuedAt": "2026-09-10T12:00:00.000Z",
   "amendment": null,
   "laboratory": {
     "name": "Benchline Analytical Laboratory",
@@ -12,7 +13,8 @@ exports[`Approval freezes Certificate version 1 for a finished product with a Re
   "client": {
     "id": "northstar",
     "name": "Northstar Pharma",
-    "kind": "external"
+    "kind": "external",
+    "contact": "Dana Wells, QA Northstar"
   },
   "submission": {
     "id": "S26-0001",
@@ -68,6 +70,7 @@ exports[`Approval freezes Certificate version 1 for a finished product with a Re
       "methodCode": "NIT-001",
       "methodVersion": 1,
       "technique": "LC-MS/MS",
+      "analysedOn": "2026-09-10",
       "value": 30,
       "qualifier": "quantified",
       "unit": "ng/day",
@@ -102,6 +105,7 @@ exports[`Approval freezes Certificate version 1 for a finished product with a Re
       "methodCode": "NIT-003",
       "methodVersion": 1,
       "technique": "LC-MS/MS",
+      "analysedOn": "2026-09-10",
       "value": 0.5,
       "qualifier": "< LOD",
       "unit": "ng/day",
@@ -122,7 +126,27 @@ exports[`Approval freezes Certificate version 1 for a finished product with a Re
     }
   ],
   "decisionRule": "The Result is rounded to the decimal places of the Limit and complies when it is at or below the Limit. A Result reported as < LOD or < LOQ complies when that LOD or LOQ is below the Limit. Each Result is judged on its own.",
+  "uncertaintyStatement": "Measurement uncertainty is not applied when providing statements of conformity; decision rules are not identified in regulation.",
   "individualJudgement": "Each Result is judged individually. No combined nitrosamine assessment was made.",
+  "clientSupplied": [
+    "clientContact",
+    "clientReference",
+    "clientSampleId",
+    "product",
+    "strength",
+    "batch",
+    "manufacturer",
+    "manufactureDate",
+    "expiryDate",
+    "materialType",
+    "maximumDailyDose",
+    "stability"
+  ],
+  "statements": [
+    "The results relate only to the items tested.",
+    "The results apply to the Sample as received.",
+    "† Supplied by the Client. The laboratory is not responsible for this information; it can affect the validity of the Results, as the Maximum daily dose sets the ng/day Results and their Limit."
+  ],
   "signatures": [
     {
       "meaning": "performed by",
@@ -145,6 +169,7 @@ exports[`a raw material Certificate reports each Result with Report and no Limit
   "sampleId": "26-00001",
   "version": 1,
   "approvedAt": "2026-09-10T12:00:00.000Z",
+  "issuedAt": "2026-09-10T12:00:00.000Z",
   "amendment": null,
   "laboratory": {
     "name": "Benchline Analytical Laboratory",
@@ -154,7 +179,8 @@ exports[`a raw material Certificate reports each Result with Report and no Limit
   "client": {
     "id": "northstar",
     "name": "Northstar Pharma",
-    "kind": "external"
+    "kind": "external",
+    "contact": "Dana Wells, QA Northstar"
   },
   "submission": {
     "id": "S26-0001",
@@ -193,6 +219,7 @@ exports[`a raw material Certificate reports each Result with Report and no Limit
       "methodCode": "NIT-001",
       "methodVersion": 1,
       "technique": "LC-MS/MS",
+      "analysedOn": "2026-09-10",
       "value": 0.02,
       "qualifier": "< LOQ",
       "unit": "ppm",
@@ -208,6 +235,7 @@ exports[`a raw material Certificate reports each Result with Report and no Limit
       "methodCode": "NIT-005",
       "methodVersion": 1,
       "technique": "LC-MS/MS",
+      "analysedOn": "2026-09-10",
       "value": 0.05,
       "qualifier": "quantified",
       "unit": "ppm",
@@ -219,7 +247,25 @@ exports[`a raw material Certificate reports each Result with Report and no Limit
     }
   ],
   "decisionRule": "Raw materials have no Limit: each Result is reported as is, with the Conformity statement Report.",
+  "uncertaintyStatement": null,
   "individualJudgement": "Each Result is judged individually. No combined nitrosamine assessment was made.",
+  "clientSupplied": [
+    "clientContact",
+    "clientReference",
+    "clientSampleId",
+    "product",
+    "strength",
+    "batch",
+    "manufacturer",
+    "manufactureDate",
+    "expiryDate",
+    "materialType"
+  ],
+  "statements": [
+    "The results relate only to the items tested.",
+    "The results apply to the Sample as received.",
+    "† Supplied by the Client. The laboratory is not responsible for this information, which can affect the validity of the Results."
+  ],
   "signatures": [
     {
       "meaning": "performed by",

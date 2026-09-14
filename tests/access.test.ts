@@ -57,6 +57,7 @@ function readyToSubmit(lab: Laboratory) {
     {
       type: 'receiveSubmission',
       clientId: 'northstar',
+      clientContact: 'Dana Wells, QA Northstar',
       shippingCondition: 'ambient',
       packageCondition: 'intact',
       samples: [
@@ -98,6 +99,7 @@ function readyToSubmit(lab: Laboratory) {
       value: 0.02,
       instrumentReading: 0.2,
       sequenceId: 'SEQ-0001',
+      analysedOn: '2026-09-14',
       attachmentId: sheet.id,
       reason: '',
     },

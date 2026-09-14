@@ -52,6 +52,7 @@ export function resultDraft(
     instrumentReading: Number(f.get('instrumentReading')),
     sequenceId: String(f.get('sequenceId') ?? ''),
     attachmentId,
+    analysedOn: String(f.get('analysedOn') ?? ''),
     reason: String(f.get('reason') ?? ''),
   };
 }
@@ -331,6 +332,18 @@ export function ResultEntry({
         <span>Injection / sequence ID</span>
         <input name="sequenceId" required maxLength={200} />
       </label>
+      <label>
+        <span>Analysis date</span>
+        {/* UTC calendar days, as the core checks them. */}
+        <input
+          name="analysedOn"
+          type="date"
+          required
+          min={new Date(s.receivedAt).toISOString().slice(0, 10)}
+          max={new Date().toISOString().slice(0, 10)}
+          defaultValue={current?.analysedOn}
+        />
+      </label>
       <label className="worksheet">
         <span>Calculation worksheet</span>
         <input
@@ -356,6 +369,18 @@ export function ResultEntry({
         </p>
       )}
     </form>
+  );
+}
+
+/** The day a Result's analysis was run, or that a Result entered before
+ * analysis dates were recorded has none. */
+function AnalysisDate({ result: r }: { result: Result }) {
+  return r.analysedOn ? (
+    <>
+      Analysed <time dateTime={r.analysedOn}>{r.analysedOn}</time>
+    </>
+  ) : (
+    <>Analysis date not recorded</>
   );
 }
 
@@ -457,6 +482,8 @@ export function TestSheet({
                     <ResultValue result={current} />
                     <span className="sub num">
                       {current.instrumentReading} ng/mL · {current.sequenceId}
+                      {' · '}
+                      <AnalysisDate result={current} />
                       {' · '}
                       <WorksheetLink data={data} id={current.attachmentId} />
                     </span>
@@ -570,7 +597,8 @@ export function TestSheet({
                           <ConformityTag statement={r.conformity} />
                           <span className="dim num">
                             {r.limit ? `Limit ${r.limit.value} ng/day · ` : ''}
-                            {r.instrumentReading} ng/mL · {r.sequenceId}
+                            {r.instrumentReading} ng/mL · {r.sequenceId} ·{' '}
+                            <AnalysisDate result={r} />
                           </span>
                           <WorksheetLink data={data} id={r.attachmentId} />
                           <span>{personName(data, r.enteredBy)}</span>

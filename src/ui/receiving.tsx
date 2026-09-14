@@ -137,6 +137,7 @@ export function Intake({
           type: 'receiveSubmission',
           clientId: text('clientId'),
           clientReference: text('clientReference'),
+          clientContact: text('clientContact'),
           receivedAt: correcting
             ? {
                 at: new Date(text('receivedAt')).toISOString(),
@@ -183,6 +184,15 @@ export function Intake({
                 </optgroup>
               ))}
             </select>
+          </label>
+          <label>
+            Client contact
+            <input
+              name="clientContact"
+              required
+              maxLength={200}
+              placeholder="Name and role at the Client"
+            />
           </label>
           <label>
             Client reference or PO
@@ -621,6 +631,13 @@ export function ReceiptRecord({
               [
                 'Client',
                 `${submission.client} (${submission.clientKind === 'internal' ? 'internal department' : 'external'})`,
+              ],
+              // Absent on a Submission received before it was recorded.
+              [
+                'Client contact',
+                submission.clientContact ?? (
+                  <span className="not-recorded">Not recorded</span>
+                ),
               ],
               ['Client reference or PO', submission.clientReference],
               [

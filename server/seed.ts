@@ -89,6 +89,7 @@ export function seed(lab: Laboratory) {
     {
       clientId: 'northstar',
       clientReference: 'PO-448120',
+      clientContact: 'Priya Raman, Quality Assurance',
       courier: 'World Courier',
       trackingNumber: 'WC-7731-0042',
       shippingCondition: 'ambient',
@@ -176,6 +177,7 @@ export function seed(lab: Laboratory) {
     {
       clientId: 'meridian',
       clientReference: 'MT-REQ-0917',
+      clientContact: 'Marcus Hale, QC Release',
       courier: 'DHL Express',
       trackingNumber: '1Z-448-221-907',
       shippingCondition: 'refrigerated',
@@ -225,6 +227,7 @@ export function seed(lab: Laboratory) {
     {
       clientId: 'aster',
       clientReference: 'AL-2026-311',
+      clientContact: 'Elena Sorensen, Analytical Services',
       courier: 'FedEx',
       trackingNumber: '7489 2231 0045',
       shippingCondition: 'ambient',
@@ -250,6 +253,7 @@ export function seed(lab: Laboratory) {
     {
       clientId: 'aster',
       clientReference: 'AL-2026-318',
+      clientContact: 'Elena Sorensen, Analytical Services',
       courier: 'UPS',
       trackingNumber: '1Z-99A-331-0418',
       shippingCondition: 'refrigerated',
@@ -317,6 +321,7 @@ export function seed(lab: Laboratory) {
     {
       clientId: 'formulation-development',
       clientReference: 'FD-STAB-014',
+      clientContact: 'Jordan Okafor, Stability Programme',
       shippingCondition: 'ambient',
       packageCondition: 'intact',
       chainOfCustodyReference: 'COC-FD-014-6M',
@@ -350,6 +355,7 @@ export function seed(lab: Laboratory) {
     {
       clientId: 'harbor',
       clientReference: 'HH-QC-2609',
+      clientContact: 'Grace Lindqvist, QC Laboratory',
       courier: 'UPS',
       trackingNumber: '1Z-902-771-3304',
       shippingCondition: 'ambient',
@@ -506,6 +512,7 @@ export function seed(lab: Laboratory) {
             value,
             instrumentReading,
             sequenceId,
+            analysedOn: new Date().toISOString().slice(0, 10),
             attachmentId: worksheet.id,
             reason,
           },

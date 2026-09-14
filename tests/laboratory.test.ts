@@ -63,6 +63,7 @@ const rawMaterial = {
 const receipt = {
   type: 'receiveSubmission',
   clientId: 'northstar',
+  clientContact: 'Dana Wells, QA Northstar',
   shippingCondition: 'ambient',
   packageCondition: 'intact',
   samples: [finishedProduct],
@@ -115,12 +116,27 @@ function execute(lab: Laboratory, command: object, actor: string) {
 }
 /** The command as its actor would send it: signed with the actor's own
  * password if its type requires it, and an `enterResult` referencing the
- * lab's stored worksheet, unless the test supplies its own. */
+ * lab's stored worksheet and analysed on the day its Sample was received,
+ * unless the test supplies its own. */
 function sent(lab: Laboratory, command: object, actor: string) {
-  const type = (command as { type?: string }).type ?? '';
+  const { type = '', sampleId } = command as {
+    type?: string;
+    sampleId?: string;
+  };
+  const receivedOn = () =>
+    lab
+      .snapshot()
+      .samples.find((x) => x.id === sampleId)
+      ?.receivedAt.slice(0, 10);
   const withAttachment =
-    type === 'enterResult' && !('attachmentId' in command)
-      ? { attachmentId: worksheet(lab), ...command }
+    type === 'enterResult'
+      ? {
+          ...('attachmentId' in command
+            ? {}
+            : { attachmentId: worksheet(lab) }),
+          ...('analysedOn' in command ? {} : { analysedOn: receivedOn() }),
+          ...command,
+        }
       : command;
   return Object.hasOwn(signatureMeanings, type) && !('password' in command)
     ? { password: passwordOf(actor), ...withAttachment }
@@ -403,6 +419,7 @@ test('a receipt keeps the full Submission and Sample record', (t) => {
     client: 'Formulation Development',
     clientKind: 'internal',
     clientReference: 'PO-42',
+    clientContact: 'Dana Wells, QA Northstar',
     receivedAt: NOW,
     receivedAtCorrection: null,
     receivedBy: 'coordinator',
@@ -434,13 +451,15 @@ test('a receipt keeps the full Submission and Sample record', (t) => {
   );
 });
 
-test('received date/time, quantity, condition on receipt and batch/lot are mandatory', (t) => {
+test('Client contact, received date/time, quantity, condition on receipt and batch/lot are mandatory', (t) => {
   const lab = memory(t);
   const sample = (patch: object) => ({
     ...receipt,
     samples: [rawMaterial, { ...finishedProduct, ...patch }],
   });
   for (const [command, message] of [
+    [{ ...receipt, clientContact: ' ' }, /Enter the Client contact/],
+    [{ ...receipt, clientContact: undefined }, /Enter the Client contact/],
     [sample({ batch: ' ' }), /Sample 2, batch: Enter the batch or lot/],
     [sample({ batch: undefined }), /Sample 2, batch: Enter the batch or lot/],
     [
@@ -1115,6 +1134,7 @@ test('a retried command is replayed, not applied a second time', () => {
   const entry = {
     commandId: newCommandId(),
     attachmentId: worksheet(lab),
+    analysedOn: s.receivedAt.slice(0, 10),
     ...result(s, 'NIT-001-v1', 1),
   };
   lab.execute(entry, 'analyst');
@@ -1306,6 +1326,7 @@ test('the instrument reading and sequence ID are required and recorded', (t) => 
           e.field !== 'result.qualifier' &&
           e.field !== 'result.conformity' &&
           e.field !== 'result.attachmentId' &&
+          e.field !== 'result.analysedOn' &&
           !e.field.startsWith('result.limit.'),
       )
       .map(change),
@@ -1404,6 +1425,7 @@ test('receipt audits every field of the new Submission, Sample and Test', (t) =>
       ['client', 'Northstar Pharma'],
       ['clientKind', 'external'],
       ['clientReference', ''],
+      ['clientContact', 'Dana Wells, QA Northstar'],
       ['receivedAt', at],
       ['receivedBy', 'coordinator'],
       ['courier', ''],
@@ -1458,7 +1480,7 @@ test('receipt audits every field of the new Submission, Sample and Test', (t) =>
   }
   assert.deepEqual(
     entries.map((e) => e.sampleId),
-    [...Array(11).fill(null), ...Array(33).fill('26-00001')],
+    [...Array(12).fill(null), ...Array(33).fill('26-00001')],
   );
 });
 
@@ -1815,6 +1837,7 @@ test('enterResult audits old and new Result values with the reason for a change'
     [record, 'result.instrumentReading', null, 1.25, null],
     [record, 'result.sequenceId', null, 'SEQ-0001', null],
     [record, 'result.attachmentId', null, worksheet(lab), null],
+    [record, 'result.analysedOn', null, '2026-09-10', null],
     [record, 'result.limit.entry', null, 1, null],
     [record, 'result.limit.value', null, 26.5, null],
     [record, 'result.conformity', null, 'Complies', null],
@@ -3434,6 +3457,14 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
   ]);
   t.assert.snapshot(certificate.content);
 
+  // ISO/IEC 17025 7.8.2: the report content is locked, hashed content.
+  assert.equal(certificate.content.issuedAt, NOW, 'issued at Approval');
+  assert.equal(certificate.content.client.contact, 'Dana Wells, QA Northstar');
+  assert.deepEqual(
+    certificate.content.results.map((r) => r.analysedOn),
+    ['2026-09-10', '2026-09-10'],
+  );
+
   const document = renderCertificate(certificate.content);
   assert.equal(document.reference, 'Sample 26-00001 · Version 1');
   assert.equal(document.marker, null);
@@ -3442,6 +3473,7 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
     [
       'Analyte',
       'Method',
+      'Analysis date',
       'Result',
       'Unit',
       'Limit',
@@ -3452,6 +3484,7 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
       [
         'Impurity A',
         'NIT-001 v1 (LC-MS/MS)',
+        '2026-09-10',
         '30',
         'ng/day',
         '26.5 ng/day',
@@ -3461,6 +3494,7 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
       [
         'Impurity B',
         'NIT-003 v1 (LC-MS/MS)',
+        '2026-09-10',
         '< LOD (1)',
         'ng/day',
         '96 ng/day',
@@ -3472,15 +3506,80 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
   assert.deepEqual(
     document.sections.map((x) => x.heading),
     [
+      'Certificate',
       'Client and Submission',
       'Sample',
       'Stability study',
       'Receipt deviations',
       'Results',
       'Decision rule',
+      'Statements',
       'Electronic signatures',
     ],
   );
+  const section = (heading: string) =>
+    document.sections.find((x) => x.heading === heading);
+  const fieldLabels = (heading: string) => {
+    const found = section(heading);
+    return found?.kind === 'fields' && found.fields.map((f) => f.label);
+  };
+  assert.deepEqual(section('Certificate'), {
+    kind: 'fields',
+    heading: 'Certificate',
+    fields: [
+      { label: 'Date of issue', value: '2026-09-10 12:00:00 UTC' },
+      { label: 'Dates of testing', value: '2026-09-10' },
+    ],
+  });
+  assert.deepEqual(section('Client and Submission'), {
+    kind: 'fields',
+    heading: 'Client and Submission',
+    fields: [
+      { label: 'Client', value: 'Northstar Pharma' },
+      { label: 'Client contact †', value: 'Dana Wells, QA Northstar' },
+      { label: 'Client reference †', value: 'PO-4471' },
+      { label: 'Submission', value: 'S26-0001' },
+      { label: 'Received', value: '2026-09-10 12:00:00 UTC' },
+    ],
+  });
+  assert.deepEqual(fieldLabels('Sample'), [
+    'Lab Sample ID',
+    'Client sample ID †',
+    'Product †',
+    'Strength †',
+    'Batch / lot †',
+    'Manufacturer †',
+    'Manufacture date †',
+    'Expiry date †',
+    'Material type †',
+    'Maximum daily dose †',
+    'Quantity received',
+    'Containers',
+    'Condition on receipt',
+  ]);
+  assert.deepEqual(fieldLabels('Stability study'), [
+    'Study ID †',
+    'Time point †',
+    'Storage condition †',
+  ]);
+  assert.deepEqual(section('Decision rule'), {
+    kind: 'text',
+    heading: 'Decision rule',
+    paragraphs: [
+      'The Result is rounded to the decimal places of the Limit and complies when it is at or below the Limit. A Result reported as < LOD or < LOQ complies when that LOD or LOQ is below the Limit. Each Result is judged on its own.',
+      'Measurement uncertainty is not applied when providing statements of conformity; decision rules are not identified in regulation.',
+      'Each Result is judged individually. No combined nitrosamine assessment was made.',
+    ],
+  });
+  assert.deepEqual(section('Statements'), {
+    kind: 'text',
+    heading: 'Statements',
+    paragraphs: [
+      'The results relate only to the items tested.',
+      'The results apply to the Sample as received.',
+      '† Supplied by the Client. The laboratory is not responsible for this information; it can affect the validity of the Results, as the Maximum daily dose sets the ng/day Results and their Limit.',
+    ],
+  });
   assert.deepEqual(document.sections.at(-1), {
     kind: 'signatures',
     heading: 'Electronic signatures',
@@ -3564,13 +3663,13 @@ test('a raw material Certificate reports each Result with Report and no Limit', 
     ],
   );
   t.assert.snapshot(content);
-  const table = renderCertificate(content).sections.find(
-    (x) => x.kind === 'table',
-  );
+  const document = renderCertificate(content);
+  const table = document.sections.find((x) => x.kind === 'table');
   assert.deepEqual(table && [table.columns, table.rows, table.notes], [
     [
       'Analyte',
       'Method',
+      'Analysis date',
       'Result',
       'Unit',
       'Conformity statement',
@@ -3580,15 +3679,143 @@ test('a raw material Certificate reports each Result with Report and no Limit', 
       [
         'Impurity A',
         'NIT-001 v1 (LC-MS/MS)',
+        '2026-09-10',
         '< LOQ (0.03)',
         'ppm',
         'Report',
         '—',
       ],
-      ['Impurity C', 'NIT-005 v1 (LC-MS/MS)', '0.05', 'ppm', 'Report', '—'],
+      [
+        'Impurity C',
+        'NIT-005 v1 (LC-MS/MS)',
+        '2026-09-10',
+        '0.05',
+        'ppm',
+        'Report',
+        '—',
+      ],
     ],
     [],
   ]);
+  // No statement of conformity, so no measurement uncertainty statement, and
+  // no Maximum daily dose to name.
+  assert.deepEqual(
+    document.sections
+      .filter(
+        (x) => x.heading === 'Decision rule' || x.heading === 'Statements',
+      )
+      .map((x) => x.kind === 'text' && x.paragraphs),
+    [
+      [
+        'Raw materials have no Limit: each Result is reported as is, with the Conformity statement Report.',
+        'Each Result is judged individually. No combined nitrosamine assessment was made.',
+      ],
+      [
+        'The results relate only to the items tested.',
+        'The results apply to the Sample as received.',
+        '† Supplied by the Client. The laboratory is not responsible for this information, which can affect the validity of the Results.',
+      ],
+    ],
+  );
+});
+
+test('a Sample received before Client contacts were recorded is certified with the contact not recorded and unmarked', (t) => {
+  const folder = mkdtempSync(join(tmpdir(), 'lims-certificate-contact-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const file = join(folder, 'lab.sqlite');
+  const lab = new Laboratory(file, { clock: () => NOW, credentials: accounts });
+  let s = submitted(lab);
+  lab.close();
+  // The Submission as the build before Client contacts stored it.
+  const db = new DatabaseSync(file);
+  db.prepare(
+    "UPDATE submissions SET document = json_remove(document, '$.clientContact')",
+  ).run();
+  db.close();
+
+  const reopened = new Laboratory(file, {
+    clock: () => NOW,
+    credentials: accounts,
+  });
+  t.after(() => reopened.close());
+  s = run(reopened, { type: 'approve', ...target(s) }, 'manager');
+  const { content } = reopened.certificate(s.id);
+  assert.equal(content.client.contact, null);
+  assert.ok(!content.clientSupplied?.includes('clientContact'));
+  const client = renderCertificate(content).sections.find(
+    (x) => x.heading === 'Client and Submission',
+  );
+  assert.deepEqual(
+    client?.kind === 'fields' &&
+      client.fields.find((f) => f.label.startsWith('Client contact')),
+    { label: 'Client contact', value: 'Not recorded' },
+  );
+});
+
+test('a Certificate issued before its report content was recorded reads back and renders as issued, with its hash', (t) => {
+  const folder = mkdtempSync(join(tmpdir(), 'lims-certificate-before-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const file = join(folder, 'lab.sqlite');
+  const lab = new Laboratory(file, { clock: () => NOW, credentials: accounts });
+  let s = submitted(lab);
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  // Stored as the build before ISO/IEC 17025 7.8.2's content left it.
+  const {
+    issuedAt: _issued,
+    clientSupplied: _supplied,
+    statements: _statements,
+    uncertaintyStatement: _uncertainty,
+    ...earlier
+  } = structuredClone(lab.certificate(s.id).content);
+  delete earlier.client.contact;
+  for (const r of earlier.results) delete r.analysedOn;
+  const stored = JSON.stringify({ ...earlier, version: 2 });
+  const sha256 = createHash('sha256').update(stored).digest('hex');
+  lab.close();
+  const db = new DatabaseSync(file);
+  db.prepare(
+    'INSERT INTO certificates (sampleId, version, approvedAt, sha256, content, commandId) VALUES (?, 2, ?, ?, ?, ?)',
+  ).run(s.id, NOW, sha256, stored, new Uint8Array(16));
+  db.close();
+
+  const reopened = new Laboratory(file, {
+    clock: () => NOW,
+    credentials: accounts,
+  });
+  t.after(() => reopened.close());
+  const issued = reopened.certificate(s.id, 2);
+  assert.equal(JSON.stringify(issued.content), stored, 'read back unchanged');
+  assert.equal(issued.sha256, sha256);
+  const document = renderCertificate(issued.content);
+  assert.deepEqual(
+    document.sections.map((x) => x.heading),
+    [
+      'Client and Submission',
+      'Sample',
+      'Results',
+      'Decision rule',
+      'Electronic signatures',
+    ],
+  );
+  const table = document.sections.find((x) => x.kind === 'table');
+  assert.deepEqual(table?.kind === 'table' && table.columns, [
+    'Analyte',
+    'Method',
+    'Result',
+    'Unit',
+    'Limit',
+    'Conformity statement',
+    'OOS investigation',
+  ]);
+  assert.ok(!JSON.stringify(document).includes('†'), 'nothing is marked');
+  assert.deepEqual(
+    document.sections.find((x) => x.heading === 'Decision rule'),
+    {
+      kind: 'text',
+      heading: 'Decision rule',
+      paragraphs: [earlier.decisionRule, earlier.individualJudgement],
+    },
+  );
 });
 
 test('a Certificate stays as issued through replays, reference data changes and reopening', (t) => {
@@ -3996,6 +4223,7 @@ test('Client notification is recorded only for a confirmed OOS', (t) => {
     [
       'Impurity A',
       'NIT-001 v1 (LC-MS/MS)',
+      '2026-09-10',
       '< LOQ (3)',
       'ng/day',
       '26.5 ng/day',
@@ -4005,6 +4233,7 @@ test('Client notification is recorded only for a confirmed OOS', (t) => {
     [
       'Impurity B',
       'NIT-003 v1 (LC-MS/MS)',
+      '2026-09-10',
       '< LOQ (3)',
       'ng/day',
       '96 ng/day',
@@ -4457,6 +4686,7 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
   assert.deepEqual(rows?.kind === 'table' && rows.rows[0], [
     'Impurity A',
     'NIT-001 v1 (LC-MS/MS)',
+    '2026-09-10',
     '< LOQ (3)',
     'ng/day',
     '26.5 ng/day',
@@ -4471,7 +4701,11 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
     {
       kind: 'text',
       heading: 'Decision rule',
-      paragraphs: [v2.content.decisionRule, v2.content.individualJudgement],
+      paragraphs: [
+        v2.content.decisionRule,
+        'Measurement uncertainty is not applied when providing statements of conformity; decision rules are not identified in regulation.',
+        v2.content.individualJudgement,
+      ],
     },
   );
   // ISO/IEC 17025 7.8.8.1: the Retest's value change is a change to the

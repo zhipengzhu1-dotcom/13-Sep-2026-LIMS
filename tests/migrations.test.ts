@@ -308,6 +308,7 @@ function databaseBeforeCommandProtection(t: TestContext) {
     commandId: newCommandId(),
     type: 'receiveSubmission',
     clientId: 'northstar',
+    clientContact: 'Dana Wells, QA Northstar',
     shippingCondition: 'ambient',
     packageCondition: 'intact',
     samples: [
@@ -561,6 +562,7 @@ test('migrating to version 22 keeps every Acceptable intake entry, marked with n
       commandId: newCommandId(),
       type: 'receiveSubmission',
       clientId: 'northstar',
+      clientContact: 'Dana Wells, QA Northstar',
       shippingCondition: 'ambient',
       packageCondition: 'intact',
       samples: [
@@ -600,6 +602,7 @@ test('migrating to version 22 keeps every Acceptable intake entry, marked with n
       value: 2,
       instrumentReading: 1.25,
       sequenceId: 'SEQ-0001',
+      analysedOn: new Date().toISOString().slice(0, 10),
       attachmentId,
       reason: '',
     },

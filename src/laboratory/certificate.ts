@@ -37,6 +37,44 @@ export const individualJudgementStatement =
 export const rawMaterialDecisionRule =
   'Raw materials have no Limit: each Result is reported as is, with the Conformity statement Report.';
 
+/** PJLA PL-3 §2.1.3.1's US regulatory statement, printed with the decision
+ * rule of a Certificate that makes statements of conformity. */
+export const uncertaintyStatement =
+  'Measurement uncertainty is not applied when providing statements of conformity; decision rules are not identified in regulation.';
+
+/** ISO/IEC 17025 7.8.2.1 and 7.8.2.2. The Sample is tested as received;
+ * Benchline never samples. */
+export const itemsTestedStatement =
+  'The results relate only to the items tested.';
+export const asReceivedStatement =
+  'The results apply to the Sample as received.';
+
+/** The mark on a field the Client supplied. */
+export const clientSuppliedMark = '†';
+const clientSuppliedDisclaimer = (finished: boolean) =>
+  finished
+    ? `${clientSuppliedMark} Supplied by the Client. The laboratory is not responsible for this information; it can affect the validity of the Results, as the Maximum daily dose sets the ng/day Results and their Limit.`
+    : `${clientSuppliedMark} Supplied by the Client. The laboratory is not responsible for this information, which can affect the validity of the Results.`;
+
+/** Certificate fields whose values the Client supplied (ISO/IEC 17025
+ * 7.8.2.2), in the order the Certificate prints them; `stability` covers the
+ * study ID, time point and condition. */
+export const clientSuppliedFields = [
+  'clientContact',
+  'clientReference',
+  'clientSampleId',
+  'product',
+  'strength',
+  'batch',
+  'manufacturer',
+  'manufactureDate',
+  'expiryDate',
+  'materialType',
+  'maximumDailyDose',
+  'stability',
+] as const;
+export type ClientSuppliedField = (typeof clientSuppliedFields)[number];
+
 /** A signature manifestation as the Certificate prints it. */
 export type CertificateSignature = {
   meaning: SignatureMeaning;
@@ -53,6 +91,9 @@ export type CertificateResult = {
   methodCode: string;
   methodVersion: number;
   technique: string;
+  /** The reported Result's analysis date; null when it has none. Absent on
+   * a version issued before analysis dates were recorded. */
+  analysedOn?: string | null;
   value: number;
   qualifier: Qualifier;
   unit: ReportingUnit;
@@ -83,10 +124,26 @@ export type CertificateContent = {
   version: number;
   /** The time of the Approval that froze this version. */
   approvedAt: string;
+  /**
+   * The date of issue: the same Approval, printed as such (ADR-0008).
+   * Publishing records when the Certificate reached the Client.
+   *
+   * This and every other field marked absent on older versions came with
+   * ISO/IEC 17025 7.8.2's report content; a version issued before it has
+   * none of them and renders as it did.
+   */
+  issuedAt?: string;
   /** Null for version 1; an Amendment states why and what changed. */
   amendment: { reason: string; changeSummary: string } | null;
   laboratory: { name: string; address: string; accreditation: string };
-  client: { id: string; name: string; kind: ClientKind };
+  client: {
+    id: string;
+    name: string;
+    kind: ClientKind;
+    /** Null for a Submission received before contacts were recorded; absent
+     * on older versions. */
+    contact?: string | null;
+  };
   submission: {
     id: string;
     clientReference: string;
@@ -129,7 +186,15 @@ export type CertificateContent = {
   }[];
   results: CertificateResult[];
   decisionRule: string;
+  /** For a finished product; null for a raw material, absent on older
+   * versions. */
+  uncertaintyStatement?: string | null;
   individualJudgement: string;
+  /** The fields marked as supplied by the Client; absent on older versions. */
+  clientSupplied?: ClientSuppliedField[];
+  /** Printed under Statements: the items tested, as received, and the
+   * Client-supplied disclaimer; absent on older versions. */
+  statements?: string[];
   /** Performed by; for a version issued by an Amendment, amended by; then
    * approved by. */
   signatures: CertificateSignature[];
@@ -193,16 +258,29 @@ export function certificateContent({
   amendment?: CertificateContent['amendment'];
 }): CertificateContent {
   const finished = isFinishedProduct(sample.materialType);
+  // Only what the Certificate prints a value for is marked.
+  const unsupplied: ClientSuppliedField[] = [
+    ...(submission.clientContact === undefined
+      ? (['clientContact'] as const)
+      : []),
+    ...(finished ? [] : (['maximumDailyDose'] as const)),
+    ...(sample.stability ? [] : (['stability'] as const)),
+  ];
+  const clientSupplied = clientSuppliedFields.filter(
+    (f) => !unsupplied.includes(f),
+  );
   return {
     sampleId: sample.id,
     version,
     approvedAt,
+    issuedAt: approvedAt,
     amendment,
     laboratory: { ...laboratoryIdentity },
     client: {
       id: submission.clientId,
       name: submission.client,
       kind: submission.clientKind,
+      contact: submission.clientContact ?? null,
     },
     submission: {
       id: submission.id,
@@ -251,6 +329,7 @@ export function certificateContent({
         methodCode: test.methodCode,
         methodVersion: test.methodVersion,
         technique: test.technique,
+        analysedOn: r.analysedOn ?? null,
         value: r.value,
         qualifier: r.qualifier,
         unit: r.unit,
@@ -271,7 +350,14 @@ export function certificateContent({
       };
     }),
     decisionRule: finished ? decisionRule : rawMaterialDecisionRule,
+    uncertaintyStatement: finished ? uncertaintyStatement : null,
     individualJudgement: individualJudgementStatement,
+    clientSupplied,
+    statements: [
+      itemsTestedStatement,
+      asReceivedStatement,
+      clientSuppliedDisclaimer(finished),
+    ],
     signatures: signatures.map((s) => ({ ...s })),
   };
 }

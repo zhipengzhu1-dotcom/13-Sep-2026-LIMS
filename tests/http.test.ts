@@ -16,6 +16,7 @@ const receipt = () => ({
   commandId: newCommandId(),
   type: 'receiveSubmission',
   clientId: 'northstar',
+  clientContact: 'Dana Wells, QA Northstar',
   shippingCondition: 'ambient',
   packageCondition: 'intact',
   samples: [
@@ -322,6 +323,7 @@ test('locking an account on a signature ends its sessions, and its own password 
       value: 0.02,
       instrumentReading: 0.2,
       sequenceId: 'SEQ-0001',
+      analysedOn: new Date().toISOString().slice(0, 10),
       attachmentId: attachment.id,
       reason: '',
     },
@@ -575,6 +577,7 @@ test('a wrong signing password is refused without ending the session', async (t)
       value: 0.02,
       instrumentReading: 0.2,
       sequenceId: 'SEQ-0001',
+      analysedOn: new Date().toISOString().slice(0, 10),
       attachmentId: attachment.id,
       reason: '',
     },
@@ -741,6 +744,7 @@ test('a Result carries its worksheet, which Analyst and Manager download intact'
     value: 0.05,
     instrumentReading: 1.2,
     sequenceId: 'SEQ-1',
+    analysedOn: new Date().toISOString().slice(0, 10),
     attachmentId,
     reason: '',
   });
@@ -858,6 +862,7 @@ test("an approved Sample's Certificate is retrieved by signed-in users", async (
       value: 0.05,
       instrumentReading: 0.5,
       sequenceId: 'SEQ-0001',
+      analysedOn: new Date().toISOString().slice(0, 10),
       attachmentId: attachment.id,
       reason: '',
     },
@@ -993,6 +998,7 @@ test('an Admin signs in and acts in every role over HTTP, as themselves and with
     value: 0.02,
     instrumentReading: 0.2,
     sequenceId: 'SEQ-0001',
+    analysedOn: new Date().toISOString().slice(0, 10),
     attachmentId: attachment.id,
     reason: '',
   });

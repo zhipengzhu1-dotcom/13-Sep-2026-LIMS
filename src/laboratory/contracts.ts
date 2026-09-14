@@ -161,6 +161,10 @@ export type Result = {
   sequenceId: string;
   /** The calculation worksheet the value was derived from (ADR-0002). */
   attachmentId: string;
+  /** The UTC calendar date (YYYY-MM-DD) the Analyst ran the analysis, as
+   * entered; `enteredAt` stays the server time of recording. Absent on a
+   * Result entered before analysis dates were recorded. */
+  analysedOn?: string;
   enteredBy: string;
   enteredAt: string;
   /** Empty for a first Result; required when it replaces the current one. */
@@ -358,6 +362,10 @@ export type Submission = {
   client: string;
   clientKind: ClientKind;
   clientReference: string;
+  /** The person at the Client the Certificate of Analysis is for, as the
+   * Client gave it at receipt; absent on a Submission received before the
+   * contact was recorded. */
+  clientContact?: string;
   /** When the delivery arrived: the server time of the receipt, or the
    * Coordinator's corrected time when `receivedAtCorrection` is present. */
   receivedAt: string;
@@ -771,6 +779,7 @@ export const receiveSubmissionSchema = z.object({
   type: z.literal('receiveSubmission'),
   clientId: text,
   clientReference: optionalText,
+  clientContact: required('Client contact'),
   /** Omitted to take the server time. A correction must give a reason. */
   receivedAt: z
     .object({
@@ -811,6 +820,10 @@ export const commandSchema = z.discriminatedUnion('type', [
     instrumentReading: z.number().finite().nonnegative(),
     sequenceId: text,
     attachmentId: text,
+    analysedOn: z
+      .string({ error: 'Enter the analysis date.' })
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter the analysis date.')
+      .pipe(date),
     reason: z.string().trim().max(1000),
   }),
   z.object({

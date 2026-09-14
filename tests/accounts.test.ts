@@ -66,6 +66,7 @@ test('a user the Admin adds can act and sign; once deactivated they cannot, and 
   const receipt = {
     type: 'receiveSubmission',
     clientId: 'northstar',
+    clientContact: 'Dana Wells, QA Northstar',
     shippingCondition: 'ambient',
     packageCondition: 'intact',
     samples: [
@@ -105,6 +106,7 @@ test('a user the Admin adds can act and sign; once deactivated they cannot, and 
       value: 0.02,
       instrumentReading: 0.2,
       sequenceId: 'SEQ-0001',
+      analysedOn: '2026-09-14',
       attachmentId: sheet.id,
       reason: '',
     },
