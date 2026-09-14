@@ -7,12 +7,15 @@ import type { Person, Role } from '../laboratory/contracts.ts';
 import { WorkflowError } from '../laboratory/workflow-error.ts';
 import {
   accountCommandSchema,
+  issuedAccountSchema,
   leavesNoActiveAdmin,
+  ownPasswordSchema,
   NO_ACTIVE_ADMIN_LEFT,
   type AccountCommand,
   type AccountSummary,
 } from './account-contracts.ts';
 import {
+  generateOneTimePassword,
   hashPassword,
   verifyPassword,
   verifyPasswordSync,
@@ -41,7 +44,12 @@ const recordable = (typed: string) =>
     ? `${typed.slice(0, TYPED_USERNAME_LIMIT)}…`
     : typed;
 
-type Credentials = { id: string; active: number; passwordHash: string };
+type Credentials = {
+  id: string;
+  active: number;
+  passwordHash: string;
+  oneTimePassword: number;
+};
 
 /** One outbound email. */
 export type Mail = { to: readonly string[]; subject: string; text: string };
@@ -78,7 +86,8 @@ export class Accounts implements SignerCredentials {
       name TEXT NOT NULL,
       role TEXT NOT NULL,
       active INTEGER NOT NULL DEFAULT 1,
-      passwordHash TEXT NOT NULL);
+      passwordHash TEXT NOT NULL,
+      oneTimePassword INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS accessState (
       username TEXT PRIMARY KEY,
       failedAttempts INTEGER NOT NULL DEFAULT 0,
@@ -213,6 +222,100 @@ export class Accounts implements SignerCredentials {
     log.recordAccessEvent({ type: 'passwordSet', by, username });
   }
 
+  /**
+   * A new account the System administrator issues under its approved change
+   * record (ADR-0009), starting with a One-time password. Returns that
+   * password, the only time it exists outside its hash.
+   */
+  issueAccount(
+    account: { username: string; name: string; role: string },
+    by: string,
+    reference: string,
+    log: AccessEventLog,
+  ): string {
+    const parsed = issuedAccountSchema.safeParse(account);
+    if (!parsed.success)
+      throw new WorkflowError(
+        parsed.error.issues.map((issue) => issue.message).join(' '),
+      );
+    const { username, name, role } = parsed.data;
+    const oneTimePassword = generateOneTimePassword();
+    this.insertAccount(
+      { username, name, role, password: oneTimePassword },
+      true,
+    );
+    log.recordAccessEvent({
+      type: 'accountAdded',
+      by,
+      username,
+      name,
+      role,
+      reference,
+    });
+    log.recordAccessEvent({
+      type: 'oneTimePasswordIssued',
+      by,
+      username,
+      reference,
+    });
+    return oneTimePassword;
+  }
+
+  /**
+   * The System administrator's unlock under its approved Form (ADR-0009): the
+   * account's password becomes a new One-time password, returned the only
+   * time it exists outside its hash, so whoever locked it cannot simply carry
+   * on guessing the old one.
+   */
+  unlockWithOneTimePassword(
+    username: string,
+    by: string,
+    reference: string,
+    log: AccessEventLog,
+  ): string {
+    const account = this.account(username);
+    if (!account.locked)
+      throw new WorkflowError(
+        `${account.name} is not locked. Nothing was changed.`,
+        409,
+      );
+    const oneTimePassword = generateOneTimePassword();
+    // Both at once, so an unlocked account never keeps its old password.
+    // The Access events are written after, through the audit trail's own
+    // connection, which would wait on this transaction's lock.
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db
+        .prepare(
+          'UPDATE accessState SET locked = 0, failedAttempts = 0 WHERE username = ?',
+        )
+        .run(username);
+      this.db
+        .prepare(
+          'UPDATE users SET passwordHash = ?, oneTimePassword = 1 WHERE id = ?',
+        )
+        .run(hashPassword(oneTimePassword), username);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    log.recordAccessEvent({
+      type: 'unlock',
+      by,
+      username,
+      clearedFailedAttempts: account.failedAttempts,
+      reference,
+    });
+    log.recordAccessEvent({
+      type: 'oneTimePasswordIssued',
+      by,
+      username,
+      reference,
+    });
+    return oneTimePassword;
+  }
+
   /** The demo server command's unlock, for a lone Admin locked out, named as
    * the System administrator who ran it (ADR-0011). */
   unlockByServerCommand(username: string, by: string, log: AccessEventLog) {
@@ -252,6 +355,16 @@ export class Accounts implements SignerCredentials {
     by: string,
     log: AccessEventLog,
   ) {
+    this.insertAccount({ username, name, role, password }, false);
+    log.recordAccessEvent({ type: 'accountAdded', by, username, name, role });
+  }
+
+  /** A new, active account, its password hashed and marked one-time or not. */
+  private insertAccount(
+    account: { username: string; name: string; role: string; password: string },
+    oneTimePassword: boolean,
+  ) {
+    const { username, name, role, password } = account;
     // A username is never reused, deactivated or not.
     if (this.credentials(username))
       throw new WorkflowError(
@@ -260,13 +373,18 @@ export class Accounts implements SignerCredentials {
       );
     this.db
       .prepare(
-        'INSERT INTO users (id, name, role, active, passwordHash) VALUES (?, ?, ?, 1, ?)',
+        'INSERT INTO users (id, name, role, active, passwordHash, oneTimePassword) VALUES (?, ?, ?, 1, ?, ?)',
       )
-      .run(username, name, role, hashPassword(password));
+      .run(
+        username,
+        name,
+        role,
+        hashPassword(password),
+        oneTimePassword ? 1 : 0,
+      );
     // Failed attempts typed under this username before it was an account
     // stay in the audit trail; the new account starts unlocked.
     this.db.prepare('DELETE FROM accessState WHERE username = ?').run(username);
-    log.recordAccessEvent({ type: 'accountAdded', by, username, name, role });
   }
 
   /** Changes a printed name or role, or deactivates or reactivates, never
@@ -295,13 +413,14 @@ export class Accounts implements SignerCredentials {
     log.recordAccessEvent({ type: 'accountChanged', by, username, changes });
   }
 
-  /** An active user by ID who is not locked, or null. Every session of a
-   * Locked account is refused on its next request. */
+  /** An active user by ID who is not locked and has a password of their own,
+   * or null. Every session of a Locked account is refused on its next
+   * request. */
   find(id: string): User | null {
     const row = this.db
       .prepare(
         `SELECT id, name, role FROM users WHERE id = ? AND active = 1
-         AND NOT EXISTS (SELECT 1 FROM accessState WHERE username = id AND locked = 1)`,
+         AND oneTimePassword = 0 AND NOT EXISTS (SELECT 1 FROM accessState WHERE username = id AND locked = 1)`,
       )
       .get(id) as User | undefined;
     return row ? { id: row.id, name: row.name, role: row.role } : null;
@@ -321,32 +440,107 @@ export class Accounts implements SignerCredentials {
     | { outcome: 'signedIn'; user: User }
     | { outcome: 'incorrect' }
     | { outcome: 'locked' }
+    /** The password is right but one-time: it only sets a new one. */
+    | { outcome: 'oneTimePassword' }
   > {
+    const row = await this.passwordOf(
+      username,
+      password,
+      'Wrong password at sign-in',
+      log,
+    );
+    if ('outcome' in row) return row;
+    if (row.oneTimePassword) return { outcome: 'oneTimePassword' };
+    return this.signedIn(row.id, log);
+  }
+
+  /**
+   * The unlocked, active account this password belongs to, or the refusal. A
+   * wrong password or an unknown username is a Failed attempt, recorded with
+   * `reason`; a miss costs the same scrypt work as a wrong password.
+   */
+  private async passwordOf(
+    username: string,
+    password: string,
+    reason: string,
+    log: AccessEventLog,
+  ): Promise<Credentials | { outcome: 'incorrect' } | { outcome: 'locked' }> {
     const row = this.credentials(username);
     const matches = await verifyPassword(
       password,
       row?.passwordHash ?? DECOY_HASH,
     );
     if (!row?.active || !matches)
-      return this.recordFailedAttempt(
-        username,
-        'Wrong password at sign-in',
-        log,
-      )
+      return this.recordFailedAttempt(username, reason, log)
         ? { outcome: 'locked' }
         : { outcome: 'incorrect' };
     if (this.isLocked(row.id)) return { outcome: 'locked' };
+    return row;
+  }
+
+  /**
+   * Replaces a One-time password with the user's own, which then signs them
+   * in (ADR-0009). The new password is checked before the One-time password,
+   * so a refusal never tells whether it was right; a wrong One-time password
+   * is a Failed attempt.
+   */
+  async replaceOneTimePassword(
+    username: string,
+    oneTimePassword: string,
+    newPassword: string,
+    log: AccessEventLog,
+  ): ReturnType<Accounts['signIn']> {
+    const rule = ownPasswordSchema.safeParse(newPassword);
+    if (!rule.success)
+      throw new WorkflowError(
+        rule.error.issues.map((issue) => issue.message).join(' '),
+      );
+    if (newPassword === oneTimePassword)
+      throw new WorkflowError(
+        'Choose a new password, not the One-time password.',
+      );
+    const row = await this.passwordOf(
+      username,
+      oneTimePassword,
+      'Wrong One-time password when setting a new password',
+      log,
+    );
+    if ('outcome' in row) return row;
+    if (!row.oneTimePassword)
+      throw new WorkflowError(
+        `${this.find(row.id)?.name ?? row.id} has no One-time password to replace.`,
+        409,
+      );
+    this.db
+      .prepare(
+        'UPDATE users SET passwordHash = ?, oneTimePassword = 0 WHERE id = ?',
+      )
+      .run(hashPassword(newPassword), row.id);
+    log.recordAccessEvent({
+      type: 'passwordSet',
+      by: row.id,
+      username: row.id,
+    });
+    return this.signedIn(row.id, log);
+  }
+
+  /** A successful sign-in, which clears the consecutive Failed attempts. */
+  private signedIn(
+    id: string,
+    log: AccessEventLog,
+  ): { outcome: 'signedIn'; user: User } {
     log.recordAccessEvent({
       type: 'signIn',
-      username: row.id,
-      clearedFailedAttempts: this.resetFailedAttempts(row.id),
+      username: id,
+      clearedFailedAttempts: this.resetFailedAttempts(id),
     });
-    return { outcome: 'signedIn', user: this.find(row.id)! };
+    return { outcome: 'signedIn', user: this.find(id)! };
   }
 
   /** Whether this is the active user's own password, for an Electronic
-   * signature; anything else is a Failed attempt, recorded through `log`. An
-   * unknown or inactive user costs the same work and never matches. */
+   * signature; anything else, a One-time password included, is a Failed
+   * attempt, recorded through `log`. An unknown or inactive user costs the
+   * same work and never matches. */
   verifySigner(
     userId: string,
     password: string,
@@ -358,7 +552,7 @@ export class Accounts implements SignerCredentials {
       password,
       row?.passwordHash ?? DECOY_HASH,
     );
-    if (!row?.active || !matches)
+    if (!row?.active || !matches || row.oneTimePassword)
       return this.recordFailedAttempt(userId, attempt, log)
         ? 'locked'
         : 'incorrect';
@@ -370,7 +564,9 @@ export class Accounts implements SignerCredentials {
   private credentials(id: string): Credentials | null {
     return (
       (this.db
-        .prepare('SELECT id, active, passwordHash FROM users WHERE id = ?')
+        .prepare(
+          'SELECT id, active, passwordHash, oneTimePassword FROM users WHERE id = ?',
+        )
         .get(id) as Credentials | undefined) ?? null
     );
   }

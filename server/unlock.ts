@@ -25,7 +25,7 @@ export function unlockFromServer({
 }): string {
   if (env.BENCHLINE_MODE === 'production')
     throw new WorkflowError(
-      'The unlock command is for the demo only. In production the System administrator unlocks accounts (#66).',
+      'The unlock command is for the demo only. In production the System administrator unlocks accounts with `npm run system-administrator -- unlock`.',
       403,
     );
   const read = readSettings(env);

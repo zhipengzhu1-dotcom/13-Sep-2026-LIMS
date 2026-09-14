@@ -442,7 +442,9 @@ export type AuditRecordType =
   | 'Certificate of Analysis'
   | 'Acceptable intake'
   | 'Attachment'
-  | 'Account';
+  | 'Account'
+  /** A backup of the database, by the file it was taken to or restored from. */
+  | 'Backup';
 /** An Access event: an audit entry about an account rather than a record
  * (ADR-0010), as the accounts store and sessions report it. Never a
  * password. */
@@ -472,6 +474,8 @@ export type AccessEvent =
       username: string;
       /** The consecutive Failed attempts the unlock cleared. */
       clearedFailedAttempts: number;
+      /** The approved Form the System administrator cites. */
+      reference?: string;
     }
   | {
       type: 'accountChanged';
@@ -486,11 +490,21 @@ export type AccessEvent =
     }
   | {
       type: 'accountAdded';
-      /** The Admin who added it. */
+      /** The Admin, or the System administrator, who added it. */
       by: string;
       username: string;
       name: string;
       role: Role;
+      /** The approved change record the System administrator cites. */
+      reference?: string;
+    }
+  | {
+      type: 'oneTimePasswordIssued';
+      /** The System administrator who issued it. */
+      by: string;
+      username: string;
+      /** The approved Form or change record it was issued under. */
+      reference: string;
     }
   | {
       type: 'lockoutNotice';
@@ -503,7 +517,47 @@ export type AccessEventType = AccessEvent['type'];
 /** What an audit entry records the doing of: a command, the upload of a
  * worksheet attachment, which is stored outside the command seam, or an
  * Access event. */
-export type AuditedAct = Command['type'] | 'storeAttachment' | AccessEventType;
+export type AuditedAct =
+  | Command['type']
+  | 'storeAttachment'
+  | AccessEventType
+  /** The System administrator's backup and restore of the database. */
+  | 'backup'
+  | 'restore';
+
+/** How the audit trail names each act, on screen and on the System
+ * administrator's printouts. */
+export const auditedActLabels: Record<AuditedAct, string> = {
+  receiveSubmission: 'Received',
+  assign: 'Assigned',
+  enterResult: 'Result entered',
+  submitForApproval: 'Submitted',
+  approve: 'Approved',
+  return: 'Returned',
+  openOosInvestigation: 'OOS investigation opened',
+  recordLabErrorCheck: 'Lab error check recorded',
+  concludeOosInvestigation: 'OOS investigation concluded',
+  recordReceiptDeviation: 'Receipt deviation recorded',
+  recordClientInstruction: 'Client instruction recorded',
+  recordClientOosNotification: 'Client informed of confirmed OOS',
+  publish: 'Published',
+  startAmendment: 'Amendment started',
+  appendAcceptableIntake: 'Acceptable intake entry added',
+  storeAttachment: 'Worksheet uploaded',
+  signIn: 'Signed in',
+  signOut: 'Signed out',
+  sessionExpiry: 'Session expired',
+  failedAttempt: 'Failed attempt',
+  lockout: 'Account locked',
+  lockoutNotice: 'Lockout notice',
+  accountAdded: 'Account added',
+  accountChanged: 'Account changed',
+  passwordSet: 'Password changed',
+  unlock: 'Account unlocked',
+  oneTimePasswordIssued: 'One-time password issued',
+  backup: 'Backup taken',
+  restore: 'Restored from backup',
+};
 /** A single field's value as the audit trail keeps it. */
 export type AuditValue = string | number | boolean | null;
 

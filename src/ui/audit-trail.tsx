@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  auditedActLabels,
   auditEntriesOfEventType,
   auditEntriesWithin,
   type AuditEntry,
@@ -11,35 +12,6 @@ import {
 } from '../laboratory/contracts';
 import { type Filter } from './register';
 import { InvalidSignatureTag, personName, stamp } from './shared';
-
-export const COMMAND_LABELS: Record<string, string> = {
-  receiveSubmission: 'Received',
-  assign: 'Assigned',
-  enterResult: 'Result entered',
-  submitForApproval: 'Submitted',
-  approve: 'Approved',
-  return: 'Returned',
-  openOosInvestigation: 'OOS investigation opened',
-  recordLabErrorCheck: 'Lab error check recorded',
-  concludeOosInvestigation: 'OOS investigation concluded',
-  recordReceiptDeviation: 'Receipt deviation recorded',
-  recordClientInstruction: 'Client instruction recorded',
-  recordClientOosNotification: 'Client informed of confirmed OOS',
-  publish: 'Published',
-  startAmendment: 'Amendment started',
-  appendAcceptableIntake: 'Acceptable intake entry added',
-  storeAttachment: 'Worksheet uploaded',
-  signIn: 'Signed in',
-  signOut: 'Signed out',
-  sessionExpiry: 'Session expired',
-  failedAttempt: 'Failed attempt',
-  lockout: 'Account locked',
-  lockoutNotice: 'Lockout notice',
-  accountAdded: 'Account added',
-  accountChanged: 'Account changed',
-  passwordSet: 'Password changed',
-  unlock: 'Account unlocked',
-};
 
 /** The lab-wide audit trail, narrowed to a period of UTC calendar days and
  * to Access events or record changes. */
@@ -154,7 +126,7 @@ export function AuditTable({
               <th colSpan={5} scope="rowgroup">
                 <time dateTime={first.at}>{stamp(first.at)}</time>
                 <span className={'action a-' + first.commandType}>
-                  {COMMAND_LABELS[first.commandType] ?? first.commandType}
+                  {auditedActLabels[first.commandType] ?? first.commandType}
                 </span>
                 <span>{personName(data, first.actor) ?? first.actor}</span>
                 {data.signatures.some(

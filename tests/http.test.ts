@@ -83,7 +83,7 @@ async function serve(t: TestContext, mode: Mode = 'demo') {
       headers: { 'Content-Type': contentType, ...headers },
       body: new Uint8Array(body),
     });
-  return { lab, url, clock, post, signIn, upload };
+  return { lab, accounts, url, clock, post, signIn, upload };
 }
 
 test('sign-in with correct credentials starts an HttpOnly session', async (t) => {
@@ -108,6 +108,64 @@ test('sign-in with correct credentials starts an HttpOnly session', async (t) =>
   });
   assert.equal(session.status, 200);
   assert.equal((await session.json()).user.name, 'Morgan Lee');
+});
+
+test('a One-time password starts no session; setting a new password signs the user in', async (t) => {
+  const { lab, accounts, url, post } = await serve(t, 'production');
+  const oneTimePassword = accounts.issueAccount(
+    { username: 'robin', name: 'Robin Hale', role: 'analyst' },
+    'System administrator (lab-server-user)',
+    'Change record CR-2026-014',
+    lab,
+  );
+  const signIn = await post('/api/sign-in', {
+    username: 'robin',
+    password: oneTimePassword,
+  });
+  assert.equal(signIn.status, 403);
+  assert.equal(signIn.headers.get('set-cookie'), null);
+  assert.deepEqual(await signIn.json(), {
+    error:
+      'This is a One-time password. Set a password of your own to continue.',
+    code: 'oneTimePassword',
+  });
+
+  const short = await post('/api/password', {
+    username: 'robin',
+    password: oneTimePassword,
+    newPassword: 'short',
+  });
+  assert.equal(short.status, 400);
+  assert.deepEqual(await short.json(), {
+    error: 'A password needs at least 12 characters.',
+  });
+  const wrong = await post('/api/password', {
+    username: 'robin',
+    password: 'not-the-one-time',
+    newPassword: 'robin-own-password',
+  });
+  assert.equal(wrong.status, 401);
+  assert.deepEqual(await wrong.json(), {
+    error: 'Incorrect username or password.',
+  });
+
+  const set = await post('/api/password', {
+    username: 'robin',
+    password: oneTimePassword,
+    newPassword: 'robin-own-password',
+  });
+  assert.equal(set.status, 200);
+  assert.deepEqual((await set.json()).user, {
+    id: 'robin',
+    name: 'Robin Hale',
+    role: 'analyst',
+  });
+  const cookie = set.headers.get('set-cookie')!;
+  assert.match(cookie, /Secure/);
+  const session = await fetch(url + '/api/session', {
+    headers: { Cookie: cookie.split(';')[0] },
+  });
+  assert.equal((await session.json()).user.id, 'robin');
 });
 
 test('wrong credentials are rejected with a clear message', async (t) => {

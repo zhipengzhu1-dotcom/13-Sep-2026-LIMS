@@ -63,6 +63,20 @@ function hashOf(row: Omit<Row, 'sha256'>): string {
 /** Whether a stored row still matches its hash. */
 const matches = ({ sha256, ...row }: Row) => hashOf(row) === sha256;
 
+/** Every stored signature's command key (hex), meaning and signer, with
+ * whether it still matches its hash. Only reads, so a copy under
+ * verification is left exactly as it is. */
+export function storedSignatures(
+  db: DatabaseSync,
+): { key: string; meaning: string; signerId: string; valid: boolean }[] {
+  return (db.prepare(`${columns} ORDER BY id`).all() as Row[]).map((row) => ({
+    key: row.key,
+    meaning: row.meaning,
+    signerId: row.signerId,
+    valid: parseStored(row.command) !== null && matches(row),
+  }));
+}
+
 /**
  * Electronic signatures as recorded, each kept with the key of the command it
  * signed and a copy of its Signed content, bound by a hash checked on every

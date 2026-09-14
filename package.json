@@ -11,6 +11,7 @@
     "build": "tsc --noEmit && vite build",
     "start": "tsx server/main.ts",
     "unlock": "tsx server/unlock.ts",
+    "system-administrator": "tsx server/system-administrator.ts",
     "rehearse-migration": "tsx server/rehearse-migration.ts",
     "test": "tsx --test tests/*.test.ts",
     "check": "npm run build && npm test",

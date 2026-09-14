@@ -300,12 +300,13 @@ export class Laboratory {
           audit.change(account, 'password', null, 'changed');
           break;
         case 'unlock':
-          audit.change(account, 'locked', true, false);
+          audit.change(account, 'locked', true, false, event.reference);
           audit.change(
             account,
             'consecutiveFailedAttempts',
             event.clearedFailedAttempts,
             0,
+            event.reference,
           );
           break;
         case 'accountChanged':
@@ -313,9 +314,19 @@ export class Laboratory {
             audit.change(account, field, from, to);
           break;
         case 'accountAdded':
-          audit.change(account, 'name', null, event.name);
-          audit.change(account, 'role', null, event.role);
-          audit.change(account, 'active', null, true);
+          audit.change(account, 'name', null, event.name, event.reference);
+          audit.change(account, 'role', null, event.role, event.reference);
+          audit.change(account, 'active', null, true, event.reference);
+          break;
+        case 'oneTimePasswordIssued':
+          // The fact of the issue only; never the password.
+          audit.change(
+            account,
+            'password',
+            null,
+            'One-time password issued',
+            event.reference,
+          );
           break;
         case 'lockoutNotice':
           audit.change(
@@ -326,6 +337,48 @@ export class Laboratory {
             event.reason,
           );
       }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /**
+   * Records a backup the System administrator took, or the restore that put
+   * this database in place: the backup file, whether it passed its checks,
+   * and its SHA-256, so the copy can be traced. `reason` is the change record
+   * cited, or what failed.
+   */
+  recordBackup(event: {
+    type: 'backup' | 'restore';
+    by: string;
+    file: string;
+    passed: boolean;
+    sha256: string;
+    reason?: string;
+  }) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const record = {
+        type: 'Backup',
+        id: event.file,
+        sampleId: null,
+      } as const;
+      const audit = this.audit.writer({
+        actor: event.by,
+        at: this.clock(),
+        commandType: event.type,
+        commandId: newCommandId(),
+      });
+      audit.change(
+        record,
+        'verification',
+        null,
+        event.passed ? 'passed' : 'failed',
+        event.reason,
+      );
+      audit.change(record, 'sha256', null, event.sha256, event.reason);
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');

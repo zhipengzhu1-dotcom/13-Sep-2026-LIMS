@@ -22,6 +22,25 @@ function scrypt(password: string, salt: Buffer, options: ScryptOptions) {
   );
 }
 
+/** Letters and digits nobody misreads when a password is read out or copied
+ * from a printout: no 0/O, 1/I/L. */
+const ONE_TIME_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+/** A random One-time password of four groups of four, about 79 bits. */
+export function generateOneTimePassword(): string {
+  const characters = [...randomBytes(16)].map(
+    // 256 is not a multiple of 31, so reject the few bytes that would bias it.
+    function pick(byte): string {
+      return byte < 248
+        ? ONE_TIME_ALPHABET[byte % ONE_TIME_ALPHABET.length]
+        : pick(randomBytes(1)[0]);
+    },
+  );
+  return [0, 4, 8, 12]
+    .map((start) => characters.slice(start, start + 4).join(''))
+    .join('-');
+}
+
 export function hashPassword(password: string): string {
   const salt = randomBytes(16);
   const hash = scryptSync(password, salt, KEY_LENGTH, COST);

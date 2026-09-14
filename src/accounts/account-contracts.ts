@@ -22,6 +22,9 @@ const password = z
   .min(12, 'A password needs at least 12 characters.')
   .max(200, 'A password is at most 200 characters.');
 
+/** A password a user or the Admin chooses (SOP-Management#19). */
+export const ownPasswordSchema = password;
+
 export const accountCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('addAccount'), username, name, role, password }),
   z.object({
@@ -35,6 +38,10 @@ export const accountCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('unlockAccount'), username: z.string() }),
 ]);
 export type AccountCommand = z.infer<typeof accountCommandSchema>;
+
+/** An account the System administrator issues; it has no password until
+ * Benchline generates its One-time password. */
+export const issuedAccountSchema = z.object({ username, name, role });
 
 /** The refusal for a change that would leave no active Admin. */
 export const NO_ACTIVE_ADMIN_LEFT =

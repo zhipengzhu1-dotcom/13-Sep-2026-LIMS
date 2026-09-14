@@ -938,9 +938,108 @@ export function SignIn({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  /** Set once the server refuses a One-time password: the only way on is
+   * setting a password of one's own. */
+  const [oneTime, setOneTime] = useState<{
+    username: string;
+    password: string;
+  } | null>(null);
+  if (oneTime)
+    return (
+      <main className="sign-in">
+        <form
+          // Its own key, so none of the sign-in form's inputs, the One-time
+          // password above all, are reused with their typed values.
+          key="new-password"
+          className="form sign-in-card"
+          aria-labelledby="new-password-title"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const f = new FormData(e.currentTarget);
+            const newPassword = String(f.get('newPassword'));
+            setError('');
+            if (newPassword !== String(f.get('confirmPassword'))) {
+              setError('The two new passwords do not match.');
+              return;
+            }
+            setBusy(true);
+            try {
+              const response = await fetch('/api/password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...oneTime, newPassword }),
+              });
+              const result = await response.json();
+              if (!response.ok) throw new Error(result.error);
+              onSignedIn(result.user);
+            } catch (err) {
+              setError(
+                err instanceof Error && err.message
+                  ? err.message
+                  : 'Unable to set the password. Please try again.',
+              );
+              setBusy(false);
+            }
+          }}
+        >
+          <div className="sign-in-brand">
+            <span className="mark" aria-hidden="true">
+              b
+            </span>
+            <h1 id="new-password-title">Set a new password</h1>
+          </div>
+          <p className="sign-in-note">
+            The password for {oneTime.username} is a One-time password. Choose a
+            password of your own, at least 12 characters, to sign in.
+          </p>
+          {error && (
+            <p role="alert" className="flash inline error">
+              {error}
+            </p>
+          )}
+          <label>
+            New password
+            <input
+              name="newPassword"
+              type="password"
+              autoComplete="new-password"
+              required
+              autoFocus
+              minLength={12}
+              maxLength={200}
+            />
+          </label>
+          <label>
+            Confirm new password
+            <input
+              name="confirmPassword"
+              type="password"
+              autoComplete="new-password"
+              required
+              minLength={12}
+              maxLength={200}
+            />
+          </label>
+          <button className="btn primary" disabled={busy}>
+            {busy ? 'Setting password…' : 'Set password and sign in'}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              setOneTime(null);
+              setError('');
+            }}
+          >
+            Back to sign-in
+          </button>
+        </form>
+      </main>
+    );
   return (
     <main className="sign-in">
       <form
+        key="sign-in"
         className="form sign-in-card"
         aria-labelledby="sign-in-title"
         onSubmit={async (e) => {
@@ -949,15 +1048,21 @@ export function SignIn({
           setBusy(true);
           setError('');
           try {
+            const credentials = {
+              username: String(f.get('username')),
+              password: String(f.get('password')),
+            };
             const response = await fetch('/api/sign-in', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                username: String(f.get('username')),
-                password: String(f.get('password')),
-              }),
+              body: JSON.stringify(credentials),
             });
             const result = await response.json();
+            if (result.code === 'oneTimePassword') {
+              setOneTime(credentials);
+              setBusy(false);
+              return;
+            }
             if (!response.ok) throw new Error(result.error);
             onSignedIn(result.user);
           } catch (err) {

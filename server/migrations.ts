@@ -2,8 +2,8 @@ import { rmSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
-import { SignatureStore } from '../src/laboratory/signature-store.ts';
 import { sha256 } from '../src/laboratory/attachments.ts';
+import { verifyDatabase } from './backup.ts';
 
 /**
  * One change to the schema of the Benchline database file, applied once, in
@@ -87,6 +87,19 @@ export const migrations: readonly Migration[] = [
       db.exec(`
   ALTER TABLE acceptableIntakes ADD COLUMN potencyCategory TEXT;
   ALTER TABLE acceptableIntakes ADD COLUMN limitType TEXT;`),
+  },
+  {
+    version: 23,
+    change: 'Accounts record whether their password is a One-time password',
+    // Existing passwords are the users' own. Added only when absent, as the
+    // triggers of versions 20 and 21 are, since the accounts store creates it
+    // in a new database.
+    apply: (db) => {
+      if (!columnNames(db, 'users').includes('oneTimePassword'))
+        db.exec(
+          'ALTER TABLE users ADD COLUMN oneTimePassword INTEGER NOT NULL DEFAULT 0',
+        );
+    },
   },
 ];
 
@@ -278,54 +291,23 @@ export function rehearseMigration(
   );
   if (drift) problems.push(drift);
 
-  return reading(copy, (db) => {
-    const now = new Map(rowCounts(db));
-    const signatures = new SignatureStore(db).list();
-    const invalid = signatures.filter((s) => !s.valid).length;
-    if (invalid)
-      problems.push(
-        `${invalid} ${agree(invalid, 'Electronic signature does not match its', 'Electronic signatures do not match their')} Signed content.`,
-      );
-    const certificates = hashMismatches(db, 'certificates');
-    if (certificates.mismatched)
-      problems.push(
-        `${certificates.mismatched} ${agree(certificates.mismatched, 'Certificate of Analysis does not match its', 'Certificates of Analysis do not match their')} hash.`,
-      );
-    const attachments = hashMismatches(db, 'attachments');
-    if (attachments.mismatched)
-      problems.push(
-        `${attachments.mismatched} ${agree(attachments.mismatched, 'attachment does not match its', 'attachments do not match their')} hash.`,
-      );
-    return {
-      passed: problems.length === 0,
-      migration,
-      tables: counts.map(([table, before]) => ({
-        table,
-        before,
-        after: now.get(table) ?? null,
-      })),
-      signatures: { checked: signatures.length, invalid },
-      certificates,
-      attachments,
-      problems,
-    };
-  });
-}
-
-/** Rows whose stored SHA-256 no longer matches their content as stored. */
-function hashMismatches(
-  db: DatabaseSync,
-  table: 'certificates' | 'attachments',
-) {
-  let checked = 0;
-  let mismatched = 0;
-  for (const row of db
-    .prepare(`SELECT sha256, content FROM ${table}`)
-    .iterate() as Iterable<{ sha256: string; content: string | Uint8Array }>) {
-    checked++;
-    if (sha256(Buffer.from(row.content)) !== row.sha256) mismatched++;
-  }
-  return { checked, mismatched };
+  const now = new Map(reading(copy, rowCounts));
+  // The same checks a backup gets.
+  const verification = verifyDatabase(copy);
+  problems.push(...verification.problems);
+  return {
+    passed: problems.length === 0,
+    migration,
+    tables: counts.map(([table, before]) => ({
+      table,
+      before,
+      after: now.get(table) ?? null,
+    })),
+    signatures: verification.signatures,
+    certificates: verification.certificates,
+    attachments: verification.attachments,
+    problems,
+  };
 }
 
 /** The schema of a new database, created as the server creates one. */

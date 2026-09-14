@@ -75,6 +75,39 @@ export function api(
         }
         return user;
       };
+      /** The reply to a sign-in, or to replacing a One-time password. */
+      const signedIn = (
+        attempt: Awaited<ReturnType<Accounts['signIn']>>,
+        typed: string,
+      ) => {
+        if (attempt.outcome === 'incorrect')
+          return send(401, { error: 'Incorrect username or password.' });
+        // The lock ends every session of the account at once (ADR-0009).
+        if (attempt.outcome === 'locked') {
+          sessions.endAll(typed);
+          return send(403, {
+            error: 'This account is locked. Contact the System administrator.',
+            code: 'accountLocked',
+          });
+        }
+        if (attempt.outcome === 'oneTimePassword')
+          return send(403, {
+            error:
+              'This is a One-time password. Set a password of your own to continue.',
+            code: 'oneTimePassword',
+          });
+        sessions.end(token);
+        return send(
+          200,
+          { user: attempt.user },
+          {
+            'Set-Cookie': sessionCookie(
+              sessions.start(attempt.user.id),
+              secure,
+            ),
+          },
+        );
+      };
 
       // Public, so the sign-in screen lists demo accounts only in the demo.
       if (route === 'GET /api/instance') return send(200, { mode });
@@ -116,6 +149,7 @@ export function api(
       if (
         ![
           'POST /api/sign-in',
+          'POST /api/password',
           'POST /api/sign-out',
           'POST /api/commands',
           'POST /api/accounts',
@@ -142,26 +176,30 @@ export function api(
           return send(401, { error: 'Incorrect username or password.' });
         const typed = username.trim();
         const attempt = await accounts.signIn(typed, password, lab);
-        if (attempt.outcome === 'incorrect')
+        return signedIn(attempt, typed);
+      }
+      // A One-time password is replaced with the user's own, which then
+      // signs them in; it never starts a session itself (ADR-0009).
+      if (route === 'POST /api/password') {
+        const { username, password, newPassword } = (input ?? {}) as Record<
+          string,
+          unknown
+        >;
+        if (
+          typeof username !== 'string' ||
+          typeof password !== 'string' ||
+          typeof newPassword !== 'string'
+        )
           return send(401, { error: 'Incorrect username or password.' });
-        // The lock ends every session of the account at once (ADR-0009).
-        if (attempt.outcome === 'locked') {
-          sessions.endAll(typed);
-          return send(403, {
-            error: 'This account is locked. Contact the System administrator.',
-            code: 'accountLocked',
-          });
-        }
-        sessions.end(token);
-        return send(
-          200,
-          { user: attempt.user },
-          {
-            'Set-Cookie': sessionCookie(
-              sessions.start(attempt.user.id),
-              secure,
-            ),
-          },
+        const typed = username.trim();
+        return signedIn(
+          await accounts.replaceOneTimePassword(
+            typed,
+            password,
+            newPassword,
+            lab,
+          ),
+          typed,
         );
       }
       if (route === 'POST /api/sign-out') {
