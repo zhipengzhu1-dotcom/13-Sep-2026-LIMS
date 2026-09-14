@@ -139,7 +139,8 @@ a signature that no longer matches its Signed content, each marked
 Cannot: run any command, in any state of the record: no receipt, assignment,
 Result, worksheet upload, Electronic signature, OOS work, publication,
 Amendment or Acceptable intake entry. The Admin never stands in for the
-Quality lead; the SOP names a deputy with a Quality lead account instead.
+Quality lead; the SOP names a deputy with a Quality lead account of their
+own instead, who also approves any change to the Quality lead's account.
 
 
 LOCKED STATES (apply to everyone, including the Admin)
