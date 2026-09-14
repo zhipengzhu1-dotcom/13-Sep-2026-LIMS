@@ -102,11 +102,11 @@ The person who gives Approval or returns a Sample to its Analyst with a comment;
 _Avoid_: Reviewer, approver, QA
 
 **Admin**:
-The person who may act in every role — as Coordinator, Analyst (when a Sample is assigned to them) and Manager — as a stand-in; every act is still their own, signed with their own password, and they never give Approval to a Sample on which they entered, corrected or retested a Result or recorded a Laboratory error check. Before Go-live Benchline's developer holds it; after Go-live it is the lab's one backup person, the most senior Analyst, with no account or configuration rights.
+The person who may act in every lab role — as Coordinator, Analyst (when a Sample is assigned to them) and Manager, but never as Quality lead — as a stand-in; every act is still their own, signed with their own password, and they never give Approval to a Sample on which they entered, corrected or retested a Result or recorded a Laboratory error check. Before Go-live Benchline's developer holds it; after Go-live it is the lab's one backup person, the most senior Analyst, with no account or configuration rights.
 _Avoid_: Super admin, superuser, root
 
 **Approval**:
-Management's single electronically signed sign-off that a Sample's Results are correct and may be published; there is no separate peer review step.
+Management's single electronically signed sign-off that a Sample's Results are correct and may be published; there is no separate peer review step. Its signature attests that the Results, their calculation worksheets, the original instrument data and the Sample's audit trail were reviewed, and an Amendment's Approval attests the same for the corrected Results.
 _Avoid_: Review, release, sign-off
 
 **Electronic signature**:
@@ -136,9 +136,25 @@ The moment the Quality lead signs off Benchline's validation, from which the ele
 _Avoid_: Production, launch, cut-over
 
 **Quality lead**:
-The person responsible for the lab's quality system, who approves its controlled documents, signs off Benchline's validation for Go-live, and approves every account change and release of Benchline.
+The person responsible for the lab's quality system, who approves its controlled documents, signs off Benchline's validation for Go-live, and approves every account change and release of Benchline. In Benchline they can see every Sample, the lab-wide audit trail and exports, but never act on a record.
 _Avoid_: Quality manager, QA lead
 
 **System administrator**:
 Benchline's developer acting as an external provider with no laboratory role after Go-live, who develops and deploys Benchline and administers its accounts and configuration, each account change and release approved by the Quality lead.
 _Avoid_: Admin, super admin, IT
+
+**Failed attempt**:
+A sign-in or an Electronic signature refused because the password was wrong, recorded in the audit trail with the username that was typed, whether or not that account exists.
+_Avoid_: Bad login, invalid attempt
+
+**Locked account**:
+An account refused both sign-in and Electronic signatures after the lab's set number of consecutive Failed attempts, counted across sign-in and signing together; it stays locked until the System administrator unlocks it and issues a One-time password, and the lockout is notified at once to the System administrator and the Quality lead.
+_Avoid_: Disabled account, suspended account, blocked user
+
+**One-time password**:
+A password the System administrator sets for an account, given to its user in person after checking who they are, which the user must replace with their own at their next sign-in; it is how every new or unlocked account starts.
+_Avoid_: Temporary password, default password, reset password
+
+**Access event**:
+An audit trail entry about an account rather than a record: a sign-in, sign-out, session expiry, Failed attempt, lockout, unlock or password change.
+_Avoid_: Login event, security log entry
