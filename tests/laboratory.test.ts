@@ -2291,12 +2291,14 @@ const conclude = (
   investigationId: string,
   outcome: 'Invalidated' | 'Confirmed',
   assignableCause = '',
+  causationConfirmed = outcome === 'Invalidated',
 ) => ({
   type: 'concludeOosInvestigation',
   ...target(s),
   investigationId,
   outcome,
   assignableCause,
+  causationConfirmed,
 });
 
 test('a Result over its Limit is flagged and blocks Approval until an investigation is opened and closed', (t) => {
@@ -2333,6 +2335,7 @@ test('a Result over its Limit is flagged and blocks Approval until an investigat
     labErrorCheck: null,
     outcome: null,
     assignableCause: null,
+    causationConfirmed: null,
     closedBy: null,
     closedAt: null,
     clientNotification: null,
@@ -2520,6 +2523,118 @@ test('OOS commands check roles, the assigned analyst and the order of the invest
   refused(labErrorCheck(s, id), 'analyst', /already closed/);
 });
 
+test('the server invalidates only on an identified laboratory error the concluding Manager confirms caused the value, on the audit trail as themselves', (t) => {
+  const lab = memory(t);
+  let s = outOfSpecification(lab);
+  s = run(lab, openOos(s), 'manager');
+  s = run(lab, labErrorCheck(s, 'OOS26-0001'), 'analyst');
+  const cause = 'Standard diluted twice (prep log p. 14).';
+  const refused = (command: object, reason: string) => {
+    const before = lab.snapshot();
+    const entries = lab.auditTrail().length;
+    assert.throws(
+      () => run(lab, command, 'manager'),
+      (e: Error & { status: number }) =>
+        e.status === 400 && e.message === reason,
+    );
+    assert.deepEqual(lab.snapshot(), before);
+    assert.equal(lab.auditTrail().length, entries, 'no audit entry');
+  };
+  refused(
+    conclude(s, 'OOS26-0001', 'Invalidated', cause, false),
+    'Confirm that the laboratory error the check identified caused the value before invalidating the Result.',
+  );
+  // The command must state the confirmation; it is never assumed.
+  const { causationConfirmed: _, ...unstated } = conclude(
+    s,
+    'OOS26-0001',
+    'Invalidated',
+    cause,
+  );
+  assert.throws(
+    () => run(lab, unstated, 'manager'),
+    (e: Error & { status: number }) =>
+      e.status === 400 && /causationConfirmed/.test(e.message),
+  );
+
+  const concluded = audited(
+    lab,
+    conclude(s, 'OOS26-0001', 'Invalidated', cause),
+    'admin',
+  );
+  const confirmation = concluded.entries.find(
+    (e) => e.field === 'causationConfirmed',
+  );
+  assert.deepEqual(
+    confirmation && [
+      confirmation.recordType,
+      confirmation.recordId,
+      confirmation.oldValue,
+      confirmation.newValue,
+      confirmation.actor,
+      confirmation.at,
+      confirmation.commandType,
+    ],
+    [
+      'OOS investigation',
+      'OOS26-0001',
+      null,
+      true,
+      'admin',
+      NOW,
+      'concludeOosInvestigation',
+    ],
+  );
+  assert.ok(
+    concluded.entries.every((e) => e.actor === 'admin' && e.at === NOW),
+  );
+  const [investigation] = concluded.outcome.samples[0].investigations;
+  assert.deepEqual(
+    [
+      investigation.causationConfirmed,
+      investigation.closedBy,
+      investigation.closedAt,
+    ],
+    [true, 'admin', NOW],
+  );
+  assert.ok(
+    lab
+      .auditTrail(s.id)
+      .some((e) => e.field === 'causationConfirmed' && e.newValue === true),
+    "the confirmation is in the Sample's exported audit trail",
+  );
+});
+
+test('the server refuses Invalidated when the laboratory error check identified no error, and allows Confirmed', (t) => {
+  const lab = memory(t);
+  let s = outOfSpecification(lab);
+  s = run(lab, openOos(s), 'manager');
+  s = run(
+    lab,
+    { ...labErrorCheck(s, 'OOS26-0001'), errorIdentified: false },
+    'analyst',
+  );
+  const before = lab.snapshot();
+  assert.throws(
+    () =>
+      run(
+        lab,
+        conclude(s, 'OOS26-0001', 'Invalidated', 'Standard diluted twice.'),
+        'manager',
+      ),
+    (e: Error & { status: number }) =>
+      e.status === 400 &&
+      e.message ===
+        'The laboratory error check identified no laboratory error, so the Result cannot be Invalidated.',
+  );
+  assert.deepEqual(lab.snapshot(), before);
+  s = run(lab, conclude(s, 'OOS26-0001', 'Confirmed'), 'manager');
+  assert.deepEqual(
+    [s.investigations[0].outcome, s.investigations[0].causationConfirmed],
+    ['Confirmed', null],
+  );
+});
+
 test('an Admin assigned the Sample records the laboratory error check as themselves', (t) => {
   const lab = memory(t);
   let s = outOfSpecification(lab);
@@ -2671,6 +2786,7 @@ test('opening, checking and concluding an investigation audit each change', (t) 
   assert.deepEqual(concluded.changes, [
     [record, 'outcome', null, 'Invalidated', null],
     [record, 'assignableCause', null, cause, null],
+    [record, 'causationConfirmed', null, true, null],
     [record, 'status', 'Open', 'Closed', null],
     [record, 'closedBy', null, 'manager', null],
     [record, 'closedAt', null, at, null],

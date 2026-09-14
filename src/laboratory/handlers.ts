@@ -667,6 +667,7 @@ export const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
         investigationId: command.investigationId,
         outcome: command.outcome,
         assignableCause: command.assignableCause,
+        causationConfirmed: command.causationConfirmed,
       },
       { actor: actor.id, at, audit },
     );

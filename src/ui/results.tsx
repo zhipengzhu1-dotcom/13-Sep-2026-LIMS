@@ -531,6 +531,8 @@ export function TestSheet({
                               {investigationLabel(investigation)}
                               {investigation?.assignableCause &&
                                 ` · Assignable cause: ${investigation.assignableCause}`}
+                              {investigation?.causationConfirmed &&
+                                ' (confirmed by the Manager as the cause)'}
                             </span>
                           )}
                         </li>

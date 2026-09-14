@@ -232,6 +232,8 @@ export function Investigations({
                     {inv.status === 'Closed' ? (
                       <>
                         <strong>{inv.outcome}</strong>
+                        {inv.causationConfirmed &&
+                          '. The Manager confirmed the identified laboratory error caused the value'}
                         {inv.assignableCause &&
                           `. Assignable cause: ${inv.assignableCause}`}{' '}
                         <span className="dim">
@@ -249,14 +251,22 @@ export function Investigations({
                     ) : manager && inv.labErrorCheck ? (
                       <ConcludeForm
                         investigation={inv}
+                        invalidatedBlocker={results
+                          .investigation(inv.id)
+                          .concludeBlocker('Invalidated')}
                         busy={busy}
-                        onConclude={(outcome, assignableCause) =>
+                        onConclude={(
+                          outcome,
+                          assignableCause,
+                          causationConfirmed,
+                        ) =>
                           void execute({
                             type: 'concludeOosInvestigation',
                             ...target,
                             investigationId: inv.id,
                             outcome,
                             assignableCause,
+                            causationConfirmed,
                           })
                         }
                       />
@@ -342,58 +352,92 @@ export function Investigations({
   );
 }
 
+/**
+ * The Manager's conclusion of an investigation. No outcome is pre-selected.
+ * Invalidated stays focusable but blocked, with the core's reason as visible
+ * text, when the Laboratory error check identified no error; choosing it asks
+ * the Manager to confirm that the identified error caused the value and to
+ * give the assignable cause (ADR-0006).
+ */
 export function ConcludeForm({
   investigation,
+  invalidatedBlocker,
   busy,
   onConclude,
 }: {
   investigation: OosInvestigation;
+  /** Why Invalidated cannot be concluded now, from the core, or null. */
+  invalidatedBlocker: Refusal | null;
   busy: boolean;
   onConclude: (
     outcome: 'Invalidated' | 'Confirmed',
     assignableCause: string,
+    causationConfirmed: boolean,
   ) => void;
 }) {
-  const [outcome, setOutcome] = useState<'Invalidated' | 'Confirmed'>(
-    investigation.labErrorCheck?.errorIdentified ? 'Invalidated' : 'Confirmed',
+  const [outcome, setOutcome] = useState<'Invalidated' | 'Confirmed' | null>(
+    null,
   );
+  const reasonId = `conclude-invalidated-${investigation.id}`;
   return (
     <form
       className="inv-form"
+      aria-label={`Conclude OOS investigation ${investigation.id}`}
       onSubmit={(e) => {
         e.preventDefault();
+        if (!outcome) return;
         const f = new FormData(e.currentTarget);
+        const invalidated = outcome === 'Invalidated';
         onConclude(
           outcome,
-          outcome === 'Invalidated' ? String(f.get('assignableCause')) : '',
+          invalidated ? String(f.get('assignableCause')) : '',
+          invalidated && f.get('causationConfirmed') === 'on',
         );
       }}
     >
       <fieldset className="priority">
         <legend>Outcome</legend>
-        {(['Invalidated', 'Confirmed'] as const).map((o) => (
-          <label key={o}>
-            <input
-              type="radio"
-              name="outcome"
-              value={o}
-              checked={outcome === o}
-              onChange={() => setOutcome(o)}
-            />
-            {o}
-          </label>
-        ))}
+        {(['Invalidated', 'Confirmed'] as const).map((o) => {
+          const blocked = o === 'Invalidated' && !!invalidatedBlocker;
+          return (
+            <label key={o} className={blocked ? 'blocked' : undefined}>
+              <input
+                type="radio"
+                name="outcome"
+                value={o}
+                required
+                checked={outcome === o}
+                // Blocked but focusable, so its reason is reachable.
+                aria-disabled={blocked || undefined}
+                aria-describedby={blocked ? reasonId : undefined}
+                onChange={() => {
+                  if (!blocked) setOutcome(o);
+                }}
+              />
+              {o}
+            </label>
+          );
+        })}
+        {invalidatedBlocker && (
+          <RefusalNote id={reasonId} refusal={invalidatedBlocker} />
+        )}
       </fieldset>
       {outcome === 'Invalidated' && (
-        <textarea
-          name="assignableCause"
-          aria-label="Assignable cause"
-          required
-          minLength={3}
-          maxLength={2000}
-          rows={2}
-          placeholder="Required: the assignable laboratory cause"
-        />
+        <>
+          <label className="check">
+            <input type="checkbox" name="causationConfirmed" required />I
+            confirm the laboratory error the check identified caused this value
+          </label>
+          <textarea
+            name="assignableCause"
+            aria-label="Assignable cause"
+            required
+            minLength={3}
+            maxLength={2000}
+            rows={2}
+            placeholder="Required: the assignable laboratory cause"
+          />
+        </>
       )}
       <button className="btn sm primary" disabled={busy}>
         Conclude and close

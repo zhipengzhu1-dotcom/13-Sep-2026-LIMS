@@ -53,6 +53,10 @@ export type OosInvestigation = {
   outcome: OosOutcome | null;
   /** Mandatory for `Invalidated`; null for `Confirmed`. */
   assignableCause: string | null;
+  /** For `Invalidated`, true: the concluding Manager confirmed that the
+   * laboratory error the check identified caused the value (ADR-0006). Null
+   * while open and for `Confirmed`. */
+  causationConfirmed: boolean | null;
   closedBy: string | null;
   closedAt: string | null;
   /** For a Confirmed OOS: the Coordinator's record that the Client was
@@ -309,7 +313,7 @@ export function resultsView(sample: Sample): SampleResults {
           ? 'invalidated'
           : 'confirmed';
       },
-      concludeBlocker() {
+      concludeBlocker(outcome) {
         if (investigation.status !== 'Open')
           return {
             code: 'investigation closed',
@@ -321,6 +325,16 @@ export function resultsView(sample: Sample): SampleResults {
             code: 'check pending',
             reason:
               'The assigned analyst must record the laboratory error check before the investigation is concluded.',
+            investigationId: investigation.id,
+          };
+        if (
+          outcome === 'Invalidated' &&
+          !investigation.labErrorCheck.errorIdentified
+        )
+          return {
+            code: 'no laboratory error',
+            reason:
+              'The laboratory error check identified no laboratory error, so the Result cannot be Invalidated.',
             investigationId: investigation.id,
           };
         return null;
@@ -583,6 +597,7 @@ export function openInvestigation(
     labErrorCheck: null,
     outcome: null,
     assignableCause: null,
+    causationConfirmed: null,
     closedBy: null,
     closedAt: null,
     clientNotification: null,
@@ -637,22 +652,38 @@ export type ConcludeInput = {
   outcome: OosOutcome;
   /** Required for Invalidated; must be empty for Confirmed. */
   assignableCause: string;
+  /** The Manager's confirmation that the laboratory error the check
+   * identified caused the value. Required for Invalidated; must be false for
+   * Confirmed. */
+  causationConfirmed: boolean;
 };
 
 /**
- * Concludes and closes an investigation. Invalidated takes the assignable
- * cause and marks the Result invalidated, so the Test then needs a Retest;
- * Confirmed takes no cause and leaves the Result current.
+ * Concludes and closes an investigation. Invalidated needs the error the
+ * Laboratory error check identified, the Manager's confirmation that it caused
+ * the value, and the assignable cause; it marks the Result invalidated, so the
+ * Test then needs a Retest. Confirmed takes neither and leaves the Result
+ * current, whatever the check found. Not signed (ADR-0006): the audit trail
+ * attributes the conclusion to the Manager.
  */
 export function concludeInvestigation(
   sample: Sample,
-  { investigationId, outcome, assignableCause }: ConcludeInput,
+  {
+    investigationId,
+    outcome,
+    assignableCause,
+    causationConfirmed,
+  }: ConcludeInput,
   { actor, at, audit }: Act,
 ) {
   const view = resultsView(sample).investigation(investigationId);
   const blocked = view.concludeBlocker(outcome);
   if (blocked) throw new WorkflowError(blocked.reason);
   const invalidated = outcome === 'Invalidated';
+  if (invalidated && !causationConfirmed)
+    throw new WorkflowError(
+      'Confirm that the laboratory error the check identified caused the value before invalidating the Result.',
+    );
   if (invalidated && assignableCause.length < 3)
     throw new WorkflowError(
       'Give the assignable cause for invalidating the Result.',
@@ -661,11 +692,21 @@ export function concludeInvestigation(
     throw new WorkflowError(
       'A confirmed OOS has no assignable cause. Choose Invalidated to record one.',
     );
+  if (!invalidated && causationConfirmed)
+    throw new WorkflowError(
+      'A confirmed OOS has no laboratory error confirmed as its cause. Choose Invalidated to confirm one.',
+    );
   const { investigation, test, result } = view;
   const record = auditRecord.investigation(sample, investigation);
   const cause = invalidated ? assignableCause : null;
   audit.set(record, investigation, 'outcome', outcome);
   audit.set(record, investigation, 'assignableCause', cause);
+  audit.set(
+    record,
+    investigation,
+    'causationConfirmed',
+    invalidated ? true : null,
+  );
   audit.set(record, investigation, 'status', 'Closed');
   audit.set(record, investigation, 'closedBy', actor);
   audit.set(record, investigation, 'closedAt', at);

@@ -1992,6 +1992,19 @@ body.resizing {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-basis: 100%;
+  min-height: 32px;
+}
+/* An outcome a rule blocks: focusable, its reason beneath the outcomes, and
+ * never looks selectable. */
+.priority label.blocked {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.priority .flash.refusal {
+  flex-basis: 100%;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1) var(--space-2);
 }
 @media (max-width: 600px) {
   .inv-detail > div {

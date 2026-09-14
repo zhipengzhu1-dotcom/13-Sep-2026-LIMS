@@ -159,6 +159,7 @@ function investigate(
     },
     outcome: closed ? state : null,
     assignableCause: state === 'Invalidated' ? 'Standard diluted twice.' : null,
+    causationConfirmed: state === 'Invalidated' ? true : null,
     closedBy: closed ? 'manager' : null,
     closedAt: closed ? AT : null,
     clientNotification: null,
@@ -581,16 +582,19 @@ const check = (s: Sample, errorIdentified = true, investigationId = ID) =>
       act,
     ),
   );
+/** Concludes as the Manager; Invalidated confirms causation unless told not
+ * to. */
 const conclude = (
   s: Sample,
   outcome: 'Invalidated' | 'Confirmed',
   assignableCause = '',
   investigationId = ID,
+  causationConfirmed = outcome === 'Invalidated',
 ) =>
   acted('manager', (act) =>
     concludeInvestigation(
       s,
-      { investigationId, outcome, assignableCause },
+      { investigationId, outcome, assignableCause, causationConfirmed },
       act,
     ),
   );
@@ -613,6 +617,7 @@ type Stage =
   | 'uninvestigated'
   | 'open'
   | 'checked'
+  | 'error identified'
   | 'invalidated'
   | 'retested'
   | 'retested over its Limit'
@@ -632,9 +637,11 @@ function staged(stage: Stage): Sample {
   if (stage === 'uninvestigated') return s;
   open(s);
   if (stage === 'open') return s;
+  // 'checked' found no laboratory error; 'error identified' and the
+  // invalidated paths found one.
   const invalidated = ['invalidated', 'retested', 'retested over its Limit'];
-  check(s, invalidated.includes(stage));
-  if (stage === 'checked') return s;
+  check(s, stage === 'error identified' || invalidated.includes(stage));
+  if (stage === 'checked' || stage === 'error identified') return s;
   if (invalidated.includes(stage)) {
     conclude(s, 'Invalidated', 'Standard diluted twice.');
     if (stage === 'retested') record(s);
@@ -665,6 +672,12 @@ type RefusedStep = {
 
 const notComplying =
   'Only a current Result that does not comply with its Limit needs an OOS investigation.';
+const noLaboratoryError =
+  'The laboratory error check identified no laboratory error, so the Result cannot be Invalidated.';
+const causationUnconfirmed =
+  'Confirm that the laboratory error the check identified caused the value before invalidating the Result.';
+const confirmedWithCausation =
+  'A confirmed OOS has no laboratory error confirmed as its cause. Choose Invalidated to confirm one.';
 
 const refusedSteps: RefusedStep[] = [
   {
@@ -750,14 +763,61 @@ const refusedSteps: RefusedStep[] = [
     command: (s) => conclude(s, 'Confirmed', '', 'OOS26-0099'),
     reason: 'OOS investigation not found.',
   },
-  ...['', 'no'].map((cause): RefusedStep => ({
-    name: `invalidating with the assignable cause "${cause}"`,
+  // ADR-0006: Invalidated needs the error the check identified, the
+  // Manager's confirmation that it caused the value, and an assignable cause.
+  ...[true, false].map((causationConfirmed): RefusedStep => ({
+    name: `invalidating when the check identified no laboratory error${causationConfirmed ? ', even with causation confirmed' : ''}`,
     stage: 'checked',
+    command: (s) =>
+      conclude(
+        s,
+        'Invalidated',
+        'Standard diluted twice.',
+        ID,
+        causationConfirmed,
+      ),
+    reason: noLaboratoryError,
+    question: (s) =>
+      resultsView(s).investigation(ID).concludeBlocker('Invalidated'),
+    refusal: {
+      code: 'no laboratory error',
+      reason: noLaboratoryError,
+      investigationId: ID,
+    },
+  })),
+  {
+    // The Analyst's flag alone never invalidates: the refusal stands although
+    // the check identified an error.
+    name: 'invalidating without the Manager confirming the error caused the value',
+    stage: 'error identified',
+    command: (s) =>
+      conclude(s, 'Invalidated', 'Standard diluted twice.', ID, false),
+    reason: causationUnconfirmed,
+    question: (s) =>
+      resultsView(s).investigation(ID).concludeBlocker('Invalidated'),
+  },
+  ...['', 'no'].map((cause): RefusedStep => ({
+    name: `invalidating with causation confirmed and the assignable cause "${cause}"`,
+    stage: 'error identified',
     command: (s) => conclude(s, 'Invalidated', cause),
     reason: 'Give the assignable cause for invalidating the Result.',
     question: (s) =>
       resultsView(s).investigation(ID).concludeBlocker('Invalidated'),
   })),
+  {
+    name: 'confirming with causation confirmed',
+    stage: 'error identified',
+    command: (s) => conclude(s, 'Confirmed', '', ID, true),
+    reason: confirmedWithCausation,
+    question: (s) =>
+      resultsView(s).investigation(ID).concludeBlocker('Confirmed'),
+  },
+  {
+    name: 'concluding a closed investigation again with another cause',
+    stage: 'invalidated',
+    command: (s) => conclude(s, 'Invalidated', 'A different cause.'),
+    reason: 'OOS investigation OOS26-0001 is already closed.',
+  },
   {
     name: 'confirming with an assignable cause',
     stage: 'checked',
@@ -840,6 +900,7 @@ test('openInvestigation on a current OOS Result links both ways and audits each 
     labErrorCheck: null,
     outcome: null,
     assignableCause: null,
+    causationConfirmed: null,
     closedBy: null,
     closedAt: null,
     clientNotification: null,
@@ -890,12 +951,13 @@ test('recordLabErrorCheck audits the findings, the flag, who and when', () => {
 });
 
 test('concluding Invalidated keeps the Result on record, marked by its investigation, and requires a Retest', () => {
-  const s = staged('checked');
+  const s = staged('error identified');
   const cause = 'Standard diluted twice.';
   const { changes } = conclude(s, 'Invalidated', cause);
   assert.deepEqual(changes, [
     [INVESTIGATION, 'outcome', null, 'Invalidated', null],
     [INVESTIGATION, 'assignableCause', null, cause, null],
+    [INVESTIGATION, 'causationConfirmed', null, true, null],
     [INVESTIGATION, 'status', 'Open', 'Closed', null],
     [INVESTIGATION, 'closedBy', null, 'manager', null],
     [INVESTIGATION, 'closedAt', null, AT, null],
@@ -915,7 +977,53 @@ test('concluding Invalidated keeps the Result on record, marked by its investiga
     ]),
     [['invalidated', 30, ID, cause]],
   );
+  // The Invalidated result stays on record with its cause, the Manager's
+  // confirmation and the check findings that cause rests on.
+  const { investigation } = t.history[0];
+  assert.deepEqual(
+    [
+      investigation?.labErrorCheck,
+      investigation?.assignableCause,
+      investigation?.causationConfirmed,
+      investigation?.closedBy,
+      investigation?.closedAt,
+    ],
+    [
+      {
+        findings: 'Standard preparation log shows a dilution error.',
+        errorIdentified: true,
+        by: 'analyst',
+        at: AT,
+      },
+      cause,
+      true,
+      'manager',
+      AT,
+    ],
+  );
 });
+
+/** Which outcomes a Manager may conclude, by what the check found. Confirmed
+ * stays allowed whatever the check found; its confirmation is never stored. */
+const concluded: [Stage, 'Invalidated' | 'Confirmed', boolean | null][] = [
+  ['error identified', 'Invalidated', true],
+  ['error identified', 'Confirmed', null],
+  ['checked', 'Confirmed', null],
+];
+
+for (const [stage, outcome, stored] of concluded)
+  test(`an investigation ${stage === 'checked' ? 'whose check found no laboratory error' : 'whose check identified a laboratory error'} concludes ${outcome}`, () => {
+    const s = staged(stage);
+    const view = resultsView(s).investigation(ID);
+    assert.equal(view.concludeBlocker(outcome), null);
+    conclude(
+      s,
+      outcome,
+      outcome === 'Invalidated' ? 'Standard diluted twice.' : '',
+    );
+    assert.equal(view.state, outcome.toLowerCase());
+    assert.equal(s.investigations[0].causationConfirmed, stored);
+  });
 
 test('concluding Confirmed writes no assignable cause and leaves the Result current', () => {
   const s = staged('checked');

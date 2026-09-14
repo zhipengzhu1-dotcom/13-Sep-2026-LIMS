@@ -710,6 +710,9 @@ export const commandSchema = z.discriminatedUnion('type', [
     outcome: z.enum(['Invalidated', 'Confirmed']),
     /** Mandatory for Invalidated; must be empty for Confirmed. */
     assignableCause: z.string().trim().max(2000),
+    /** The Manager confirms the identified laboratory error caused the value:
+     * true for Invalidated, false for Confirmed. Always stated. */
+    causationConfirmed: z.boolean(),
   }),
   z.object({
     commandId,
