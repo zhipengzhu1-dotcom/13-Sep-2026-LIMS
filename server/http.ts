@@ -17,6 +17,17 @@ const MAX_BODY_BYTES = 32768;
 
 export type Authentication = { accounts: Accounts; sessions: Sessions };
 
+/** Ends idle sessions, recording each expiry as an Access event. */
+export function expireSessions(lab: Laboratory, sessions: Sessions) {
+  const minutes = sessions.idleTimeoutMs / 60000;
+  for (const { userId, lastSeen } of sessions.expire())
+    lab.recordAccessEvent({
+      type: 'sessionExpiry',
+      username: userId,
+      reason: `Ended after ${minutes} minutes without activity; last active ${new Date(lastSeen).toISOString()}`,
+    });
+}
+
 export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const send = (
@@ -31,11 +42,14 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
       });
       res.end(JSON.stringify(data));
     };
+    const token = readSessionCookie(req.headers.cookie);
     try {
+      // Collected before any session is used, so an idle one is on record as
+      // expired rather than silently refused.
+      expireSessions(lab, sessions);
       const url = new URL(req.url ?? '/', 'http://localhost');
       const path = url.pathname;
       const route = `${req.method} ${path}`;
-      const token = readSessionCookie(req.headers.cookie);
       /** The signed-in user, taken from the session and nothing else the
        * browser sends. */
       const currentUser = () => {
@@ -96,20 +110,31 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
 
       if (route === 'POST /api/sign-in') {
         const { username, password } = (input ?? {}) as Record<string, unknown>;
-        const user =
-          typeof username === 'string' && typeof password === 'string'
-            ? await accounts.authenticate(username.trim(), password)
-            : null;
-        if (!user)
+        if (typeof username !== 'string' || typeof password !== 'string')
           return send(401, { error: 'Incorrect username or password.' });
+        const typed = username.trim();
+        const attempt = await accounts.signIn(typed, password, lab);
+        if (attempt.outcome === 'incorrect')
+          return send(401, { error: 'Incorrect username or password.' });
+        // The lock ends every session of the account at once (ADR-0009).
+        if (attempt.outcome === 'locked') {
+          sessions.endAll(typed);
+          return send(403, {
+            error: 'This account is locked. Contact the System administrator.',
+            code: 'accountLocked',
+          });
+        }
         sessions.end(token);
         return send(
           200,
-          { user },
-          { 'Set-Cookie': sessionCookie(sessions.start(user.id)) },
+          { user: attempt.user },
+          { 'Set-Cookie': sessionCookie(sessions.start(attempt.user.id)) },
         );
       }
       if (route === 'POST /api/sign-out') {
+        const userId = sessions.resolve(token);
+        if (userId)
+          lab.recordAccessEvent({ type: 'signOut', username: userId });
         sessions.end(token);
         return send(
           200,
@@ -120,8 +145,21 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
       const user = currentUser();
       // The outcome carries whether this applied or replayed; the client must
       // be able to tell an "already recorded" from a fresh save.
-      send(200, lab.execute(input, user.id));
+      try {
+        send(200, lab.execute(input, user.id));
+      } catch (error) {
+        // Locking on a signature ends every session of the account at once.
+        if (error instanceof WorkflowError && error.code === 'accountLocked')
+          sessions.endAll(user.id);
+        throw error;
+      }
     } catch (error) {
+      if (error instanceof WorkflowError && error.code === 'accountLocked')
+        return send(
+          error.status,
+          { error: error.message, code: error.code },
+          { 'Set-Cookie': clearedSessionCookie() },
+        );
       if (error instanceof HttpError || error instanceof WorkflowError)
         return send(error.status, { error: error.message });
       console.error(error);

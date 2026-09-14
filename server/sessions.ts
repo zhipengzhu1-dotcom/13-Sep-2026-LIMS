@@ -9,18 +9,19 @@ type Session = { userId: string; lastSeen: number };
 /**
  * Server-side sessions keyed by an unguessable token held only in an HttpOnly
  * cookie. Only the token's SHA-256 is kept, and each use slides the idle
- * deadline. Sessions live in memory: a restart signs everyone out.
+ * deadline. Sessions live in memory: a restart signs everyone out. An idle
+ * session stays unusable until `expire` collects it, so its expiry can be
+ * recorded.
  */
 export class Sessions {
   private sessions = new Map<string, Session>();
   constructor(
     private now: () => number = Date.now,
-    private idleTimeoutMs = IDLE_TIMEOUT_MS,
+    readonly idleTimeoutMs = IDLE_TIMEOUT_MS,
   ) {}
 
   /** Starts a session and returns its token. */
   start(userId: string): string {
-    this.prune();
     const token = randomBytes(32).toString('base64url');
     this.sessions.set(digest(token), { userId, lastSeen: this.now() });
     return token;
@@ -29,13 +30,8 @@ export class Sessions {
   /** The user ID for a live session, refreshing its idle deadline; else null. */
   resolve(token: string | undefined): string | null {
     if (!token) return null;
-    const key = digest(token);
-    const session = this.sessions.get(key);
-    if (!session) return null;
-    if (this.now() - session.lastSeen >= this.idleTimeoutMs) {
-      this.sessions.delete(key);
-      return null;
-    }
+    const session = this.sessions.get(digest(token));
+    if (!session || this.idle(session)) return null;
     session.lastSeen = this.now();
     return session.userId;
   }
@@ -44,10 +40,26 @@ export class Sessions {
     if (token) this.sessions.delete(digest(token));
   }
 
-  private prune() {
-    const now = this.now();
-    for (const [key, s] of this.sessions)
-      if (now - s.lastSeen >= this.idleTimeoutMs) this.sessions.delete(key);
+  /** Ends every session of one user, such as a Locked account's. */
+  endAll(userId: string) {
+    for (const [key, session] of this.sessions)
+      if (session.userId === userId) this.sessions.delete(key);
+  }
+
+  /** Ends every idle session and returns who each belonged to and when it
+   * was last used. */
+  expire(): Session[] {
+    const expired: Session[] = [];
+    for (const [key, session] of this.sessions)
+      if (this.idle(session)) {
+        this.sessions.delete(key);
+        expired.push(session);
+      }
+    return expired;
+  }
+
+  private idle(session: Session) {
+    return this.now() - session.lastSeen >= this.idleTimeoutMs;
   }
 }
 

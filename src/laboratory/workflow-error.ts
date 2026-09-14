@@ -1,10 +1,12 @@
 import { actsAs, type Actor, type Role } from './contracts.ts';
 
-/** A refusal a person can act on, with the HTTP status the transport uses. */
+/** A refusal a person can act on, with the HTTP status the transport uses
+ * and, where a caller acts on the kind of refusal, its code. */
 export class WorkflowError extends Error {
   constructor(
     message: string,
     public status = 400,
+    public code?: 'accountLocked',
   ) {
     super(message);
   }

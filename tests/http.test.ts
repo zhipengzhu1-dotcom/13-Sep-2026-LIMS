@@ -229,6 +229,162 @@ test('an inactive session expires, and activity keeps it alive', async (t) => {
   assert.equal((await post('/api/commands', receipt(), session)).status, 401);
 });
 
+/** Access events oldest first: act, account, actor, field, old and new value. */
+const accessEvents = (lab: Laboratory) =>
+  lab
+    .auditTrail()
+    .filter((e) => e.recordType === 'Account')
+    .reverse()
+    .map((e) => [
+      e.commandType,
+      e.recordId,
+      e.actor,
+      e.field,
+      e.oldValue,
+      e.newValue,
+    ]);
+
+test('sign-in, sign-out and session expiry are Access events', async (t) => {
+  const { lab, url, clock, post, signIn } = await serve(t);
+  const signedInAt = new Date(clock.now).toISOString();
+  assert.equal(
+    (
+      await post('/api/sign-in', {
+        username: 'coordinator',
+        password: 'analyst-demo',
+      })
+    ).status,
+    401,
+  );
+  const coordinator = await signIn('coordinator', 'coordinator-demo');
+  assert.equal((await post('/api/sign-out', {}, coordinator)).status, 200);
+  // Signing out of a session that has already ended records nothing more.
+  assert.equal((await post('/api/sign-out', {}, coordinator)).status, 200);
+  const analyst = await signIn('analyst', 'analyst-demo');
+  clock.now += IDLE_TIMEOUT_MS;
+  assert.equal(
+    (await fetch(url + '/api/session', { headers: analyst })).status,
+    401,
+  );
+  assert.deepEqual(accessEvents(lab), [
+    [
+      'failedAttempt',
+      'coordinator',
+      'coordinator',
+      'consecutiveFailedAttempts',
+      0,
+      1,
+    ],
+    ['signIn', 'coordinator', 'coordinator', 'session', null, 'signed in'],
+    ['signIn', 'coordinator', 'coordinator', 'consecutiveFailedAttempts', 1, 0],
+    ['signOut', 'coordinator', 'coordinator', 'session', 'signed in', null],
+    ['signIn', 'analyst', 'analyst', 'session', null, 'signed in'],
+    ['sessionExpiry', 'analyst', 'Benchline', 'session', 'signed in', null],
+  ]);
+  assert.equal(
+    lab.auditTrail()[0].reason,
+    `Ended after 15 minutes without activity; last active ${signedInAt}`,
+  );
+  const trail = JSON.stringify(lab.auditTrail());
+  for (const password of ['coordinator-demo', 'analyst-demo'])
+    assert.ok(!trail.includes(password));
+});
+
+test('locking an account on a signature ends its sessions, and its own password no longer signs in', async (t) => {
+  const { lab, url, post, signIn, upload } = await serve(t);
+  const coordinator = await signIn('coordinator', 'coordinator-demo');
+  const analyst = await signIn('analyst', 'analyst-demo');
+  const elsewhere = await signIn('analyst', 'analyst-demo');
+  const command = (body: object, session: object) =>
+    post('/api/commands', { commandId: newCommandId(), ...body }, session);
+  let sample = (await (await command(receipt(), coordinator)).json())
+    .samples[0];
+  const act = async (body: object, session: object) => {
+    const response = await command(
+      { sampleId: sample.id, revision: sample.revision, ...body },
+      session,
+    );
+    if (response.status === 200) sample = (await response.json()).samples[0];
+    return response;
+  };
+  await act({ type: 'assign', assignee: 'analyst' }, coordinator);
+  const { attachment } = await (
+    await upload('sheet.csv', 'text/csv', Buffer.from('a,b\n1,2\n'), analyst)
+  ).json();
+  await act(
+    {
+      type: 'enterResult',
+      testId: 'NIT-001-v1',
+      value: 0.02,
+      instrumentReading: 0.2,
+      sequenceId: 'SEQ-0001',
+      attachmentId: attachment.id,
+      reason: '',
+    },
+    analyst,
+  );
+  const submit = { type: 'submitForApproval', password: 'wrong' };
+  for (let i = 0; i < 4; i++)
+    assert.equal((await act(submit, analyst)).status, 403);
+  const locked = await act(submit, analyst);
+  assert.equal(locked.status, 401);
+  assert.deepEqual(await locked.json(), {
+    error:
+      'This account is locked, so nothing was signed or saved. Contact the System administrator.',
+    code: 'accountLocked',
+  });
+  assert.match(locked.headers.get('set-cookie')!, /Max-Age=0/);
+  for (const session of [analyst, elsewhere])
+    assert.equal(
+      (await fetch(url + '/api/session', { headers: session })).status,
+      401,
+    );
+  const refused = await post('/api/sign-in', {
+    username: 'analyst',
+    password: 'analyst-demo',
+  });
+  assert.equal(refused.status, 403);
+  assert.equal(refused.headers.get('set-cookie'), null);
+  assert.deepEqual(await refused.json(), {
+    error: 'This account is locked. Contact the System administrator.',
+    code: 'accountLocked',
+  });
+  assert.equal(lab.snapshot().samples[0].status, 'In progress');
+  assert.equal(lab.snapshot().signatures.length, 0);
+});
+
+test('a lock from Failed attempts at sign-in ends the sessions already open', async (t) => {
+  const { lab, url, post, signIn } = await serve(t);
+  const manager = await signIn('manager', 'manager-demo');
+  const guess = (i: number) =>
+    post('/api/sign-in', { username: 'manager', password: `guess-${i}` });
+  for (let i = 0; i < 4; i++) {
+    const response = await guess(i);
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), {
+      error: 'Incorrect username or password.',
+    });
+  }
+  const locking = await guess(4);
+  assert.equal(locking.status, 403);
+  assert.deepEqual(await locking.json(), {
+    error: 'This account is locked. Contact the System administrator.',
+    code: 'accountLocked',
+  });
+  // The session ended with the lock, so signing out of it records nothing.
+  assert.equal((await post('/api/sign-out', {}, manager)).status, 200);
+  assert.equal(
+    (await fetch(url + '/api/session', { headers: manager })).status,
+    401,
+  );
+  assert.deepEqual(
+    accessEvents(lab)
+      .map(([act]) => act)
+      .filter((act) => act !== 'failedAttempt'),
+    ['signIn', 'lockout', 'lockoutNotice'],
+  );
+});
+
 test('a wrong signing password is refused without ending the session', async (t) => {
   const { url, post, signIn, upload } = await serve(t);
   const coordinator = await signIn('coordinator', 'coordinator-demo');

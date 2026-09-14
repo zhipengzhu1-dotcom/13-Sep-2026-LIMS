@@ -393,10 +393,42 @@ export type AuditRecordType =
   | 'OOS investigation'
   | 'Certificate of Analysis'
   | 'Acceptable intake'
-  | 'Attachment';
-/** What an audit entry records the doing of: a command, or the upload of a
- * worksheet attachment, which is stored outside the command seam. */
-export type AuditedAct = Command['type'] | 'storeAttachment';
+  | 'Attachment'
+  | 'Account';
+/** An Access event: an audit entry about an account rather than a record
+ * (ADR-0010), as the accounts store and sessions report it. Never a
+ * password. */
+export type AccessEvent =
+  | {
+      type: 'signIn';
+      username: string;
+      /** The consecutive Failed attempts this sign-in reset. */
+      clearedFailedAttempts: number;
+    }
+  | { type: 'signOut'; username: string }
+  | { type: 'sessionExpiry'; username: string; reason: string }
+  | {
+      type: 'failedAttempt';
+      /** The username that was typed, whether or not that account exists. */
+      username: string;
+      /** Consecutive Failed attempts on this username, this one included. */
+      consecutive: number;
+      /** Why the attempt was refused, in words. */
+      reason: string;
+    }
+  | { type: 'lockout'; username: string; consecutive: number }
+  | {
+      type: 'lockoutNotice';
+      username: string;
+      /** Whether the notice was sent, and to whom or why not. */
+      sent: boolean;
+      reason: string;
+    };
+export type AccessEventType = AccessEvent['type'];
+/** What an audit entry records the doing of: a command, the upload of a
+ * worksheet attachment, which is stored outside the command seam, or an
+ * Access event. */
+export type AuditedAct = Command['type'] | 'storeAttachment' | AccessEventType;
 /** A single field's value as the audit trail keeps it. */
 export type AuditValue = string | number | boolean | null;
 
@@ -438,6 +470,19 @@ export function auditEntriesWithin<E extends Pick<AuditEntry, 'at'>>(
     const day = new Date(e.at).toISOString().slice(0, 10);
     return (!from || day >= from) && (!to || day <= to);
   });
+}
+
+/** The lab-wide audit trail's event-type filter: every entry, Access events
+ * alone, or record changes alone. */
+export type AuditEventType = 'all' | 'accessEvents' | 'recordChanges';
+
+export function auditEntriesOfEventType<
+  E extends Pick<AuditEntry, 'recordType'>,
+>(entries: readonly E[], type: AuditEventType): E[] {
+  if (type === 'all') return [...entries];
+  return entries.filter(
+    (e) => (e.recordType === 'Account') === (type === 'accessEvents'),
+  );
 }
 
 /** Whether an entry is part of a Sample's own history: the Sample, its Tests

@@ -2005,7 +2005,13 @@ test('submission and Approval are Electronic signatures with printed name, time,
 test('a wrong password applies nothing, writes no signature and releases the key', (t) => {
   const lab = memory(t);
   const s = entered(lab, assigned(lab));
-  const before = lab.snapshot();
+  // Each wrong password is a Failed attempt, an Access event about the
+  // account; the records and their own audit entries stay as they were.
+  const records = () => {
+    const { audit, ...rest } = lab.snapshot();
+    return { ...rest, audit: audit.filter((e) => e.recordType !== 'Account') };
+  };
+  const before = records();
   const commandId = newCommandId();
   const submit = { commandId, type: 'submitForApproval', ...target(s) };
   for (const password of ['wrong', 'manager-demo', 'Analyst-demo', ' '])
@@ -2021,9 +2027,9 @@ test('a wrong password applies nothing, writes no signature and releases the key
     /Enter your password/,
   );
   assert.deepEqual(
-    lab.snapshot(),
+    records(),
     before,
-    'no Sample, audit entry or signature',
+    'no Sample, record audit entry or signature',
   );
   const applied = lab.execute(
     { ...submit, password: 'analyst-demo' },
@@ -2037,12 +2043,12 @@ test('a wrong password applies nothing, writes no signature and releases the key
     type: 'approve',
     ...target(awaiting),
   };
-  const signed = lab.snapshot();
+  const signed = records();
   assert.throws(
     () => lab.execute({ ...approve, password: 'analyst-demo' }, 'manager'),
     /password is incorrect/,
   );
-  assert.deepEqual(lab.snapshot(), signed);
+  assert.deepEqual(records(), signed);
   assert.equal(
     lab.execute({ ...approve, password: 'manager-demo' }, 'manager').outcome,
     'applied',
@@ -2077,7 +2083,7 @@ test('the password is not part of the command fingerprint', () => {
   // Credentials that accept any password isolate the fingerprint: the same act
   // retried with a differently typed password is still the same act.
   const lab = new Laboratory(':memory:', {
-    credentials: { checkPassword: () => true },
+    credentials: { verifySigner: () => 'verified' },
   });
   const s = entered(lab, assigned(lab));
   const submit = {

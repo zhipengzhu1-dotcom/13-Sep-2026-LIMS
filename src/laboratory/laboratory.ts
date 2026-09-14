@@ -15,6 +15,7 @@ import {
   signatureMeaning,
   signatureMeanings,
   type Actor,
+  type AccessEvent,
   type AuditEntry,
   type Command,
   type CommandOutcome,
@@ -56,10 +57,25 @@ export const SCHEMA_VERSION = 19;
 
 /**
  * Verifies a signer's password against their stored hash. The accounts store
- * implements it; the core asks it once per signing command, inside the command.
+ * implements it; the core asks it once per signing command, before the
+ * command's transaction, and a wrong password is recorded through `log` as a
+ * Failed attempt, described by `attempt`.
  */
 export interface SignerCredentials {
-  checkPassword(userId: string, password: string): boolean;
+  verifySigner(
+    userId: string,
+    password: string,
+    log: AccessEventLog,
+    attempt: string,
+  ): 'verified' | 'incorrect' | 'locked';
+}
+
+/** The actor on Access events Benchline itself brings about. */
+const BENCHLINE = 'Benchline';
+
+/** Where Access events are recorded: the laboratory's audit trail. */
+export interface AccessEventLog {
+  recordAccessEvent(event: AccessEvent): void;
 }
 
 /** The 16 raw bytes of a UUID. #54 stores the key as a BLOB in a WITHOUT ROWID
@@ -196,6 +212,79 @@ export class Laboratory {
     }
   }
 
+  /**
+   * Writes an Access event to the audit trail in its own transaction, as an
+   * entry about the account with no Sample (ADR-0010). The typed username
+   * stands in for the actor of an attempt, since it may name no account.
+   */
+  recordAccessEvent(event: AccessEvent) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const account = {
+        type: 'Account',
+        id: event.username,
+        sampleId: null,
+      } as const;
+      const byUser = ['signIn', 'signOut', 'failedAttempt'].includes(
+        event.type,
+      );
+      const audit = this.audit.writer({
+        actor: byUser ? event.username : BENCHLINE,
+        at: this.clock(),
+        commandType: event.type,
+        commandId: newCommandId(),
+      });
+      switch (event.type) {
+        case 'signIn':
+          audit.change(account, 'session', null, 'signed in');
+          if (event.clearedFailedAttempts)
+            audit.change(
+              account,
+              'consecutiveFailedAttempts',
+              event.clearedFailedAttempts,
+              0,
+            );
+          break;
+        case 'signOut':
+          audit.change(account, 'session', 'signed in', null);
+          break;
+        case 'sessionExpiry':
+          audit.change(account, 'session', 'signed in', null, event.reason);
+          break;
+        case 'failedAttempt':
+          audit.change(
+            account,
+            'consecutiveFailedAttempts',
+            event.consecutive - 1,
+            event.consecutive,
+            event.reason,
+          );
+          break;
+        case 'lockout':
+          audit.change(
+            account,
+            'locked',
+            false,
+            true,
+            `${event.consecutive} consecutive Failed attempts`,
+          );
+          break;
+        case 'lockoutNotice':
+          audit.change(
+            account,
+            'lockoutNotice',
+            null,
+            event.sent ? 'sent' : 'failed',
+            event.reason,
+          );
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   /** An attachment's record and bytes, or null if there is none. */
   readAttachment(id: string) {
     return this.attachments.read(id);
@@ -289,6 +378,10 @@ export class Laboratory {
     };
     const key = keyOf(command.commandId);
     const fingerprint = fingerprintOf(unsigned);
+    // Verified before the transaction opens, so a wrong password's Failed
+    // attempt stays on record while the command applies nothing, is never
+    // reported as an earlier success, and leaves the key free for resubmission.
+    const signing = this.verifySignature(command, actor, password);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const at = this.clock();
@@ -326,10 +419,6 @@ export class Laboratory {
         appendAcceptableIntake: (entry) =>
           this.acceptableIntakeStore.append([entry])[0],
       };
-      // Verified before the key is claimed or a replay answered, so a wrong
-      // password applies nothing, is never reported as an earlier success, and
-      // rolls back with the key released for resubmission.
-      const signing = this.verifySignature(command.type, actor, password);
       // Claim the key as the first statement inside the transaction, before any
       // validation or domain work. A suppressed insert returns no row, which is
       // the duplicate test — decided inside the transaction, with no separate
@@ -433,17 +522,32 @@ export class Laboratory {
    * `signatureMeanings` is signed this way, with no per-handler code.
    */
   private verifySignature(
-    type: Command['type'],
+    command: Command,
     actor: Actor,
     password: string | undefined,
   ) {
+    const { type } = command;
     if (!Object.hasOwn(signatureMeanings, type)) return null;
     if (!this.credentials)
       throw new WorkflowError(
         'Electronic signatures cannot be verified on this server.',
         503,
       );
-    if (!password || !this.credentials.checkPassword(actor.id, password))
+    const sampleId = 'sampleId' in command ? command.sampleId : '';
+    const verified = this.credentials.verifySigner(
+      actor.id,
+      password ?? '',
+      this,
+      `Wrong password on an Electronic signature (${type}, Sample ${sampleId})`,
+    );
+    // A Locked account's sessions end with this refusal.
+    if (verified === 'locked')
+      throw new WorkflowError(
+        'This account is locked, so nothing was signed or saved. Contact the System administrator.',
+        401,
+        'accountLocked',
+      );
+    if (verified === 'incorrect')
       throw new WorkflowError(
         'The password is incorrect. Nothing was signed or saved.',
         403,

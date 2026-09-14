@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import {
+  auditEntriesOfEventType,
   auditEntriesWithin,
   type AuditEntry,
+  type AuditEventType,
   type AuditValue,
   type Result,
   type Snapshot,
@@ -27,19 +29,37 @@ export const COMMAND_LABELS: Record<string, string> = {
   startAmendment: 'Amendment started',
   appendAcceptableIntake: 'Acceptable intake entry added',
   storeAttachment: 'Worksheet uploaded',
+  signIn: 'Signed in',
+  signOut: 'Signed out',
+  sessionExpiry: 'Session expired',
+  failedAttempt: 'Failed attempt',
+  lockout: 'Account locked',
+  lockoutNotice: 'Lockout notice',
 };
 
-/** The lab-wide audit trail, narrowed to a period of UTC calendar days. */
+/** The lab-wide audit trail, narrowed to a period of UTC calendar days and
+ * to Access events or record changes. */
 export function LabAuditTrail({ data }: { data: Snapshot }) {
   const [period, setPeriod] = useState({ from: '', to: '' });
-  const entries = auditEntriesWithin(data.audit, period);
+  const [eventType, setEventType] = useState<AuditEventType>('all');
+  const entries = auditEntriesOfEventType(
+    auditEntriesWithin(data.audit, period),
+    eventType,
+  );
   return (
     <>
-      <div
-        className="refine"
-        role="group"
-        aria-label="Filter the audit trail by period"
-      >
+      <div className="refine" role="group" aria-label="Filter the audit trail">
+        <label>
+          Event type
+          <select
+            value={eventType}
+            onChange={(e) => setEventType(e.target.value as AuditEventType)}
+          >
+            <option value="all">All entries</option>
+            <option value="accessEvents">Access events</option>
+            <option value="recordChanges">Record changes</option>
+          </select>
+        </label>
         <label>
           From (UTC)
           <input
@@ -58,18 +78,18 @@ export function LabAuditTrail({ data }: { data: Snapshot }) {
             onChange={(e) => setPeriod({ ...period, to: e.target.value })}
           />
         </label>
+        {(period.from || period.to || eventType !== 'all') && (
+          <span className="dim" role="status" aria-atomic="true">
+            {entries.length} of {data.audit.length} entries
+          </span>
+        )}
         {(period.from || period.to) && (
-          <>
-            <span className="dim">
-              {entries.length} of {data.audit.length} entries
-            </span>
-            <button
-              className="btn sm"
-              onClick={() => setPeriod({ from: '', to: '' })}
-            >
-              Clear period
-            </button>
-          </>
+          <button
+            className="btn sm"
+            onClick={() => setPeriod({ from: '', to: '' })}
+          >
+            Clear period
+          </button>
         )}
       </div>
       <div className="scroll page">

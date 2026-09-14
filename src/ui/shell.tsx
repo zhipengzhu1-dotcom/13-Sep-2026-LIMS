@@ -185,8 +185,15 @@ export function App() {
         body: JSON.stringify(command),
       });
       if (response.status === 401) {
+        // A Locked account's refusal says why the session ended; show it
+        // word for word.
+        const refusal: { error?: string; code?: string } = await response
+          .json()
+          .catch(() => ({}));
         sessionEnded(
-          'Your session has ended, so this change was not saved. Sign in to continue.',
+          refusal.code === 'accountLocked' && refusal.error
+            ? refusal.error
+            : 'Your session has ended, so this change was not saved. Sign in to continue.',
         );
         return false;
       }
