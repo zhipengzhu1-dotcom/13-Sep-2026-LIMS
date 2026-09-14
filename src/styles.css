@@ -1993,6 +1993,17 @@ body.resizing {
 .inv-form .priority {
   flex-basis: 100%;
 }
+.inv-form .field {
+  display: grid;
+  gap: 4px;
+  flex-basis: 100%;
+  color: var(--ink-2);
+}
+.investigations .sent-to-client {
+  display: block;
+  margin-top: 4px;
+  white-space: pre-line;
+}
 .inv-form .check {
   display: flex;
   align-items: center;

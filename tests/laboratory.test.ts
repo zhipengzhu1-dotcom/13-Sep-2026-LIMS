@@ -3152,9 +3152,12 @@ const notifyClient = (s: Sample, investigationId: string, fields = {}) => ({
   ...target(s),
   investigationId,
   contact: 'Priya Nair, QA (phone)',
+  sent: SENT_TO_CLIENT,
   notifiedAt: NOW,
   ...fields,
 });
+const SENT_TO_CLIENT =
+  'OOS26-0001 data, worksheet and Laboratory error check findings, by email.';
 /** A finished product approved with a Confirmed OOS (OOS26-0001). */
 function approvedWithConfirmedOos(lab: Laboratory) {
   let s = outOfSpecification(lab);
@@ -3296,11 +3299,23 @@ test('a Confirmed OOS blocks Publishing until the Client notification is recorde
     [{ contact: ' ' }, /Client contact who was informed/],
     [{ notifiedAt: '' }, /when the Client was informed/],
     [{ notifiedAt: '2026-09-10T12:00:01.000Z' }, /later than the time/],
-  ] as const)
+    [{ sent: undefined }, /what was sent to the Client/],
+    [
+      { sent: ' - ' },
+      /^State what data and Laboratory error check findings were sent to the Client\.$/,
+    ],
+    [{ sent: 'x'.repeat(2001) }, /what was sent to the Client/],
+  ] as const) {
+    const before = lab.snapshot();
+    const entries = lab.auditTrail().length;
     assert.throws(
       () => run(lab, notifyClient(s, 'OOS26-0001', fields), 'coordinator'),
-      message,
+      (e: Error & { status: number }) =>
+        e.status === 400 && message.test(e.message),
     );
+    assert.deepEqual(lab.snapshot(), before);
+    assert.equal(lab.auditTrail().length, entries, 'a refusal writes nothing');
+  }
 
   const notified = audited(lab, notifyClient(s, 'OOS26-0001'), 'coordinator');
   assert.deepEqual(notified.changes, [
@@ -3313,16 +3328,32 @@ test('a Confirmed OOS blocks Publishing until the Client notification is recorde
     ],
     [
       'OOS investigation OOS26-0001',
+      'clientNotification.sent',
+      null,
+      SENT_TO_CLIENT,
+      null,
+    ],
+    [
+      'OOS investigation OOS26-0001',
       'clientNotification.notifiedAt',
       null,
       NOW,
       null,
     ],
   ]);
+  // On the Sample's audit trail as the Coordinator, at the server's time.
+  assert.deepEqual(
+    lab
+      .auditTrail(s.id)
+      .filter((e) => e.field === 'clientNotification.sent')
+      .map((e) => [e.actor, e.at, e.commandType, e.newValue]),
+    [['coordinator', NOW, 'recordClientOosNotification', SENT_TO_CLIENT]],
+  );
   s = notified.outcome.samples[0];
   assert.equal(s.status, 'Approved', 'recording it is not a transition');
   assert.deepEqual(s.investigations[0].clientNotification, {
     contact: 'Priya Nair, QA (phone)',
+    sent: SENT_TO_CLIENT,
     notifiedAt: NOW,
     recordedBy: 'coordinator',
     recordedAt: NOW,

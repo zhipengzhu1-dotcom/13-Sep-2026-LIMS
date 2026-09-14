@@ -684,6 +684,7 @@ export const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
       {
         investigationId: command.investigationId,
         contact: command.contact,
+        sent: command.sent,
         notifiedAt: () =>
           recordedInstant(
             command.notifiedAt,

@@ -724,6 +724,15 @@ export const commandSchema = z.discriminatedUnion('type', [
     ...target,
     investigationId: text,
     contact: required('Client contact who was informed'),
+    /** What data and Laboratory error check findings were sent to the
+     * Client; the length rule is the module's. */
+    sent: z
+      .string({ error: 'State what was sent to the Client.' })
+      .trim()
+      .max(
+        2000,
+        'State what was sent to the Client in 2000 characters or fewer.',
+      ),
     notifiedAt: z.iso.datetime({
       offset: true,
       error: 'Enter when the Client was informed.',
