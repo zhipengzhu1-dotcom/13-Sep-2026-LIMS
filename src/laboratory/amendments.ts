@@ -1,5 +1,5 @@
 import type { AuditEntry, AuditValue, Result, Sample } from './contracts.ts';
-import { resultsView, type RetestLineage } from './results.ts';
+import { resultsView, testLabel, type RetestLineage } from './results.ts';
 
 /**
  * Amendments of published Certificates of Analysis. Pure and browser-safe: the
@@ -196,7 +196,7 @@ export function changeSummary(
       return `${changes.length ? changes.join(', ') : 're-entered unchanged'}${reasons}`;
     };
     return [
-      `${test.analyteName} (${test.methodCode} v${test.methodVersion}): ${
+      `${testLabel(test)}: ${
         leading.length ? `${leading.map((f) => f.text).join(', ')}: ` : ''
       }${steps.map(step).join('; ')}`,
     ];

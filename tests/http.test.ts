@@ -1006,7 +1006,7 @@ test('an Admin signs in and acts in every role over HTTP, as themselves and with
   const refused = await act({ type: 'approve', password: 'admin-demo' }, 403);
   assert.equal(
     refused.error,
-    'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
+    'You entered a Result on Impurity A (NIT-001 v1), so another Manager must give Approval.',
   );
   assert.equal(lab.snapshot().samples[0].status, 'Awaiting approval');
 

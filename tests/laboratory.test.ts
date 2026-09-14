@@ -2786,7 +2786,7 @@ test('a Result over its Limit is flagged and blocks Approval until an investigat
   const before = lab.snapshot();
   assert.throws(
     () => run(lab, { type: 'approve', ...target(s) }, 'manager'),
-    /Impurity A \(NIT-001\) Result does not comply.*opened and closed before Approval/,
+    /Impurity A \(NIT-001 v1\) Result does not comply.*opened and closed before Approval/,
   );
   assert.deepEqual(lab.snapshot(), before, 'nothing signed or saved');
 
@@ -2867,7 +2867,7 @@ test('Invalidated: the Result stays on record with its cause and reference, and 
   assert.equal(currentResult(s.tests[0]), undefined, 'a retest is required');
   assert.throws(
     () => run(lab, { type: 'approve', ...target(s) }, 'manager'),
-    /retest Result is required on Impurity A \(NIT-001\)/,
+    /retest Result is required on Impurity A \(NIT-001 v1\)/,
   );
   assert.throws(
     () => run(lab, openOos(s), 'manager'),
@@ -3587,6 +3587,41 @@ test('a Certificate stays as issued through replays, reference data changes and 
   assert.throws(
     () => reopened.certificates('26-99999'),
     (e: Error & { status: number }) => e.status === 404,
+  );
+});
+
+test('a Result is certified under the Method version its Test was received with, even after a newer version is in force', (t) => {
+  const folder = mkdtempSync(join(tmpdir(), 'lims-method-version-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const file = join(folder, 'lab.sqlite');
+  const lab = new Laboratory(file, { clock: () => NOW, credentials: accounts });
+  const received = assigned(lab);
+  lab.close();
+
+  // The controlled document is revised before any Result is entered.
+  const revised = new Laboratory(file, {
+    clock: () => NOW,
+    credentials: accounts,
+    methods: methods.map((m) => ({ ...m, id: `${m.code}-v2`, version: 2 })),
+  });
+  t.after(() => revised.close());
+  let s = entered(revised, received);
+  assert.equal(
+    resultsView(s).approvalRefusal('analyst')?.reason,
+    'You entered a Result on Impurity A (NIT-001 v1), so another Manager must give Approval.',
+  );
+  s = run(revised, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(revised, { type: 'approve', ...target(s) }, 'manager');
+
+  const table = renderCertificate(
+    revised.certificate(s.id).content,
+  ).sections.find((x) => x.kind === 'table');
+  assert.deepEqual(
+    table?.kind === 'table' && table.rows.map((row) => row.slice(0, 2)),
+    [
+      ['Impurity A', 'NIT-001 v1 (LC-MS/MS)'],
+      ['Impurity B', 'NIT-003 v1 (LC-MS/MS)'],
+    ],
   );
 });
 
@@ -4476,7 +4511,7 @@ test('a Manager never approves a Sample on which they entered or corrected a Res
       (e: Error & { status: number }) =>
         e.status === 403 &&
         e.message ===
-          `You ${acts.get(x.id)} Impurity A (NIT-001), so another Manager must give Approval.`,
+          `You ${acts.get(x.id)} Impurity A (NIT-001 v1), so another Manager must give Approval.`,
     );
   assert.deepEqual(promoted.snapshot().samples, pending, 'nothing changed');
   assert.equal(promoted.certificates(amended.id).length, 1);
@@ -4549,7 +4584,7 @@ test('an Admin acts in every role as themselves, and is refused Approval of a Sa
     (e: Error & { status: number }) =>
       e.status === 403 &&
       e.message ===
-        'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
+        'You entered a Result on Impurity A (NIT-001 v1), so another Manager must give Approval.',
   );
   assert.deepEqual(lab.snapshot(), before, 'nothing applied or audited');
 

@@ -1302,24 +1302,24 @@ test('a confirmed investigation drafts the statement of its data and Laboratory 
   const s = staged('confirmed');
   assert.equal(
     resultsView(s).investigation(ID).findingsForClient,
-    'OOS26-0001: Impurity A (NIT-001) Result #1, 30 ng/day, worksheet ATT-1. Laboratory error check (no laboratory error identified): Standard preparation log shows a dilution error.',
+    'OOS26-0001: Impurity A (NIT-001 v1) Result #1, 30 ng/day, worksheet ATT-1. Laboratory error check (no laboratory error identified): Standard preparation log shows a dilution error.',
   );
   // It names the Result the investigation decided, not the current one.
   const amended = staged('amended and confirmed again');
   assert.match(
     resultsView(amended).investigation(ID).findingsForClient,
-    /^OOS26-0001: Impurity A \(NIT-001\) Result #1, 30 ng\/day,/,
+    /^OOS26-0001: Impurity A \(NIT-001 v1\) Result #1, 30 ng\/day,/,
   );
   assert.match(
     resultsView(amended).investigation(SECOND).findingsForClient,
-    /^OOS26-0002: Impurity A \(NIT-001\) Result #2, 28 ng\/day,/,
+    /^OOS26-0002: Impurity A \(NIT-001 v1\) Result #2, 28 ng\/day,/,
   );
 });
 
 const uninvestigatedBlocker: Refusal = {
   code: 'OOS uninvestigated',
   reason:
-    'The Impurity A (NIT-001) Result does not comply with its Limit. An OOS investigation must be opened and closed before Approval.',
+    'The Impurity A (NIT-001 v1) Result does not comply with its Limit. An OOS investigation must be opened and closed before Approval.',
   investigationId: null,
 };
 const openBlocker: Refusal = {
@@ -1340,7 +1340,7 @@ const approvalBlockers: [Stage, Refusal | null][] = [
     {
       code: 'retest required',
       reason:
-        'A retest Result is required on Impurity A (NIT-001) before Approval.',
+        'A retest Result is required on Impurity A (NIT-001 v1) before Approval.',
       investigationId: ID,
     },
   ],
@@ -1504,7 +1504,7 @@ const separated: {
     refusal: {
       code: 'separation of duties',
       reason:
-        'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
+        'You entered a Result on Impurity A (NIT-001 v1), so another Manager must give Approval.',
       investigationId: null,
     },
   },
@@ -1514,7 +1514,7 @@ const separated: {
     refusal: {
       code: 'separation of duties',
       reason:
-        'You retested Impurity A (NIT-001), so another Manager must give Approval.',
+        'You retested Impurity A (NIT-001 v1), so another Manager must give Approval.',
       investigationId: null,
     },
   },
@@ -1526,7 +1526,7 @@ const separated: {
     refusal: {
       code: 'separation of duties',
       reason:
-        'You corrected a Retest on Impurity A (NIT-001), so another Manager must give Approval.',
+        'You corrected a Retest on Impurity A (NIT-001 v1), so another Manager must give Approval.',
       investigationId: null,
     },
   },
@@ -1564,7 +1564,7 @@ test('the Approval refusal asks separation of duties before the OOS gate', () =>
   assert.deepEqual(view.approvalRefusal('analyst'), {
     code: 'separation of duties',
     reason:
-      'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
+      'You entered a Result on Impurity A (NIT-001 v1), so another Manager must give Approval.',
     investigationId: null,
   });
   assert.deepEqual(view.approvalRefusal('manager'), {
@@ -1591,7 +1591,7 @@ test('the separation-of-duties message names a correction, and a person is refus
   assert.deepEqual(separationOfDutiesRefusal(s, own), {
     code: 'separation of duties',
     reason:
-      'You corrected a Result on Impurity A (NIT-001), so another Manager must give Approval.',
+      'You corrected a Result on Impurity A (NIT-001 v1), so another Manager must give Approval.',
     investigationId: null,
   });
   // The analyst entered the Result and recorded the check: the first act, the
@@ -1602,7 +1602,7 @@ test('the separation-of-duties message names a correction, and a person is refus
   const first = resultsView(s).benchWork.find((e) => e.person === 'analyst')!;
   assert.equal(
     separationOfDutiesRefusal(s, first).reason,
-    'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
+    'You entered a Result on Impurity A (NIT-001 v1), so another Manager must give Approval.',
   );
 });
 

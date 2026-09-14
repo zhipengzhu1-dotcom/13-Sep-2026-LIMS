@@ -294,7 +294,11 @@ export function investigationOf(
     : sample.investigations.find((i) => i.id === result.investigationId);
 }
 
-const testLabel = (t: Test) => `${t.analyteName} (${t.methodCode})`;
+/** A Test as refusals, OOS findings and Amendment change summaries name it,
+ * with the Method code and version it was run under, e.g.
+ * "Impurity A (NIT-001 v1)". */
+export const testLabel = (t: Test) =>
+  `${t.analyteName} (${t.methodCode} v${t.methodVersion})`;
 
 /** The investigation `id` and the Result it decided. The module writes the
  * link, so a broken one is a programming error rather than a refusal. */
