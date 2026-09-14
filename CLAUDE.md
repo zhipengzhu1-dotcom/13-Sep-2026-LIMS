@@ -16,6 +16,10 @@ Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/age
 
 Benchline must meet 21 CFR Part 11, 21 CFR 211 and ISO/IEC 17025. Before building or reviewing a change to Results, OOS investigations, Limits, the audit trail, Electronic signatures, access, Sample receipt and handling, or Certificates of Analysis, consult the guidelines through subagents. See `docs/agents/regulatory.md`.
 
+### Coding standards
+
+Code follows Matt Pocock's recommendations: deep modules, test-first through public interfaces, mocks only at system boundaries. Before writing, refactoring or reviewing code, read `docs/agents/coding-standards.md`.
+
 ### Front-end design
 
 Before designing, building or reviewing a change to workspace screens, styles or the rendered Certificate of Analysis, invoke the `ui-ux-pro-max` skills. See `docs/agents/frontend-design.md`.
