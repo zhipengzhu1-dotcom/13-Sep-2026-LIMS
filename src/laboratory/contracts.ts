@@ -461,7 +461,10 @@ export type AuditRecordType =
   | 'Attachment'
   | 'Account'
   /** A backup of the database, by the file it was taken to or restored from. */
-  | 'Backup';
+  | 'Backup'
+  /** The instance's database, by its file, as the System administrator
+   * created it. */
+  | 'Database';
 /** Why a user set a password of their own, as its Access event records it, so
  * the periodic access review tells the three apart. */
 export type PasswordSetReason =
@@ -550,7 +553,8 @@ export type AuditedAct =
   | Command['type']
   | 'storeAttachment'
   | AccessEventType
-  /** The System administrator's backup and restore of the database. */
+  /** The System administrator's creation, backup and restore of the database. */
+  | 'createDatabase'
   | 'backup'
   | 'restore';
 
@@ -584,6 +588,7 @@ export const auditedActLabels: Record<AuditedAct, string> = {
   passwordSet: 'Password changed',
   unlock: 'Account unlocked',
   oneTimePasswordIssued: 'One-time password issued',
+  createDatabase: 'Database created',
   backup: 'Backup taken',
   restore: 'Restored from backup',
 };

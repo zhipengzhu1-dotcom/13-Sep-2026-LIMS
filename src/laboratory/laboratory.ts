@@ -391,6 +391,33 @@ export class Laboratory {
     }
   }
 
+  /**
+   * Records that the System administrator created this database, empty, at
+   * a schema version, under the change record `reason` cites. Production
+   * creates no database any other way.
+   */
+  recordDatabaseCreated(event: {
+    by: string;
+    file: string;
+    schemaVersion: number;
+    reason: string;
+  }) {
+    this.audit
+      .writer({
+        actor: event.by,
+        at: this.clock(),
+        commandType: 'createDatabase',
+        commandId: newCommandId(),
+      })
+      .change(
+        { type: 'Database', id: event.file, sampleId: null },
+        'schemaVersion',
+        null,
+        event.schemaVersion,
+        event.reason,
+      );
+  }
+
   /** An attachment's record and bytes, or null if there is none. */
   readAttachment(id: string) {
     return this.attachments.read(id);

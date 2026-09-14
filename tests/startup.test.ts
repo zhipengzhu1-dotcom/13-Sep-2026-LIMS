@@ -11,6 +11,7 @@ import {
   readSettings,
   type Settings,
 } from '../server/startup.ts';
+import { administerFromServer } from '../server/system-administrator.ts';
 
 function folder(t: test.TestContext) {
   const path = mkdtempSync(join(tmpdir(), 'lims-startup-'));
@@ -60,8 +61,33 @@ test('the release version and effective settings are printed at start-up for the
   );
 });
 
-test('production on an empty database creates no Submissions and no accounts, at the database path it was given', (t) => {
+test('production refuses a database file that does not exist, naming it, and creates neither the file nor its folder', (t) => {
+  const mistyped = join(folder(t), 'mistyped');
+  const database = join(mistyped, 'production.sqlite');
+  assert.deepEqual(
+    openInstance({ mode: 'production', database, port: 5173, lockoutNotice }),
+    {
+      outcome: 'refused',
+      reason: `There is no database file ${database}. A production database is created only by the System administrator’s create-database act, under an approved change record. Nothing was created.`,
+    },
+  );
+  assert.ok(!existsSync(mistyped));
+});
+
+/** A new production database, made by the System administrator's
+ * create-database act. */
+async function createdDatabase(t: test.TestContext) {
   const database = join(folder(t), 'production.sqlite');
+  await administerFromServer({
+    env: { ...production, BENCHLINE_DATABASE: database },
+    args: ['create-database', '--change-record', 'CR-2026-001'],
+    operator: 'lab-server-user',
+  });
+  return database;
+}
+
+test('production on a database the System administrator created has no Submissions and no accounts, at the database path it was given', async (t) => {
+  const database = await createdDatabase(t);
   const { lab, accounts } = opened(t, {
     mode: 'production',
     database,
@@ -71,7 +97,10 @@ test('production on an empty database creates no Submissions and no accounts, at
   assert.ok(existsSync(database));
   assert.deepEqual(lab.snapshot().submissions, []);
   assert.deepEqual(accounts.people(), []);
-  assert.deepEqual(lab.auditTrail(), []);
+  assert.deepEqual(
+    lab.auditTrail().map((e) => e.commandType),
+    ['createDatabase'],
+  );
 });
 
 const fileHash = (file: string) =>
@@ -127,7 +156,7 @@ test('in demo the seeded accounts never expire; in production no account is exem
     'signedIn',
   );
 
-  const database = join(folder(t), 'production.sqlite');
+  const database = await createdDatabase(t);
   const settings = {
     mode: 'production',
     database,
@@ -163,8 +192,8 @@ test('demo seeds its records and demo accounts at the database path it was given
   );
 });
 
-test('production opens a database whose real accounts share a demo username, since their passwords are their own', (t) => {
-  const database = join(folder(t), 'production.sqlite');
+test('production opens a database whose real accounts share a demo username, since their passwords are their own', async (t) => {
+  const database = await createdDatabase(t);
   const first = openInstance({
     mode: 'production',
     database,
@@ -232,7 +261,7 @@ test('demo discards a database from before versioned migrations and starts on a 
 test('a lockout notice that production cannot email is recorded as not sent, without the mail password', async (t) => {
   const { lab, accounts } = opened(t, {
     mode: 'production',
-    database: join(folder(t), 'production.sqlite'),
+    database: await createdDatabase(t),
     port: 5173,
     // Nothing listens on port 1, so the mail server refuses the connection.
     lockoutNotice: {

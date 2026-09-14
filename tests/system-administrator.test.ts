@@ -69,13 +69,109 @@ const accessEvents = (lab: Laboratory) =>
       e.reason,
     ]);
 
+/** A new production database, made as the System administrator makes one. */
+async function createdDatabase(t: TestContext) {
+  const database = join(folder(t), 'production.sqlite');
+  await command(database, 'create-database', '--change-record', 'CR-2026-001');
+  return database;
+}
+
 const oneTimePasswordIn = (output: string) =>
   output.match(/One-time password: (\S+)/)?.[1] ?? '';
 
 const SYSTEM_ADMINISTRATOR = 'System administrator (lab-server-user)';
 
-test('the System administrator issues a new account by its change record, and its One-time password is printed once and stored nowhere', async (t) => {
+test('a production database is created only by the create-database act, under its change record, and never over an existing file', async (t) => {
   const database = join(folder(t), 'production.sqlite');
+  for (const reference of [[], ['--change-record', ' ']])
+    await assert.rejects(
+      () => command(database, 'create-database', ...reference),
+      {
+        message:
+          'Cite the approved change record this is done under. Nothing was changed.',
+      },
+    );
+  assert.ok(!existsSync(database));
+
+  assert.equal(
+    await command(
+      database,
+      'create-database',
+      '--change-record',
+      'CR-2026-001',
+    ),
+    `A new, empty database is created at ${database} under change record CR-2026-001.`,
+  );
+  const created = fileHash(database);
+  await assert.rejects(
+    () =>
+      command(database, 'create-database', '--change-record', 'CR-2026-002'),
+    {
+      message: `${database} already exists; a database is created only where there is none. Nothing was changed.`,
+    },
+  );
+  assert.equal(fileHash(database), created);
+
+  const stamped = migrate(database);
+  assert.equal(stamped.outcome, 'current');
+  const { accounts, lab } = open(t, database);
+  assert.deepEqual(accounts.people(), []);
+  assert.deepEqual(
+    lab
+      .auditTrail()
+      .filter((e) => e.recordType === 'Database')
+      .map((e) => [
+        e.commandType,
+        e.recordId,
+        e.actor,
+        e.field,
+        e.newValue,
+        e.reason,
+      ]),
+    [
+      [
+        'createDatabase',
+        database,
+        SYSTEM_ADMINISTRATOR,
+        'schemaVersion',
+        stamped.version,
+        'Change record CR-2026-001',
+      ],
+    ],
+  );
+});
+
+test('every other act refuses a production database file that does not exist, and creates none', async (t) => {
+  // A mistyped file name in the instance's real folder.
+  const base = folder(t);
+  const database = join(base, 'producton.sqlite');
+  const backup = join(base, 'backup.sqlite');
+  for (const args of [
+    [
+      'issue-account',
+      'robin',
+      '--name',
+      'Robin Hale',
+      '--role',
+      'analyst',
+      '--change-record',
+      'CR-2026-014',
+    ],
+    ['unlock', 'robin', '--form', 'F-2026-001'],
+    ['issue-one-time-password', 'robin', '--form', 'F-2026-001'],
+    ['access-events', '--from', '2026-09-01', '--to', '2026-09-02'],
+    ['unsent-notices'],
+    ['backup', backup],
+  ])
+    await assert.rejects(() => command(database, ...args), {
+      message: `There is no database file ${database}. A production database is created only by the System administrator’s create-database act, under an approved change record. Nothing was created.`,
+    });
+  assert.ok(!existsSync(database));
+  assert.ok(!existsSync(backup));
+});
+
+test('the System administrator issues a new account by its change record, and its One-time password is printed once and stored nowhere', async (t) => {
+  const database = await createdDatabase(t);
   const output = await command(
     database,
     'issue-account',
@@ -138,7 +234,7 @@ test('the System administrator issues a new account by its change record, and it
 });
 
 test('unlocking a Locked account needs its approved Form, issues a One-time password, and the account then signs in only to set a new password', async (t) => {
-  const database = join(folder(t), 'production.sqlite');
+  const database = await createdDatabase(t);
   const first = await issued(database);
   {
     const accounts = new Accounts(database);
@@ -582,7 +678,7 @@ async function issued(database: string) {
 }
 
 test('a One-time password signs in only to set a new password of at least 12 characters, different from it', async (t) => {
-  const database = join(folder(t), 'production.sqlite');
+  const database = await createdDatabase(t);
   const oneTimePassword = await issued(database);
   const { accounts, lab } = open(t, database);
 
@@ -646,7 +742,7 @@ test('a One-time password signs in only to set a new password of at least 12 cha
 });
 
 test('a One-time password unused for 72 hours no longer signs in, and the System administrator issues a new one under its Form', async (t) => {
-  const database = join(folder(t), 'production.sqlite');
+  const database = await createdDatabase(t);
   const stale = await issued(database);
   /** The stores on the file with the server clock this many hours on from
    * when the One-time password was issued. */
@@ -768,7 +864,7 @@ test('a One-time password unused for 72 hours no longer signs in, and the System
 });
 
 test('the System administrator issues a Quality lead account like any other, and the Quality lead then runs no command', async (t) => {
-  const database = join(folder(t), 'production.sqlite');
+  const database = await createdDatabase(t);
   const output = await command(
     database,
     'issue-account',

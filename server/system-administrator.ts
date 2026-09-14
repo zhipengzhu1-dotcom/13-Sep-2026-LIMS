@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { closeSync, existsSync, openSync, rmSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,8 +11,8 @@ import {
   auditEntriesOfEventType,
   auditEntriesWithin,
 } from '../src/laboratory/contracts.ts';
-import { migrate } from './migrations.ts';
-import { readSettings } from './startup.ts';
+import { migrate, type MigrationOutcome } from './migrations.ts';
+import { missingDatabase, readSettings } from './startup.ts';
 import { backupDatabase, verifyDatabase, type Verification } from './backup.ts';
 
 /** A verification's report, ending with the SHA-256 of the backup it is
@@ -42,6 +42,7 @@ function reported(
 }
 
 const USAGE = `Usage: npm run system-administrator -- <act> ...
+  create-database --change-record <reference>
   issue-account <username> --name <printed name> --role <role> --change-record <reference>
   unlock <username> --form <reference>
   issue-one-time-password <username> --form <reference>
@@ -81,6 +82,44 @@ export async function administerFromServer({
   const [act, ...rest] = args;
   const database = resolve(settings.database);
   switch (act) {
+    // Production creates no database by itself, so a new Production instance
+    // or Validation environment gets its empty database here.
+    case 'create-database': {
+      const { values } = parse(rest, {
+        'change-record': { type: 'string' },
+      });
+      const reference = cited(values['change-record'], 'change record');
+      const exists = () =>
+        new WorkflowError(
+          `${settings.database} already exists; a database is created only where there is none. Nothing was changed.`,
+          409,
+        );
+      // Created exclusively, so a file that appears after any check is still
+      // never taken over.
+      try {
+        closeSync(openSync(database, 'wx'));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw exists();
+        throw error;
+      }
+      try {
+        return opened(database, ({ lab, migration }) => {
+          if (migration.outcome !== 'created') throw exists();
+          lab.recordDatabaseCreated({
+            by,
+            file: database,
+            schemaVersion: migration.version,
+            reason: `Change record ${reference}`,
+          });
+          return `A new, empty database is created at ${settings.database} under change record ${reference}.`;
+        });
+      } catch (error) {
+        // Left behind, a half-made file would pass for a created database.
+        for (const suffix of ['', '-wal', '-shm'])
+          rmSync(`${database}${suffix}`, { force: true });
+        throw error;
+      }
+    }
     case 'issue-account': {
       const { values, positionals } = parse(rest, {
         name: { type: 'string' },
@@ -191,6 +230,8 @@ export async function administerFromServer({
     case 'backup': {
       const destination = parse(rest, {}).positionals[0];
       if (!destination) throw new WorkflowError(USAGE, 400);
+      if (!existsSync(database))
+        throw new WorkflowError(missingDatabase(database), 404);
       if (existsSync(destination))
         throw new WorkflowError(
           `${destination} already exists; a backup never overwrites a file. Nothing was changed.`,
@@ -308,8 +349,16 @@ function cited(reference: string | boolean | undefined, what: string) {
  * does, so the stores never open a file ahead of its migrations. */
 function opened<T>(
   database: string,
-  act: (stores: { accounts: Accounts; lab: Laboratory }) => T,
+  act: (stores: {
+    accounts: Accounts;
+    lab: Laboratory;
+    migration: MigrationOutcome;
+  }) => T,
 ): T {
+  // Production creates no database by itself, so a missing file is a wrong
+  // path, never a new instance.
+  if (!existsSync(database))
+    throw new WorkflowError(missingDatabase(database), 404);
   const migration = migrate(database);
   if (migration.outcome === 'refused')
     throw new WorkflowError(migration.reason, 409);
@@ -319,7 +368,7 @@ function opened<T>(
     people: () => accounts.people(),
   });
   try {
-    return act({ accounts, lab });
+    return act({ accounts, lab, migration });
   } finally {
     lab.close();
     accounts.close();

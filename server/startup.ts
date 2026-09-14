@@ -37,6 +37,11 @@ export type SettingsOutcome =
 /** The demo keeps its database where it always was. */
 const DEMO_DATABASE = 'data/prototype.sqlite';
 const DEFAULT_PORT = 5173;
+
+/** Why production refuses a database file that is not there: it creates no
+ * database by itself, so a wrong path is never taken for a new instance. */
+export const missingDatabase = (file: string) =>
+  `There is no database file ${file}. A production database is created only by the System administrator’s create-database act, under an approved change record. Nothing was created.`;
 const EMAIL = /^[^\s@]+@[^\s@]+$/;
 
 /**
@@ -154,7 +159,9 @@ const demoLockoutNotice: AccountsOptions['lockoutNotice'] = {
 /**
  * Opens the instance's database as its mode requires. Demo discards a
  * database from before versioned migrations and seeds demo records and demo
- * accounts. Production never discards, seeds or adds an account, and it
+ * accounts. Production never creates its database file (the System
+ * administrator's create-database act does), and never discards, seeds or
+ * adds an account, and it
  * emails lockout notices through the lab's mail server. Only in demo do the
  * demo accounts' passwords never expire. `clock` is the server time the
  * accounts age passwords by.
@@ -164,12 +171,16 @@ export function openInstance(
   clock?: () => string,
 ): InstanceOutcome {
   const { database } = settings;
-  mkdirSync(dirname(database), { recursive: true });
   // Both run before either store opens the file: a discarded demo file takes
   // its old accounts with it, and a migration's new tables are not pre-empted
   // by the stores' own CREATE statements.
-  if (settings.mode === 'demo') discardOutdatedDemoDatabase(database);
-  else {
+  if (settings.mode === 'demo') {
+    mkdirSync(dirname(database), { recursive: true });
+    discardOutdatedDemoDatabase(database);
+  } else {
+    // A mistyped path or a wrong mount must not start on an empty record set.
+    if (!existsSync(database))
+      return { outcome: 'refused', reason: missingDatabase(database) };
     const demo = demoAccountsIn(database);
     if (demo.length)
       return {
