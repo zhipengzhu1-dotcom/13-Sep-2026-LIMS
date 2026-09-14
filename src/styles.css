@@ -33,6 +33,13 @@
   --approved-wash: #e0f0e6;
 
   --row: 30px;
+  /* One spacing scale for the whole workstation (dense: 4px steps). */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --gutter: var(--space-4);
   --narrow: 'wdth' 84;
 
   color-scheme: light;
@@ -265,7 +272,7 @@ kbd {
   min-height: 0;
 }
 /* Bars keep their height; whatever sits between them takes the rest. */
-.shell > :not(.topbar, .filters, .flash, .statusbar) {
+.shell > :not(.topbar, .filters, .refine, .flash, .statusbar) {
   flex: 1;
   min-height: 0;
 }
@@ -738,13 +745,10 @@ body.resizing {
 .row.withdrawn td {
   color: var(--muted);
 }
-.c-id {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.row .c-id {
-  height: var(--row);
+/* The ID cell stays a table cell, so it grows with its row like every other
+ * cell and the row's rule and status edge line up across the whole row. */
+.c-id > * + * {
+  margin-left: 6px;
 }
 .id-link {
   font-weight: 700;
@@ -763,8 +767,7 @@ body.resizing {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.c-client .batch,
-.c-product .batch {
+.grid .batch {
   margin-left: 8px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -875,9 +878,28 @@ body.resizing {
 .deviation-form label.wide {
   flex: 1 1 200px;
 }
-.deviation-form input,
-.deviation-form select {
+/* Inline forms in the panel share one control size with result entry. */
+:is(.deviation-form, .publish-form, .inv-form, .decision)
+  :is(input:not([type='checkbox'], [type='radio'], [type='file']), select) {
+  height: 28px;
   max-width: 100%;
+  padding: 0 7px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--raised);
+}
+:is(.deviation-form, .publish-form, .inv-form) textarea {
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--raised);
+  resize: vertical;
+}
+.deviation-form .btn,
+.publish-form .btn,
+.inv-form .btn {
+  height: 28px;
 }
 
 .status.awaiting-approval {
@@ -1081,18 +1103,31 @@ body.resizing {
   min-height: 0;
   overflow: auto;
 }
-.sample-body > .flash.inline {
-  margin: 10px 16px 0;
+.sample-body {
+  padding-bottom: var(--space-4);
+}
+/* Everything below the test sheet sits on the panel's gutter, like the head. */
+.sample-body > .flash.inline,
+.sample-body > .deviations,
+.sample-body > .signatures,
+.sample-body > .investigations {
+  margin: var(--space-3) var(--gutter) 0;
+}
+.sample-body > .receipt {
+  padding: var(--space-3) var(--gutter) 0;
 }
 .sample-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 10px 16px;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--gutter);
   border-top: 1px solid var(--rule);
   background: var(--sunk);
-  min-height: 50px;
+  min-height: 52px;
+  /* A long form never squeezes the Results above it out of view. */
+  max-height: 50%;
+  overflow: auto;
 }
 .decision {
   width: 100%;
@@ -1114,6 +1149,11 @@ body.resizing {
 }
 
 /* test sheet */
+.grid .sub {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
 .sheet td {
   height: 38px;
 }
@@ -1123,10 +1163,13 @@ body.resizing {
   white-space: normal;
   min-width: 120px;
 }
+/* Secondary lines wrap so all four columns fit the default panel width. */
+.sheet td:first-child {
+  min-width: 150px;
+}
 .sheet .sub {
-  display: block;
-  font-size: 11px;
-  color: var(--muted);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .sheet tbody.editing td {
   background: var(--accent-wash);
@@ -1171,7 +1214,7 @@ body.resizing {
 .entry form {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
+  gap: var(--space-2) var(--space-3);
   flex-wrap: wrap;
 }
 .entry label {
@@ -1485,11 +1528,14 @@ body.resizing {
 }
 .priority {
   display: flex;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: var(--space-1);
 }
+/* A floated legend becomes an ordinary item of its flex or grid fieldset, so
+ * it must take a whole row to sit above the controls like every other label. */
 .priority legend {
   float: left;
-  width: 100%;
+  flex: 0 0 100%;
 }
 .priority label {
   display: flex;
@@ -1575,7 +1621,7 @@ body.resizing {
 }
 .pair legend {
   float: left;
-  width: 100%;
+  grid-column: 1 / -1;
 }
 .form .check {
   display: flex;
@@ -1916,8 +1962,15 @@ body.resizing {
   gap: 6px;
   justify-items: start;
 }
-.inv-form textarea {
-  width: 100%;
+.inv-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.inv-form textarea,
+.inv-form .priority {
+  flex-basis: 100%;
 }
 .inv-form .check {
   display: flex;
@@ -1973,8 +2026,11 @@ body.resizing {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 8px;
+  gap: var(--space-2) var(--space-3);
   width: 100%;
+}
+.publish-form > .dim {
+  flex-basis: 100%;
 }
 .publish-form label {
   display: grid;
@@ -1984,12 +2040,10 @@ body.resizing {
   min-width: 0;
 }
 .publish-form label.wide {
-  flex: 1 1 220px;
+  flex: 1 1 100%;
 }
-.publish-form input,
-.publish-form select,
-.publish-form textarea {
-  max-width: 100%;
+.publish-form label.wide textarea {
+  width: 100%;
 }
 .publish-form .flash {
   flex-basis: 100%;
@@ -2079,12 +2133,12 @@ body.resizing {
 }
 .certificate-fields {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 4px 20px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 4px 24px;
 }
 .certificate-fields div {
   display: grid;
-  grid-template-columns: 11em minmax(0, 1fr);
+  grid-template-columns: 10em minmax(0, 1fr);
   gap: 8px;
 }
 .certificate-fields dt {
@@ -2129,6 +2183,8 @@ body.resizing {
   margin: 14mm;
 }
 @media print {
+  /* The workspace ground would otherwise print around the open dialog. */
+  :root,
   body {
     background: #ffffff;
   }
@@ -2137,6 +2193,7 @@ body.resizing {
   }
   .certificate-view {
     position: static;
+    margin: 0;
     width: auto;
     max-height: none;
     overflow: visible;
