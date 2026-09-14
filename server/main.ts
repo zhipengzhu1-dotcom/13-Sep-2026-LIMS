@@ -3,7 +3,12 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, extname, sep } from 'node:path';
 import { api, expireSessions } from './http.ts';
 import { Sessions } from './sessions.ts';
-import { describeSettings, openInstance, readSettings } from './startup.ts';
+import {
+  capabilities,
+  describeSettings,
+  openInstance,
+  readSettings,
+} from './startup.ts';
 import { currentCheckout, packageVersion, runningVersion } from './release.ts';
 
 /** A refused start is written to standard error, which the service manager
@@ -39,12 +44,11 @@ const handleApi = api(lab, {
 // when the next request arrives.
 const sweep = setInterval(() => expireSessions(lab, sessions), 60_000);
 // The demo serves the workspace from source; production serves the build.
-const vite =
-  settings.mode === 'demo'
-    ? await (
-        await import('vite')
-      ).createServer({ server: { middlewareMode: true }, appType: 'spa' })
-    : null;
+const vite = capabilities(settings.mode).servesWorkspaceFromSource
+  ? await (
+      await import('vite')
+    ).createServer({ server: { middlewareMode: true }, appType: 'spa' })
+  : null;
 const root = resolve('dist');
 const mime: Record<string, string> = {
   '.js': 'text/javascript',

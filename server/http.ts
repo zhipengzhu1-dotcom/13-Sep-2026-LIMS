@@ -12,7 +12,7 @@ import {
 } from './sessions.ts';
 import { HttpError } from './http-error.ts';
 import { handleAttachments } from './attachments.ts';
-import type { Mode } from './startup.ts';
+import { capabilities, type Mode } from './startup.ts';
 
 const MAX_BODY_BYTES = 32768;
 
@@ -39,7 +39,12 @@ export function api(
   lab: Laboratory,
   { accounts, sessions, mode, version }: Authentication,
 ) {
-  const secure = mode === 'production';
+  const {
+    marksCookiesSecure,
+    checksHttpsOrigin,
+    servesAccountsApi,
+    workspace,
+  } = capabilities(mode);
   return async (req: IncomingMessage, res: ServerResponse) => {
     const send = (
       status: number,
@@ -116,21 +121,22 @@ export function api(
           {
             'Set-Cookie': sessionCookie(
               sessions.start(attempt.user.id),
-              secure,
+              marksCookiesSecure,
             ),
           },
         );
       };
 
       // Public, so the sign-in screen lists demo accounts only in the demo.
-      if (route === 'GET /api/instance') return send(200, { mode, version });
+      if (route === 'GET /api/instance')
+        return send(200, { version, capabilities: workspace });
       if (route === 'GET /api/session')
         return send(200, { user: currentUser() });
       // The Admin's account screen, before Go-live only (ADR-0011); in
       // production the System administrator's server command manages
       // accounts (#66).
       if (
-        mode === 'production' &&
+        !servesAccountsApi &&
         (path === '/api/accounts' || path.startsWith('/api/accounts/'))
       )
         return send(403, {
@@ -177,7 +183,7 @@ export function api(
       if (
         req.headers.origin &&
         req.headers.origin !==
-          `${secure ? 'https' : 'http'}://${req.headers.host}`
+          `${checksHttpsOrigin ? 'https' : 'http'}://${req.headers.host}`
       )
         return send(403, { error: 'Cross-origin writes are not allowed.' });
       if (!req.headers['content-type']?.startsWith('application/json'))
@@ -224,7 +230,7 @@ export function api(
         return send(
           200,
           { signedOut: true },
-          { 'Set-Cookie': clearedSessionCookie(secure) },
+          { 'Set-Cookie': clearedSessionCookie(marksCookiesSecure) },
         );
       }
       const user = currentUser();
@@ -254,7 +260,7 @@ export function api(
                 'This account is locked. Contact the System administrator.',
               code: 'accountLocked',
             },
-            { 'Set-Cookie': clearedSessionCookie(secure) },
+            { 'Set-Cookie': clearedSessionCookie(marksCookiesSecure) },
           );
         }
         if (outcome === 'incorrect')
@@ -286,7 +292,7 @@ export function api(
         return send(
           error.status,
           { error: error.message, code: error.code },
-          { 'Set-Cookie': clearedSessionCookie(secure) },
+          { 'Set-Cookie': clearedSessionCookie(marksCookiesSecure) },
         );
       if (error instanceof HttpError || error instanceof WorkflowError)
         return send(error.status, { error: error.message });

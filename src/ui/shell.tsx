@@ -23,6 +23,10 @@ import {
   PASSWORD_AGING_DAYS,
   PASSWORD_MINIMUM_LENGTH,
 } from '../accounts/account-contracts';
+import {
+  nothingOffered,
+  type WorkspaceCapabilities,
+} from '../instance-contracts';
 import { LabAuditTrail } from './audit-trail';
 import { AccountsScreen } from './accounts';
 import { OosTable } from './oos';
@@ -60,7 +64,6 @@ import {
   stamp,
   Status,
   statusClass,
-  type InstanceMode,
   type View,
 } from './shared';
 
@@ -69,7 +72,8 @@ export function App() {
   // undefined while the session is being checked; null when signed out.
   const [user, setUser] = useState<SessionUser | null | undefined>(undefined);
   const [signInMessage, setSignInMessage] = useState('');
-  const [mode, setMode] = useState<InstanceMode>(null);
+  // What the instance offers the workspace; nothing demo-only until it is known.
+  const [offers, setOffers] = useState<WorkspaceCapabilities>(nothingOffered);
   // The running version with its commit, so users can tell which build runs.
   const [version, setVersion] = useState('');
   useEffect(() => {
@@ -77,7 +81,8 @@ export function App() {
       .then(async (response) => {
         if (!response.ok) return;
         const instance = await response.json();
-        setMode(instance.mode);
+        // Anything the server leaves out stays not offered.
+        setOffers({ ...nothingOffered, ...instance.capabilities });
         setVersion(instance.version);
       })
       .catch(() => {});
@@ -170,7 +175,7 @@ export function App() {
         if (!response.ok) return;
         const next: SessionUser = (await response.json()).user;
         setUser(next);
-        if (!viewsForRole(next.role, mode).includes(view))
+        if (!viewsForRole(next.role, offers).includes(view))
           navigate(defaultViewForRole(next.role));
       })
       .catch(() => {});
@@ -276,7 +281,7 @@ export function App() {
   }
 
   const person = user ?? undefined;
-  const roleViews = viewsForRole(person?.role, mode);
+  const roleViews = viewsForRole(person?.role, offers);
   const isQueue = QUEUES.includes(view);
   const base = useMemo(
     () => (data ? baseSet(view, data.samples, actor, data.signatures) : []),
@@ -424,7 +429,7 @@ export function App() {
       <SignIn
         message={signInMessage}
         onSignedIn={signedIn}
-        demo={mode === 'demo'}
+        listsDemoAccounts={offers.listsDemoAccounts}
       />
     );
 
@@ -888,7 +893,7 @@ export function App() {
           <LabAuditTrail data={data} />
         )}
         <footer className="statusbar">
-          {mode === 'demo' && (
+          {offers.showsDemoBadge && (
             <>
               <span className="demo">Demo</span>
               <span>
@@ -1116,12 +1121,12 @@ export type SessionUser = { id: string; name: string; role: string };
 export function SignIn({
   message,
   onSignedIn,
-  demo,
+  listsDemoAccounts,
 }: {
   message: string;
   onSignedIn: (user: SessionUser) => void;
   /** The demo accounts are listed in the demo only, never in production. */
-  demo: boolean;
+  listsDemoAccounts: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -1308,7 +1313,7 @@ export function SignIn({
         <button className="btn primary" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
-        {demo && (
+        {listsDemoAccounts && (
           <p className="sign-in-note">
             Prototype demo accounts (password is the username followed by{' '}
             <code>-demo</code>): <code>coordinator</code>, <code>analyst</code>,{' '}

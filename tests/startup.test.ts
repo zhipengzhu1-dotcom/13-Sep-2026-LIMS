@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  capabilities,
   describeSettings,
   openInstance,
   readSettings,
@@ -33,6 +34,41 @@ const lockoutNotice = {
   systemAdministrator: 'sysadmin@lab.example',
   qualityLead: 'quality@lab.example',
 };
+
+test('the demo offers its demo records, demo accounts and the Accounts screen; production offers none of them and protects its sessions and database', () => {
+  assert.deepEqual(capabilities('demo'), {
+    servesWorkspaceFromSource: true,
+    discardsOutdatedDatabase: true,
+    seedsDemoData: true,
+    demoPasswordsNeverExpire: true,
+    marksCookiesSecure: false,
+    checksHttpsOrigin: false,
+    servesAccountsApi: true,
+    allowsUnlockCommand: true,
+    allowsSystemAdministratorCommand: false,
+    workspace: {
+      showsDemoBadge: true,
+      listsDemoAccounts: true,
+      offersAccountsScreen: true,
+    },
+  });
+  assert.deepEqual(capabilities('production'), {
+    servesWorkspaceFromSource: false,
+    discardsOutdatedDatabase: false,
+    seedsDemoData: false,
+    demoPasswordsNeverExpire: false,
+    marksCookiesSecure: true,
+    checksHttpsOrigin: true,
+    servesAccountsApi: false,
+    allowsUnlockCommand: false,
+    allowsSystemAdministratorCommand: true,
+    workspace: {
+      showsDemoBadge: false,
+      listsDemoAccounts: false,
+      offersAccountsScreen: false,
+    },
+  });
+});
 
 test('the release version and effective settings are printed at start-up for the installation record, never the mail password', () => {
   const ready = readSettings(production);

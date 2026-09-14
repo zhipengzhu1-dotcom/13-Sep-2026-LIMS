@@ -8,8 +8,86 @@ import { verifyPasswordSync } from '../src/accounts/passwords.ts';
 import { discardOutdatedDemoDatabase, seed } from './seed.ts';
 import { migrate, type MigrationOutcome } from './migrations.ts';
 import { smtpTransport } from './mail.ts';
+import type { WorkspaceCapabilities } from '../src/instance-contracts.ts';
 
 export type Mode = 'demo' | 'production';
+
+/** Every consequence of an instance's mode, named, so the server and the
+ * workspace read what the instance offers rather than comparing the mode. */
+export type Capabilities = {
+  /** The workspace is served from source through Vite, not from the build. */
+  servesWorkspaceFromSource: boolean;
+  /** A missing database folder is created and a database from before
+   * versioned migrations is discarded. Without it, a missing database file or
+   * one holding demo accounts is refused. */
+  discardsOutdatedDatabase: boolean;
+  /** Demo records and demo accounts are seeded at start-up. */
+  seedsDemoData: boolean;
+  /** The demo accounts' passwords are exempt from password aging. */
+  demoPasswordsNeverExpire: boolean;
+  /** The session cookie is sent only over https. */
+  marksCookiesSecure: boolean;
+  /** A write must come from the https origin of the TLS reverse proxy. */
+  checksHttpsOrigin: boolean;
+  /** The server answers the Admin's Accounts API (ADR-0011); without it every
+   * `/api/accounts` request is refused, whatever the workspace shows. */
+  servesAccountsApi: boolean;
+  /** `npm run unlock` may unlock an account (ADR-0011). */
+  allowsUnlockCommand: boolean;
+  /** The System administrator's server command may run (ADR-0007). */
+  allowsSystemAdministratorCommand: boolean;
+  workspace: WorkspaceCapabilities;
+};
+
+/** What each mode offers, every capability written out for each mode, so a
+ * mode is granted nothing by default. */
+const offeredByMode: Record<Mode, Capabilities> = {
+  demo: {
+    servesWorkspaceFromSource: true,
+    discardsOutdatedDatabase: true,
+    seedsDemoData: true,
+    demoPasswordsNeverExpire: true,
+    marksCookiesSecure: false,
+    checksHttpsOrigin: false,
+    servesAccountsApi: true,
+    allowsUnlockCommand: true,
+    allowsSystemAdministratorCommand: false,
+    workspace: {
+      showsDemoBadge: true,
+      listsDemoAccounts: true,
+      offersAccountsScreen: true,
+    },
+  },
+  production: {
+    servesWorkspaceFromSource: false,
+    discardsOutdatedDatabase: false,
+    seedsDemoData: false,
+    demoPasswordsNeverExpire: false,
+    marksCookiesSecure: true,
+    checksHttpsOrigin: true,
+    servesAccountsApi: false,
+    allowsUnlockCommand: false,
+    allowsSystemAdministratorCommand: true,
+    workspace: {
+      showsDemoBadge: false,
+      listsDemoAccounts: false,
+      offersAccountsScreen: false,
+    },
+  },
+};
+
+export function capabilities(mode: Mode): Capabilities {
+  return offeredByMode[mode];
+}
+
+/** The mode the environment names, or null when it names none this build
+ * knows (which `readSettings` refuses with the reason). */
+export function readMode(
+  env: Readonly<Record<string, string | undefined>>,
+): Mode | null {
+  const mode = env.BENCHLINE_MODE;
+  return mode === 'demo' || mode === 'production' ? mode : null;
+}
 
 /** Where and how a production instance emails a lockout notice (§11.300(d),
  * ADR-0009). The SMTP URL carries the mail password, so it is never printed. */
@@ -54,16 +132,18 @@ const EMAIL = /^[^\s@]+@[^\s@]+$/;
 export function readSettings(
   env: Readonly<Record<string, string | undefined>>,
 ): SettingsOutcome {
-  const mode = env.BENCHLINE_MODE;
-  if (!mode)
+  const mode = readMode(env);
+  if (!env.BENCHLINE_MODE)
     return {
       outcome: 'refused',
       reasons: ['Set BENCHLINE_MODE to demo or production.'],
     };
-  if (mode !== 'demo' && mode !== 'production')
+  if (!mode)
     return {
       outcome: 'refused',
-      reasons: [`BENCHLINE_MODE is "${mode}"; set it to demo or production.`],
+      reasons: [
+        `BENCHLINE_MODE is "${env.BENCHLINE_MODE}"; set it to demo or production.`,
+      ],
     };
   const reasons: string[] = [];
   const port = env.PORT ? Number(env.PORT) : DEFAULT_PORT;
@@ -172,10 +252,11 @@ export function openInstance(
   release?: string,
 ): InstanceOutcome {
   const { database } = settings;
+  const offers = capabilities(settings.mode);
   // Both run before either store opens the file: a discarded demo file takes
   // its old accounts with it, and a migration's new tables are not pre-empted
   // by the stores' own CREATE statements.
-  if (settings.mode === 'demo') {
+  if (offers.discardsOutdatedDatabase) {
     mkdirSync(dirname(database), { recursive: true });
     discardOutdatedDemoDatabase(database);
   } else {
@@ -194,21 +275,22 @@ export function openInstance(
     return { outcome: 'refused', reason: migration.reason };
   const accounts = new Accounts(database, {
     clock,
-    agingExempt:
-      settings.mode === 'demo' ? demoAccounts.map((account) => account.id) : [],
+    agingExempt: offers.demoPasswordsNeverExpire
+      ? demoAccounts.map((account) => account.id)
+      : [],
     lockoutNotice:
-      settings.mode === 'demo'
-        ? demoLockoutNotice
-        : {
+      'lockoutNotice' in settings
+        ? {
             systemAdministrator: settings.lockoutNotice.systemAdministrator,
             qualityLead: settings.lockoutNotice.qualityLead,
             transport: smtpTransport(
               settings.lockoutNotice.smtpUrl,
               settings.lockoutNotice.from,
             ),
-          },
+          }
+        : demoLockoutNotice,
   });
-  if (settings.mode === 'demo') accounts.seed(demoAccounts);
+  if (offers.seedsDemoData) accounts.seed(demoAccounts);
   // The core verifies Electronic signatures against these accounts' hashes and
   // takes its users from them, so a user added to the accounts can act at once.
   let lab: Laboratory;
@@ -225,7 +307,7 @@ export function openInstance(
       return { outcome: 'refused', reason: error.message };
     throw error;
   }
-  if (settings.mode === 'demo') seed(lab);
+  if (offers.seedsDemoData) seed(lab);
   return {
     outcome: 'opened',
     lab,
@@ -282,7 +364,7 @@ export function describeSettings(settings: Settings, version: string): string {
     `Database: ${settings.database}`,
     `Port: ${settings.port} (127.0.0.1 only)`,
   ];
-  if (settings.mode === 'demo')
+  if (!('lockoutNotice' in settings))
     return [
       ...lines,
       'Lockout notices: printed on the server console, not emailed',

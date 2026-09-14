@@ -5,7 +5,11 @@ import {
   type Sample,
   type Signature,
 } from '../laboratory/contracts';
-import { closed, type InstanceMode, type View } from './shared';
+import {
+  nothingOffered,
+  type WorkspaceCapabilities,
+} from '../instance-contracts';
+import { closed, type View } from './shared';
 
 /** Each role's own queue is a permission, not a preference: a Coordinator
  * receives Submissions, assigns them from Receiving and oversees the whole
@@ -14,12 +18,13 @@ import { closed, type InstanceMode, type View } from './shared';
  * queue (the server enforces this — see `requireRole` and
  * `requireAssignedAnalyst` in handlers.ts), so there is no reason to show
  * them a queue they cannot use. An Admin acts in every lab role (ADR-0004), so
- * sees every view but the Quality lead's, and the Accounts screen in the demo
- * only (ADR-0011). The Quality lead acts on nothing: they review the whole
- * register, the Samples with an invalid signature and the audit trail (#67). */
+ * sees every view but the Quality lead's, and the Accounts screen where the
+ * instance offers it: in the demo only (ADR-0011). The Quality lead acts on
+ * nothing: they review the whole register, the Samples with an invalid
+ * signature and the audit trail (#67). */
 export function viewsForRole(
   role: string | undefined,
-  mode: InstanceMode,
+  offers: WorkspaceCapabilities,
 ): View[] {
   if (role === 'quality lead')
     return ['Samples', 'Invalid signatures', 'Methods', 'Audit trail'];
@@ -34,7 +39,7 @@ export function viewsForRole(
       'OOS investigations',
       'Methods',
       'Audit trail',
-      ...(mode === 'demo' ? (['Accounts'] as const) : []),
+      ...(offers.offersAccountsScreen ? (['Accounts'] as const) : []),
     ];
   if (role === 'analyst') return ['My work', 'Methods', 'Audit trail'];
   if (role === 'manager')
@@ -50,7 +55,7 @@ export function viewsForRole(
 }
 
 export function defaultViewForRole(role: string | undefined): View {
-  return viewsForRole(role, null)[0];
+  return viewsForRole(role, nothingOffered)[0];
 }
 
 /** The rows a queue view starts from, before any filter or search. Counts in

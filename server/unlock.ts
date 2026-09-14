@@ -5,7 +5,7 @@ import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { WorkflowError } from '../src/laboratory/workflow-error.ts';
 import { migrate } from './migrations.ts';
-import { readSettings } from './startup.ts';
+import { capabilities, readMode, readSettings } from './startup.ts';
 import { currentCheckout, packageVersion, runningVersion } from './release.ts';
 
 /**
@@ -24,7 +24,9 @@ export function unlockFromServer({
   username: string;
   operator: string;
 }): string {
-  if (env.BENCHLINE_MODE === 'production')
+  // An unknown mode falls through to `readSettings`, which refuses it.
+  const mode = readMode(env);
+  if (mode && !capabilities(mode).allowsUnlockCommand)
     throw new WorkflowError(
       'The unlock command is for the demo only. In production the System administrator unlocks accounts with `npm run system-administrator -- unlock`.',
       403,

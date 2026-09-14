@@ -12,7 +12,12 @@ import {
   auditEntriesWithin,
 } from '../src/laboratory/contracts.ts';
 import { migrate, type MigrationOutcome } from './migrations.ts';
-import { missingDatabase, readSettings } from './startup.ts';
+import {
+  capabilities,
+  missingDatabase,
+  readMode,
+  readSettings,
+} from './startup.ts';
 import { backupDatabase, verifyDatabase, type Verification } from './backup.ts';
 import { currentCheckout, packageVersion, runningVersion } from './release.ts';
 
@@ -70,7 +75,9 @@ export async function administerFromServer({
   args: readonly string[];
   operator: string;
 }): Promise<string> {
-  if (env.BENCHLINE_MODE === 'demo')
+  // An unknown mode falls through to `readSettings`, which refuses it.
+  const mode = readMode(env);
+  if (mode && !capabilities(mode).allowsSystemAdministratorCommand)
     throw new WorkflowError(
       'The System administrator’s command is for production. In the demo, the Admin manages accounts on the Accounts screen and `npm run unlock` unlocks a lone Admin.',
       403,

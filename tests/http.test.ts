@@ -591,8 +591,12 @@ test('in production the Accounts screen is refused, even to the Admin, and the s
   // itself never adds them.
   const { url, post, signIn } = await serve(t, 'production');
   assert.deepEqual(await (await fetch(url + '/api/instance')).json(), {
-    mode: 'production',
     version: '1.0.0-rc1',
+    capabilities: {
+      showsDemoBadge: false,
+      listsDemoAccounts: false,
+      offersAccountsScreen: false,
+    },
   });
   const signedIn = await post('/api/sign-in', {
     username: 'admin',
@@ -634,11 +638,15 @@ test('in production the Accounts screen is refused, even to the Admin, and the s
   );
 });
 
-test('the demo reports its mode and keeps a session cookie without Secure', async (t) => {
+test('the demo offers its badge, demo accounts and Accounts screen, and keeps a session cookie without Secure', async (t) => {
   const { url, post } = await serve(t);
   assert.deepEqual(await (await fetch(url + '/api/instance')).json(), {
-    mode: 'demo',
     version: '1.0.0-rc1',
+    capabilities: {
+      showsDemoBadge: true,
+      listsDemoAccounts: true,
+      offersAccountsScreen: true,
+    },
   });
   const signedIn = await post('/api/sign-in', {
     username: 'admin',
