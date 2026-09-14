@@ -382,8 +382,7 @@ export function TestSheet({
         // Earlier Results besides the current one, such as an Invalidated
         // result awaiting its retest.
         const earlier = results.length - (current ? 1 : 0);
-        const retest =
-          !current && results.some((h) => h.result.status === 'invalidated');
+        const retest = view.retestRequired;
         return (
           <tbody key={t.id} className={editing ? 'editing' : undefined}>
             <tr>

@@ -8,8 +8,20 @@ import type { Attachment } from './attachment-contracts.ts';
 import type { CertificateSummary } from './certificate.ts';
 
 export * from './limits.ts';
-export * from './investigations.ts';
-import type { OosInvestigation } from './investigations.ts';
+// The Result & OOS investigation module's answers, for callers that ask
+// through contracts. Their logic lives only in results.ts.
+export {
+  enteredResultOn,
+  investigationOf,
+  oosApprovalBlocker,
+  oosPublishBlocker,
+  oosRows,
+  outOfSpecification,
+  type OosInvestigation,
+  type OosOutcome,
+  type OosRow,
+} from './results.ts';
+import type { OosInvestigation } from './results.ts';
 
 /** Lab users as the workspace shows them. Sign-in accounts (with password
  * hashes, server side only) are seeded from this list in src/accounts. */
@@ -795,16 +807,3 @@ export type CommandOutcome = {
       originalActorId: string;
     }
 );
-
-/**
- * Separation of duties (ADR-0003): whoever entered, corrected or retested any
- * Result on a Sample, current or earlier, in its first Approval or in any
- * Amendment, may not give it Approval. Every correction is its own Result, so
- * its author is on record. Shared so the core enforces it and the workspace
- * can explain a disabled Approve.
- */
-export function enteredResultOn(sample: Sample, actorId: string) {
-  return sample.tests.some((t) =>
-    t.results.some((r) => r.enteredBy === actorId),
-  );
-}

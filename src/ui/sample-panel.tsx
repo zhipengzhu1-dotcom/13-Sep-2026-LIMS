@@ -5,9 +5,7 @@ import {
   actsAs,
   auditsSample,
   currentResult,
-  enteredResultOn,
   heldStatuses,
-  oosApprovalBlocker,
   signatureMeaning,
   type Result,
   type Snapshot,
@@ -15,6 +13,7 @@ import {
   type Signature,
   type SigningCommandType,
 } from '../laboratory/contracts';
+import { resultsView } from '../laboratory/results';
 import { AuditTable } from './audit-trail';
 import { CertificateVersions } from './certificate-view';
 import { Investigations } from './oos';
@@ -59,10 +58,11 @@ export function SamplePanel({
     ['In progress', 'Returned', 'Amendment in progress'].includes(s.status);
   const canDecide =
     actsAs(person, 'manager') && s.status === 'Awaiting approval';
+  const results = resultsView(s);
   // Separation of duties (ADR-0003): the core refuses this Approval too.
-  const ownResults = enteredResultOn(s, actor);
+  const ownResults = results.benchWork.some((e) => e.person === actor);
   // The OOS gate, as the core enforces it.
-  const oosBlocker = oosApprovalBlocker(s);
+  const oosBlocker = results.approvalBlocker?.reason ?? null;
   const canAssign =
     actsAs(person, 'coordinator') &&
     !['Approved', 'Published', 'Awaiting approval', ...heldStatuses].includes(

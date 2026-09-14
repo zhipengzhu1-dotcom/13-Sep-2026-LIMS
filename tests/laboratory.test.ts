@@ -2520,6 +2520,33 @@ test('OOS commands check roles, the assigned analyst and the order of the invest
   refused(labErrorCheck(s, id), 'analyst', /already closed/);
 });
 
+test('an Admin assigned the Sample records the laboratory error check as themselves', (t) => {
+  const lab = memory(t);
+  let s = outOfSpecification(lab);
+  s = run(lab, openOos(s), 'manager');
+  s = run(
+    lab,
+    { type: 'return', ...target(s), comment: 'Reassigning for the OOS.' },
+    'manager',
+  );
+  s = run(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'admin' },
+    'coordinator',
+  );
+  assert.throws(
+    () => run(lab, labErrorCheck(s, 'OOS26-0001'), 'analyst'),
+    /assigned analyst/,
+  );
+  const checked = audited(lab, labErrorCheck(s, 'OOS26-0001'), 'admin');
+  assert.ok(checked.entries.length > 0);
+  assert.ok(checked.entries.every((e) => e.actor === 'admin' && e.at === NOW));
+  assert.equal(
+    checked.outcome.samples[0].investigations[0].labErrorCheck?.by,
+    'admin',
+  );
+});
+
 test('a Result under investigation cannot be corrected around it', (t) => {
   const lab = memory(t);
   let s = assigned(lab);

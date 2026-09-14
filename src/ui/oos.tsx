@@ -1,17 +1,18 @@
 import { useState } from 'react';
 import {
   actsAs,
-  currentResult,
-  investigationOf,
-  oosRows,
-  outOfSpecification,
-  type OosInvestigation,
-  type OosRow,
   type Result,
   type Snapshot,
   type Sample,
-  type Test,
 } from '../laboratory/contracts';
+import {
+  investigationOf,
+  oosRows,
+  outOfSpecification,
+  resultsView,
+  type OosInvestigation,
+  type OosRow,
+} from '../laboratory/results';
 import { localDateTime } from './receiving';
 import { ResultValue } from './results';
 import { closed, type Execute, personName, stamp, Status } from './shared';
@@ -73,7 +74,8 @@ export function Investigations({
   busy: boolean;
   execute: Execute;
 }) {
-  const rows = oosRows([s]);
+  const results = resultsView(s);
+  const rows = results.oosRows;
   if (!rows.length) return null;
   const person = data.people.find((p) => p.id === actor)!;
   const manager =
@@ -205,12 +207,13 @@ export function Investigations({
                           Closed by {personName(data, inv.closedBy)},{' '}
                           {stamp(inv.closedAt!)}
                         </span>
-                        {inv.outcome === 'Invalidated' && !currentResult(t) && (
-                          <span className="oos-note">
-                            {' '}
-                            A retest Result is required on this Test.
-                          </span>
-                        )}
+                        {inv.outcome === 'Invalidated' &&
+                          results.test(t.id).retestRequired && (
+                            <span className="oos-note">
+                              {' '}
+                              A retest Result is required on this Test.
+                            </span>
+                          )}
                       </>
                     ) : manager && inv.labErrorCheck ? (
                       <ConcludeForm
