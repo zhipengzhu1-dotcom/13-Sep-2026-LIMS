@@ -80,7 +80,7 @@ A Result an OOS investigation found to have an assignable laboratory cause: a la
 _Avoid_: Deleted result, void, superseded result
 
 **Retest**:
-A new Result on a Test whose Result was Invalidated, recording the Invalidated result and the OOS investigation it follows.
+A new Result on a Test whose Result was Invalidated, recording the Invalidated result and the OOS investigation it follows. It is calculated again, on its own calculation worksheet, and a correction of it is still that Retest.
 _Avoid_: Re-analysis, repeat, correction
 
 **Bench work**:

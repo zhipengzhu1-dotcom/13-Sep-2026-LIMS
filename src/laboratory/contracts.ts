@@ -11,12 +11,11 @@ export * from './limits.ts';
 // The Result & OOS investigation module's answers, for callers that ask
 // through contracts. Their logic lives only in results.ts.
 export {
-  enteredResultOn,
+  didBenchWork,
   investigationOf,
-  oosApprovalBlocker,
-  oosPublishBlocker,
   oosRows,
   outOfSpecification,
+  resultsView,
   type OosInvestigation,
   type OosOutcome,
   type OosRow,

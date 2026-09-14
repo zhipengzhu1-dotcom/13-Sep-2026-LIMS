@@ -12,9 +12,7 @@ import {
 import { WorkflowError } from '../src/laboratory/workflow-error.ts';
 import {
   concludeInvestigation,
-  enteredResultOn,
-  oosApprovalBlocker,
-  oosPublishBlocker,
+  didBenchWork,
   oosRows,
   openInvestigation,
   recordClientNotification,
@@ -210,6 +208,13 @@ const retestCall: Refusal = {
   investigationId: 'OOS26-0001',
 };
 
+const worksheetReused: Refusal = {
+  code: 'worksheet reused',
+  reason:
+    "This calculation worksheet is Result #1's, which OOS investigation OOS26-0001 Invalidated. A Retest needs its own calculation worksheet.",
+  investigationId: 'OOS26-0001',
+};
+
 type Accepted = {
   name: string;
   materialType?: MaterialType;
@@ -271,6 +276,17 @@ const accepted: Accepted[] = [
     statuses: ['superseded', 'current'],
   },
   {
+    name: 'an unchanged value is recorded beside the fields that changed',
+    arrange: (s) => record(s),
+    fields: { instrumentReading: 1.3, reason: 'Re-integrated' },
+    kind: 'correction',
+    changes: [
+      [RECORD, 'result.value', 2.5, 2.5, 'Re-integrated'],
+      [RECORD, 'result.instrumentReading', 1.25, 1.3, 'Re-integrated'],
+    ],
+    statuses: ['superseded', 'current'],
+  },
+  {
     name: 'a confirmed OOS is corrected once the Sample has a Certificate',
     arrange: (s) => {
       record(s, { value: 30 });
@@ -295,19 +311,26 @@ const accepted: Accepted[] = [
     statuses: ['superseded', 'current'],
   },
   {
-    // A Retest replaces the Invalidated result, so the trail compares with
-    // it, and records the investigation it follows as an audited field.
-    name: 'a Retest after an Invalidated result needs no reason and records the investigation it follows',
+    // A Retest is a new Result with no current Result before it, so, like a
+    // first entry, its entries have no old values; the Invalidated result
+    // stays on record, and the audited link names the investigation it follows.
+    name: 'a Retest after an Invalidated result needs no reason and records every field and the investigation it follows',
     arrange: (s) => {
       record(s, { value: 30 });
       investigate(s, 'Invalidated');
     },
-    fields: {},
+    fields: { worksheet: { id: 'ATT-2' } },
     kind: 'retest',
     changes: [
-      [RECORD, 'result.value', 30, 2.5, null],
-      [RECORD, 'result.qualifier', 'quantified', '< LOQ', null],
-      [RECORD, 'result.conformity', 'Does not comply', 'Complies', null],
+      [RECORD, 'result.value', null, 2.5, null],
+      [RECORD, 'result.unit', null, 'ng/day', null],
+      [RECORD, 'result.qualifier', null, '< LOQ', null],
+      [RECORD, 'result.instrumentReading', null, 1.25, null],
+      [RECORD, 'result.sequenceId', null, 'SEQ-0001', null],
+      [RECORD, 'result.attachmentId', null, 'ATT-2', null],
+      [RECORD, 'result.limit.entry', null, 1, null],
+      [RECORD, 'result.limit.value', null, 26.5, null],
+      [RECORD, 'result.conformity', null, 'Complies', null],
       [RECORD, 'result.retestAfter', null, 'OOS26-0001', null],
     ],
     statuses: ['invalidated', 'current'],
@@ -315,21 +338,43 @@ const accepted: Accepted[] = [
     retestAfter: 'OOS26-0001',
   },
   {
-    // Only a Retest records the link: correcting one supersedes it with a
-    // Result that is no Retest, and the trail says so.
-    name: 'a correction of a Retest records no link',
+    name: 'a Retest of the value the Invalidated result had is still recorded',
     arrange: (s) => {
       record(s, { value: 30 });
       investigate(s, 'Invalidated');
-      record(s);
     },
-    fields: { value: 2.6, reason: 'Re-integrated' },
-    kind: 'correction',
+    fields: { value: 30, worksheet: { id: 'ATT-2' } },
+    kind: 'retest',
     changes: [
-      [RECORD, 'result.value', 2.5, 2.6, 'Re-integrated'],
-      [RECORD, 'result.retestAfter', 'OOS26-0001', null, 'Re-integrated'],
+      [RECORD, 'result.value', null, 30, null],
+      [RECORD, 'result.unit', null, 'ng/day', null],
+      [RECORD, 'result.qualifier', null, 'quantified', null],
+      [RECORD, 'result.instrumentReading', null, 1.25, null],
+      [RECORD, 'result.sequenceId', null, 'SEQ-0001', null],
+      [RECORD, 'result.attachmentId', null, 'ATT-2', null],
+      [RECORD, 'result.limit.entry', null, 1, null],
+      [RECORD, 'result.limit.value', null, 26.5, null],
+      [RECORD, 'result.conformity', null, 'Does not comply', null],
+      [RECORD, 'result.retestAfter', null, 'OOS26-0001', null],
     ],
+    statuses: ['invalidated', 'current'],
+    blocker: retestCall,
+    retestAfter: 'OOS26-0001',
+  },
+  {
+    // The corrected Result is still the Retest: it keeps the link, which
+    // does not change, so the trail writes no entry for it.
+    name: 'a correction of a Retest keeps the investigation it follows',
+    arrange: (s) => {
+      record(s, { value: 30 });
+      investigate(s, 'Invalidated');
+      record(s, { worksheet: { id: 'ATT-2' } });
+    },
+    fields: { value: 2.6, reason: 'Re-integrated', worksheet: { id: 'ATT-2' } },
+    kind: 'correction',
+    changes: [[RECORD, 'result.value', 2.5, 2.6, 'Re-integrated']],
     statuses: ['invalidated', 'superseded', 'current'],
+    retestAfter: 'OOS26-0001',
   },
   {
     name: 'a raw material Result has no Limit, whatever is in force',
@@ -383,7 +428,7 @@ for (const c of accepted)
       [
         c.fields.instrumentReading ?? 1.25,
         c.fields.sequenceId ?? 'SEQ-0001',
-        'ATT-1',
+        c.fields.worksheet?.id ?? 'ATT-1',
       ],
     );
   });
@@ -505,6 +550,18 @@ const refused: Refused[] = [
       'The worksheet attachment was not found. Upload the calculation worksheet again.',
   },
   {
+    // A Retest is new work: calculated again, not the Invalidated result's
+    // worksheet re-used.
+    name: 'a Retest on the calculation worksheet of the Invalidated result it follows',
+    arrange: (s) => {
+      record(s, { value: 30 });
+      investigate(s, 'Invalidated');
+    },
+    fields: {},
+    blocker: retestCall,
+    reason: worksheetReused.reason,
+  },
+  {
     name: 'a Result on a Test the Sample does not have',
     arrange: () => {},
     fields: { testId: 'NIT-009-v1' },
@@ -536,6 +593,20 @@ for (const c of refused)
     assert.deepEqual(s, before);
   });
 
+test('the Retest blocker refuses only the worksheet of the Invalidated result the Retest follows', () => {
+  const s = sampleOf();
+  const view = resultsView(s).test('NIT-001-v1');
+  record(s, { value: 30 });
+  assert.equal(
+    view.retestBlocker({ id: 'ATT-1' }),
+    null,
+    'no Retest is due on a current Result',
+  );
+  investigate(s, 'Invalidated');
+  assert.deepEqual(view.retestBlocker({ id: 'ATT-1' }), worksheetReused);
+  assert.equal(view.retestBlocker({ id: 'ATT-2' }), null);
+});
+
 test('after invalidation the correction blocker calls for a Retest, and recording one keeps the Invalidated result', () => {
   const s = sampleOf();
   const view = resultsView(s).test('NIT-001-v1');
@@ -548,7 +619,10 @@ test('after invalidation the correction blocker calls for a Retest, and recordin
     assert.deepEqual(view.correctionBlocker({ hasCertificate }), retestCall);
   // Entering a Result now never supersedes the Invalidated result: the
   // command records a Retest.
-  assert.equal(record(s, { value: 2.5 }).kind, 'retest');
+  assert.equal(
+    record(s, { value: 2.5, worksheet: { id: 'ATT-2' } }).kind,
+    'retest',
+  );
   assert.deepEqual(
     view.history.map((h) => [h.result.status, h.investigation?.id]),
     [
@@ -563,7 +637,7 @@ test('Result history lists every Result oldest first with its investigation', ()
   const s = sampleOf();
   record(s, { value: 30 });
   const investigation = investigate(s, 'Invalidated');
-  record(s, { value: 2.5 });
+  record(s, { value: 2.5, worksheet: { id: 'ATT-2' } });
   record(s, { value: 2.6, reason: 'Re-integrated' });
   const view = resultsView(s);
   assert.deepEqual(
@@ -711,17 +785,23 @@ function staged(stage: Stage): Sample {
   if (invalidated.includes(stage)) {
     conclude(s, 'Invalidated', 'Standard diluted twice.');
     if (stage === 'invalidated') return s;
-    if (stage === 'retested' || stage === 'retest corrected') record(s);
-    else record(s, { value: 31 });
+    // Each Retest is calculated on its own worksheet.
+    if (stage === 'retested' || stage === 'retest corrected')
+      record(s, { worksheet: { id: 'ATT-2' } });
+    else record(s, { value: 31, worksheet: { id: 'ATT-2' } });
     if (stage === 'retest corrected')
-      record(s, { value: 2.6, reason: 'Re-integrated' });
+      record(s, {
+        value: 2.6,
+        reason: 'Re-integrated',
+        worksheet: { id: 'ATT-2' },
+      });
     if (stage === 'invalidated again' || stage === 'retested again') {
       // The Retest over its Limit is its own OOS, investigated and
       // Invalidated in turn.
       open(s, 'NIT-001-v1', () => 2);
       check(s, true, SECOND);
       conclude(s, 'Invalidated', 'Column overloaded.', SECOND);
-      if (stage === 'retested again') record(s);
+      if (stage === 'retested again') record(s, { worksheet: { id: 'ATT-3' } });
     }
     return s;
   }
@@ -1239,7 +1319,6 @@ for (const [stage, blocker] of approvalBlockers)
   test(`the Approval blocker for a Sample ${stage}`, () => {
     const s = staged(stage);
     assert.deepEqual(resultsView(s).approvalBlocker, blocker);
-    assert.equal(oosApprovalBlocker(s), blocker?.reason ?? null);
   });
 
 const publishBlockers: [Stage, Refusal | null][] = [
@@ -1263,7 +1342,6 @@ for (const [stage, blocker] of publishBlockers)
   test(`the Publish blocker for a Sample ${stage}`, () => {
     const s = staged(stage);
     assert.deepEqual(resultsView(s).publishBlocker, blocker);
-    assert.equal(oosPublishBlocker(s), blocker?.reason ?? null);
   });
 
 /** A Certificate label: the investigation, its outcome and the Result it
@@ -1354,7 +1432,7 @@ test('Bench work lists who entered, corrected or retested each Result, of every 
     ),
   );
   conclude(s, 'Invalidated', 'Standard diluted twice.');
-  as('admin', { value: 2.5 });
+  as('admin', { value: 2.5, worksheet: { id: 'ATT-2' } });
   const testId = 'NIT-001-v1';
   assert.deepEqual(resultsView(s).benchWork, [
     { person: 'analyst', act: 'entered', testId, resultSequence: 1 },
@@ -1376,7 +1454,7 @@ test('Bench work lists who entered, corrected or retested each Result, of every 
     ['manager', false],
     ['coordinator', false],
   ] as const)
-    assert.equal(enteredResultOn(s, person), did, person);
+    assert.equal(didBenchWork(s, person), did, person);
 });
 
 /** Whose Bench work bars Approval, and the message naming the act. */
@@ -1406,6 +1484,18 @@ const separated: {
     },
   },
   {
+    // A correction of a Retest is still the Retest's work, not a plain
+    // correction.
+    stage: 'retest corrected',
+    person: 'corrector',
+    refusal: {
+      code: 'separation of duties',
+      reason:
+        'You corrected a Retest on Impurity A (NIT-001), so another Manager must give Approval.',
+      investigationId: null,
+    },
+  },
+  {
     stage: 'checked',
     person: 'checker',
     refusal: {
@@ -1425,11 +1515,30 @@ for (const c of separated)
     const s = staged(c.stage);
     // Hand the act under test to its own person.
     if (c.person === 'retester') s.tests[0].results[1].enteredBy = 'retester';
+    if (c.person === 'corrector') s.tests[0].results[2].enteredBy = 'corrector';
     if (c.person === 'checker')
       s.investigations[0].labErrorCheck!.by = 'checker';
     const own = resultsView(s).benchWork.find((e) => e.person === c.person);
     assert.deepEqual(own ? separationOfDutiesRefusal(s, own) : null, c.refusal);
   });
+
+test('the Approval refusal asks separation of duties before the OOS gate', () => {
+  const s = staged('open');
+  const view = resultsView(s);
+  // The analyst entered the Result; the Manager only opened the investigation.
+  assert.deepEqual(view.approvalRefusal('analyst'), {
+    code: 'separation of duties',
+    reason:
+      'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
+    investigationId: null,
+  });
+  assert.deepEqual(view.approvalRefusal('manager'), view.approvalBlocker);
+  assert.equal(view.approvalRefusal('manager')?.code, 'investigation open');
+  assert.equal(
+    resultsView(staged('complying')).approvalRefusal('manager'),
+    null,
+  );
+});
 
 test('the separation-of-duties message names a correction, and a person is refused for their first act', () => {
   const s = sampleOf();
@@ -1618,7 +1727,7 @@ test('an Amendment corrects a confirmed OOS with a reason, keeps it on record wi
       resultSequence: 2,
     },
   );
-  assert.equal(enteredResultOn(s, 'admin'), true);
+  assert.equal(didBenchWork(s, 'admin'), true);
 });
 
 // A Retest records the OOS investigation it follows, and through it the
@@ -1635,7 +1744,7 @@ const retestLinks: [Stage, (string | null)[], string | undefined][] = [
   ['invalidated', [null], ID],
   ['retested', [null, ID], undefined],
   ['retested over its Limit', [null, ID], undefined],
-  ['retest corrected', [null, ID, null], undefined],
+  ['retest corrected', [null, ID, ID], undefined],
   ['invalidated again', [null, ID], SECOND],
   ['retested again', [null, ID, SECOND], undefined],
 ];

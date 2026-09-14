@@ -13,7 +13,7 @@ import {
   type Signature,
   type SigningCommandType,
 } from '../laboratory/contracts';
-import { resultsView, separationOfDutiesRefusal } from '../laboratory/results';
+import { resultsView } from '../laboratory/results';
 import { AuditTable } from './audit-trail';
 import { CertificateVersions } from './certificate-view';
 import { Investigations, RefusalNote } from './oos';
@@ -60,12 +60,8 @@ export function SamplePanel({
   const canDecide =
     actsAs(person, 'manager') && s.status === 'Awaiting approval';
   const results = resultsView(s);
-  // The first rule refusing this Approval, in the order the core checks:
-  // separation of duties (ADR-0003, ADR-0005), then the OOS gate.
-  const ownWork = results.benchWork.find((e) => e.person === actor);
-  const approvalRefusal = ownWork
-    ? separationOfDutiesRefusal(s, ownWork)
-    : results.approvalBlocker;
+  // The first rule refusing this Approval, asked as the core asks it.
+  const approvalRefusal = results.approvalRefusal(actor);
   const canAssign =
     actsAs(person, 'coordinator') &&
     !['Approved', 'Published', 'Awaiting approval', ...heldStatuses].includes(
@@ -335,7 +331,7 @@ export function SamplePanel({
               }}
             >
               {approvalRefusal && (
-                <div role="status">
+                <div>
                   <RefusalNote id={approvalNoteId} refusal={approvalRefusal} />
                 </div>
               )}

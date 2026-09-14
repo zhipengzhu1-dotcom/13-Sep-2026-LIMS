@@ -14,16 +14,15 @@ import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
   auditEntriesWithin,
   currentResult,
-  enteredResultOn,
+  didBenchWork,
   investigationOf,
   methods,
-  oosApprovalBlocker,
-  oosPublishBlocker,
   oosRows,
   people,
   publishQueue,
   qualify,
   newCommandId,
+  resultsView,
   type AuditEntry,
   type Person,
   signatureMeanings,
@@ -86,6 +85,17 @@ function worksheet(lab: Laboratory) {
       ).id,
     );
   return worksheets.get(lab)!;
+}
+/** A new calculation worksheet, for a Retest, which is calculated again. */
+function retestWorksheet(lab: Laboratory) {
+  return lab.storeAttachment(
+    {
+      filename: 'retest worksheet.csv',
+      contentType: 'text/csv',
+      content: Buffer.from('reading,result\n1.25,12.4\n'),
+    },
+    'analyst',
+  ).id;
 }
 
 /** Mints a fresh key per call — a distinct laboratory act. Tests that exercise
@@ -2435,8 +2445,25 @@ test('Invalidated: the Result stays on record with its cause and reference, and 
     'manager',
   );
   // The retest is a new Result on the same Test; no correction reason is
-  // needed because nothing current is being replaced.
-  s = run(lab, result(s, 'NIT-001-v1', 12.4), 'analyst');
+  // needed because nothing current is being replaced. It is calculated
+  // again, so the Invalidated result's worksheet is refused.
+  const before = lab.snapshot();
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 12.4), 'analyst'),
+    (e: Error & { status: number }) =>
+      e.status === 400 &&
+      e.message ===
+        "This calculation worksheet is Result #1's, which OOS investigation OOS26-0001 Invalidated. A Retest needs its own calculation worksheet.",
+  );
+  assert.deepEqual(lab.snapshot(), before, 'the refusal writes nothing');
+  s = run(
+    lab,
+    {
+      ...result(s, 'NIT-001-v1', 12.4),
+      attachmentId: retestWorksheet(lab),
+    },
+    'analyst',
+  );
   assert.deepEqual(
     s.tests[0].results.map((r) => [
       r.sequence,
@@ -2494,7 +2521,7 @@ test('Confirmed: Approval is allowed with the Result still Does not comply and l
     ],
     ['Closed', 'Confirmed', null],
   );
-  assert.equal(oosApprovalBlocker(s), null);
+  assert.equal(resultsView(s).approvalBlocker?.reason ?? null, null);
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
   assert.equal(s.status, 'Approved');
   const current = currentResult(s.tests[0])!;
@@ -3290,7 +3317,7 @@ test('a Confirmed OOS blocks Publishing until the Client notification is recorde
   let s = approvedWithConfirmedOos(lab);
   const blocked =
     /OOS investigation OOS26-0001 confirmed an OOS\. Record that the Client was informed before publishing\./;
-  assert.match(oosPublishBlocker(s)!, blocked);
+  assert.match(resultsView(s).publishBlocker!.reason, blocked);
   assert.throws(() => run(lab, publish(s), 'coordinator'), blocked);
   assert.equal(lab.snapshot().samples[0].status, 'Approved');
 
@@ -3358,7 +3385,7 @@ test('a Confirmed OOS blocks Publishing until the Client notification is recorde
     recordedBy: 'coordinator',
     recordedAt: NOW,
   });
-  assert.equal(oosPublishBlocker(s), null);
+  assert.equal(resultsView(s).publishBlocker?.reason ?? null, null);
   assert.throws(
     () => run(lab, notifyClient(s, 'OOS26-0001'), 'coordinator'),
     /already recorded/,
@@ -3396,11 +3423,15 @@ test('Client notification is recorded only for a confirmed OOS', (t) => {
     { type: 'return', ...target(s), comment: 'Retest NIT-001 per OOS26-0001.' },
     'manager',
   );
-  s = run(lab, result(s, 'NIT-001-v1', 2.5), 'analyst');
+  s = run(
+    lab,
+    { ...result(s, 'NIT-001-v1', 2.5), attachmentId: retestWorksheet(lab) },
+    'analyst',
+  );
   s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
   assert.equal(
-    oosPublishBlocker(s),
+    resultsView(s).publishBlocker?.reason ?? null,
     null,
     'an Invalidated OOS needs no notice',
   );
@@ -3843,7 +3874,11 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
     conclude(s, 'OOS26-0002', 'Invalidated', 'Dilution error in the standard.'),
     'manager',
   );
-  s = run(lab, result(s, 'NIT-001-v1', 2.5), 'analyst');
+  s = run(
+    lab,
+    { ...result(s, 'NIT-001-v1', 2.5), attachmentId: retestWorksheet(lab) },
+    'analyst',
+  );
   s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
 
@@ -3910,7 +3945,7 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
   // but is no change to report.
   assert.equal(
     v2.content.amendment!.changeSummary,
-    'Impurity A (NIT-001 v1): Result 30 → 2.5 ng/day, qualifier quantified → < LOQ, Conformity statement Does not comply → Complies (reason: "Recalculated with the dilution factor on the worksheet.")',
+    'Impurity A (NIT-001 v1): Result 30 → 2.5 ng/day, qualifier quantified → < LOQ, Conformity statement Does not comply → Complies, worksheet replaced (reason: "Recalculated with the dilution factor on the worksheet.")',
   );
   assert.deepEqual(
     lab
@@ -3919,7 +3954,11 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
       .map((e) => [e.commandType, e.actor, e.recordId, e.oldValue, e.newValue]),
     [['enterResult', 'analyst', `${s.id}/NIT-001-v1`, null, 'OOS26-0002']],
   );
-  assert.equal(oosPublishBlocker(s), null, 'the Client was already informed');
+  assert.equal(
+    resultsView(s).publishBlocker?.reason ?? null,
+    null,
+    'the Client was already informed',
+  );
   assert.equal(run(lab, publish(s), 'coordinator').status, 'Published');
 });
 
@@ -3970,7 +4009,7 @@ test('a Manager never approves a Sample on which they entered or corrected a Res
     { type: 'submitForApproval', ...target(amended) },
     'analyst-2',
   );
-  assert.equal(enteredResultOn(amended, 'analyst-2'), true);
+  assert.equal(didBenchWork(amended, 'analyst-2'), true);
   lab.close();
 
   // Sam is then given the Manager role; the record of their work remains.
@@ -4160,9 +4199,9 @@ test('an Admin who recorded the Laboratory error check is refused Approval with 
   s = run(lab, openOos(s), 'manager');
   const id = s.investigations[0].id;
   s = run(lab, { ...labErrorCheck(s, id), errorIdentified: false }, 'admin');
-  assert.equal(enteredResultOn(s, 'admin'), true);
+  assert.equal(didBenchWork(s, 'admin'), true);
   // Separation of duties is checked before the open investigation.
-  assert.notEqual(oosApprovalBlocker(s), null);
+  assert.notEqual(resultsView(s).approvalBlocker?.reason ?? null, null);
   refused(s, 'admin');
   s = run(lab, conclude(s, id, 'Confirmed'), 'manager');
   refused(s, 'admin');

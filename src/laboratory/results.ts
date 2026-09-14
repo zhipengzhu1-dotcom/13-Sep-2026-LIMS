@@ -83,6 +83,7 @@ export type RefusalCode =
   | 'OOS uninvestigated'
   | 'confirmed OOS'
   | 'retest required'
+  | 'worksheet reused'
   | 'no laboratory error'
   | 'notification pending'
   | 'separation of duties';
@@ -147,6 +148,13 @@ export type TestResults = {
    * Result to correct, so the command records a Retest instead.
    */
   correctionBlocker(options: { hasCertificate: boolean }): Refusal | null;
+  /**
+   * Why `worksheet` cannot be the calculation worksheet of the Retest due now,
+   * or null: it is the worksheet of the Invalidated result the Retest follows.
+   * A Retest is calculated again, on its own worksheet. Null when no Retest
+   * is due.
+   */
+  retestBlocker(worksheet: Pick<Attachment, 'id'>): Refusal | null;
 };
 
 /** Where an investigation stands. */
@@ -175,7 +183,7 @@ export type InvestigationResults = {
 export type BenchWorkEntry =
   | {
       person: string;
-      act: 'entered' | 'corrected' | 'retested';
+      act: 'entered' | 'corrected' | 'retested' | 'corrected a Retest';
       testId: string;
       resultSequence: number;
     }
@@ -210,6 +218,12 @@ export type SampleResults = {
    * investigation.
    */
   readonly approvalBlocker: Refusal | null;
+  /**
+   * The first rule refusing `person` Approval, or null, in the order Approval
+   * checks them: separation of duties, naming the person's first Bench work
+   * (ADR-0003, ADR-0005), then the Approval blocker.
+   */
+  approvalRefusal(person: string): Refusal | null;
   /** A Confirmed OOS whose Client notification is not yet recorded. */
   readonly publishBlocker: Refusal | null;
   /** The Sample's lines of the OOS investigations list. */
@@ -283,8 +297,13 @@ export function retestLabel(
   return `Retest after ${investigation.id} · Invalidated result #${r.sequence}, ${reportedValue(test, r)} ${r.unit}`;
 }
 
-/** A Result's value as reported: `< LOD (1)`, `< LOQ (3)` or the number. */
-const reportedValue = (test: Pick<Test, 'lod' | 'loq'>, r: Result) =>
+/** A Result's value as reported, on the Test sheet and the Certificate of
+ * Analysis alike: `< LOD (1)`, `< LOQ (3)` against the Test's LOD and LOQ, or
+ * the number. */
+export const reportedValue = (
+  test: Pick<Test, 'lod' | 'loq'>,
+  r: Pick<Result, 'value' | 'qualifier'>,
+) =>
   r.qualifier === '< LOD'
     ? `< LOD (${test.lod})`
     : r.qualifier === '< LOQ'
@@ -380,6 +399,16 @@ export function resultsView(sample: Sample): SampleResults {
           investigationId: investigation.id,
         };
       return null;
+    },
+    retestBlocker(worksheet) {
+      const due = this.retestDue;
+      if (due?.invalidated.attachmentId !== worksheet.id) return null;
+      const id = due.investigation.id;
+      return {
+        code: 'worksheet reused',
+        reason: `This calculation worksheet is Result #${due.invalidated.sequence}'s, which OOS investigation ${id} Invalidated. A Retest needs its own calculation worksheet.`,
+        investigationId: id,
+      };
     },
   });
 
@@ -490,6 +519,12 @@ export function resultsView(sample: Sample): SampleResults {
       }
       return null;
     },
+    approvalRefusal(person) {
+      const own = this.benchWork.find((e) => e.person === person);
+      return own
+        ? separationOfDutiesRefusal(sample, own)
+        : this.approvalBlocker;
+    },
     get publishBlocker(): Refusal | null {
       const pending = sample.investigations.find(
         (i) => i.outcome === 'Confirmed' && !i.clientNotification,
@@ -509,7 +544,8 @@ export function resultsView(sample: Sample): SampleResults {
       return sample.tests.flatMap((test) => [
         ...test.results.map((result, i): BenchWorkEntry => {
           // A Result replaced the one before it: a superseded one by
-          // correction, an invalidated one by Retest.
+          // correction, an invalidated one by Retest. A correction of a
+          // Retest keeps its link, so it is still the Retest's work.
           const before = test.results[i - 1];
           return {
             person: result.enteredBy,
@@ -517,7 +553,9 @@ export function resultsView(sample: Sample): SampleResults {
               ? 'entered'
               : before.status === 'invalidated'
                 ? 'retested'
-                : 'corrected',
+                : result.retestAfter
+                  ? 'corrected a Retest'
+                  : 'corrected',
             testId: test.id,
             resultSequence: result.sequence,
           };
@@ -565,19 +603,10 @@ export function oosRows(samples: readonly Sample[]): OosRow[] {
   );
 }
 
-/** The Approval blocker's reason, or null. */
-export const oosApprovalBlocker = (sample: Sample) =>
-  resultsView(sample).approvalBlocker?.reason ?? null;
-
-/** The Publish blocker's reason, or null. */
-export const oosPublishBlocker = (sample: Sample) =>
-  resultsView(sample).publishBlocker?.reason ?? null;
-
 /**
  * The separation-of-duties refusal of Approval, naming the approver's Bench
- * work `entry` (ADR-0003, ADR-0004, ADR-0005). Approval decides whether the
- * approver did Bench work and refuses with this reason, and the Approve
- * control shows the same text; callers pass the approver's first entry.
+ * work `entry` (ADR-0003, ADR-0004, ADR-0005). `approvalRefusal` passes the
+ * approver's first entry.
  */
 export function separationOfDutiesRefusal(
   sample: Sample,
@@ -594,7 +623,9 @@ export function separationOfDutiesRefusal(
   const did =
     entry.act === 'retested'
       ? `retested ${label}`
-      : `${entry.act} a Result on ${label}`;
+      : entry.act === 'corrected a Retest'
+        ? `corrected a Retest on ${label}`
+        : `${entry.act} a Result on ${label}`;
   return {
     code: 'separation of duties',
     reason: `You ${did}, ${then}`,
@@ -603,7 +634,7 @@ export function separationOfDutiesRefusal(
 }
 
 /** Whether a person did Bench work on the Sample. */
-export const enteredResultOn = (sample: Sample, person: string) =>
+export const didBenchWork = (sample: Sample, person: string) =>
   resultsView(sample).benchWork.some((e) => e.person === person);
 
 /**
@@ -645,7 +676,12 @@ export function recordResult(
     );
   // A Retest follows the investigation that Invalidated the last Result, and
   // needs no reason of its own: that investigation's assignable cause stands.
+  // It is calculated again, so never on the Invalidated result's worksheet.
   const due = previous ? undefined : view.retestDue;
+  if (due) {
+    const reused = view.retestBlocker(input.worksheet);
+    if (reused) throw new WorkflowError(reused.reason);
+  }
   const kind: RecordedKind = previous
     ? 'correction'
     : due
@@ -669,16 +705,18 @@ export function recordResult(
     limit,
     conformity: conformity({ value: input.value, qualifier }, test, limit),
     investigationId: null,
-    retestAfter: due ? due.investigation.id : null,
+    // A correction of a Retest is still that Retest, so it keeps the link.
+    retestAfter: due ? due.investigation.id : (previous?.retestAfter ?? null),
   };
   // The actor, time and reason are the entry's own columns, and the sequence
   // and status only say which Result is current, so only the Result's content
-  // is compared, field by field, with the Result it replaces: the current one
-  // for a correction, the Invalidated result for a Retest. The Retest link is
-  // compared like any field, so it is on the trail; an Amendment's change
-  // summary leaves it out because it names only reported fields. The Limit is a copy
-  // of reference data, so the trail names its entry and value rather than
-  // every field of the source it was published in.
+  // is compared, field by field: with the current Result a correction
+  // supersedes, or with nothing for a first entry or a Retest, which is a new
+  // Result (the Invalidated result stays on record, unchanged). The Retest
+  // link is compared like any field, so it is on the trail; an Amendment's
+  // change summary leaves it out because it names only reported fields. The
+  // Limit is a copy of reference data, so the trail names its entry and value
+  // rather than every field of the source it was published in.
   const audited = (r: Result) => ({
     result: {
       ...r,
@@ -687,26 +725,21 @@ export function recordResult(
   });
   const record = auditRecord.test(sample, test);
   const reason = input.reason;
-  const replaced = previous ?? due?.invalidated;
-  const changed = audit.compare(
-    record,
-    replaced ? audited(replaced) : null,
-    audited(next),
-    {
-      reason,
-      omit: [
-        'result.sequence',
-        'result.status',
-        'result.enteredBy',
-        'result.enteredAt',
-        'result.reason',
-        'result.investigationId',
-      ],
-    },
-  );
-  // Re-entering an unchanged value is still an act the trail must show.
-  if (!changed)
-    audit.change(record, 'result.value', replaced!.value, next.value, reason);
+  // Re-entering an unchanged value is still an act the trail must show,
+  // whatever else the correction changed.
+  if (previous?.value === next.value)
+    audit.change(record, 'result.value', previous.value, next.value, reason);
+  audit.compare(record, previous ? audited(previous) : null, audited(next), {
+    reason,
+    omit: [
+      'result.sequence',
+      'result.status',
+      'result.enteredBy',
+      'result.enteredAt',
+      'result.reason',
+      'result.investigationId',
+    ],
+  });
   if (previous) previous.status = 'superseded';
   test.results.push(next);
   return kind;

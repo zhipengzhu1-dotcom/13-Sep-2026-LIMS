@@ -45,7 +45,6 @@ import {
   recordLabErrorCheck,
   recordResult,
   resultsView,
-  separationOfDutiesRefusal,
 } from './results.ts';
 
 /**
@@ -534,18 +533,15 @@ export const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
   ) {
     requireRole(actor, 'manager');
     requireAwaitingApproval(sample);
-    const results = resultsView(sample);
-    // Separation of duties: corrections, retests, Amendment corrections and
-    // Laboratory error checks are Bench work too (ADR-0005). The refusal
-    // names the approver's first act.
-    const own = results.benchWork.find((e) => e.person === actor.id);
-    if (own)
+    // Separation of duties first: corrections, retests, Amendment corrections
+    // and Laboratory error checks are Bench work too (ADR-0005), and the
+    // refusal names the approver's first act. Then the OOS gate.
+    const refused = resultsView(sample).approvalRefusal(actor.id);
+    if (refused)
       throw new WorkflowError(
-        separationOfDutiesRefusal(sample, own).reason,
-        403,
+        refused.reason,
+        refused.code === 'separation of duties' ? 403 : 400,
       );
-    const blocked = results.approvalBlocker;
-    if (blocked) throw new WorkflowError(blocked.reason);
     audit.set(auditRecord.sample(sample), sample, 'status', 'Approved');
     // Approval freezes the next Certificate version. It carries the latest
     // "performed by" and, for a version issued by an Amendment, the "amended
