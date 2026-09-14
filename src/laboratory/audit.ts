@@ -119,6 +119,75 @@ function flatten(
     flatten(child, path ? `${path}.${key}` : key, omit, into);
 }
 
+/** What a change to a record puts on the trail, before the command's actor,
+ * timestamp, type and key are added. */
+export type AuditChange = Pick<
+  AuditEntry,
+  | 'recordType'
+  | 'recordId'
+  | 'sampleId'
+  | 'field'
+  | 'oldValue'
+  | 'newValue'
+  | 'reason'
+>;
+
+/**
+ * An `Audit` that turns each change, comparison and set into field-level
+ * changes and hands them, one at a time and in order, to `write`. Every audit
+ * writer is built on it, so they all produce the same entries for the same
+ * calls. `written` counts the changes handed over so far.
+ */
+export function auditWriter(
+  write: (change: AuditChange) => void,
+): Audit & { readonly written: number } {
+  let written = 0;
+  const audit = {
+    get written() {
+      return written;
+    },
+    change(record, field, oldValue, newValue, reason) {
+      write({
+        recordType: record.type,
+        recordId: record.id,
+        sampleId: record.sampleId,
+        field,
+        oldValue,
+        newValue,
+        reason: reason || null,
+      });
+      written++;
+    },
+    compare(record, before, after, { reason, omit = [] } = {}) {
+      const old = new Map<string, AuditValue>();
+      const next = new Map<string, AuditValue>();
+      if (before) flatten(before, '', omit, old);
+      flatten(after, '', omit, next);
+      let count = 0;
+      for (const field of new Set([...next.keys(), ...old.keys()])) {
+        const from = old.get(field) ?? null;
+        const to = next.get(field) ?? null;
+        if (from === to) continue;
+        audit.change(record, field, from, to, reason);
+        count++;
+      }
+      return count;
+    },
+    set(record, target, field, value, reason) {
+      if (target[field] === value) return;
+      audit.change(
+        record,
+        field,
+        target[field] as AuditValue,
+        value as AuditValue,
+        reason,
+      );
+      target[field] = value;
+    },
+  } satisfies Audit & { readonly written: number };
+  return audit;
+}
+
 type Row = Omit<AuditEntry, 'oldValue' | 'newValue'> & {
   oldValue: string;
   newValue: string;
@@ -155,55 +224,21 @@ export class AuditTrail {
       `INSERT INTO audit (sequence, recordType, recordId, sampleId, field, oldValue, newValue, reason, actor, at, commandType, commandId)
        VALUES ((SELECT COALESCE(MAX(sequence), 0) + 1 FROM audit), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    let written = 0;
-    const audit = {
-      get written() {
-        return written;
-      },
-      change(record, field, oldValue, newValue, reason) {
-        insert.run(
-          record.type,
-          record.id,
-          record.sampleId,
-          field,
-          JSON.stringify(oldValue),
-          JSON.stringify(newValue),
-          reason || null,
-          command.actor,
-          command.at,
-          command.commandType,
-          command.commandId,
-        );
-        written++;
-      },
-      compare(record, before, after, { reason, omit = [] } = {}) {
-        const old = new Map<string, AuditValue>();
-        const next = new Map<string, AuditValue>();
-        if (before) flatten(before, '', omit, old);
-        flatten(after, '', omit, next);
-        let count = 0;
-        for (const field of new Set([...next.keys(), ...old.keys()])) {
-          const from = old.get(field) ?? null;
-          const to = next.get(field) ?? null;
-          if (from === to) continue;
-          audit.change(record, field, from, to, reason);
-          count++;
-        }
-        return count;
-      },
-      set(record, target, field, value, reason) {
-        if (target[field] === value) return;
-        audit.change(
-          record,
-          field,
-          target[field] as AuditValue,
-          value as AuditValue,
-          reason,
-        );
-        target[field] = value;
-      },
-    } satisfies Audit & { readonly written: number };
-    return audit;
+    return auditWriter((change) =>
+      insert.run(
+        change.recordType,
+        change.recordId,
+        change.sampleId,
+        change.field,
+        JSON.stringify(change.oldValue),
+        JSON.stringify(change.newValue),
+        change.reason,
+        command.actor,
+        command.at,
+        command.commandType,
+        command.commandId,
+      ),
+    );
   }
 
   /** The lab-wide trail, or one Sample's history, newest first. */
