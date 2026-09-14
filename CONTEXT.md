@@ -102,7 +102,7 @@ The person who gives Approval or returns a Sample to its Analyst with a comment;
 _Avoid_: Reviewer, approver, QA
 
 **Admin**:
-The person who may act in every role — as Coordinator, Analyst (when a Sample is assigned to them) and Manager — for a lab too small to staff each role separately; every act is still their own, signed with their own password, and they never give Approval to a Sample on which they entered, corrected or retested a Result or recorded a Laboratory error check.
+The person who may act in every role — as Coordinator, Analyst (when a Sample is assigned to them) and Manager — as a stand-in; every act is still their own, signed with their own password, and they never give Approval to a Sample on which they entered, corrected or retested a Result or recorded a Laboratory error check. Before Go-live Benchline's developer holds it; after Go-live it is the lab's one backup person, the most senior Analyst, with no account or configuration rights.
 _Avoid_: Super admin, superuser, root
 
 **Approval**:
@@ -124,3 +124,17 @@ _Avoid_: Release, send out
 **Amendment**:
 A new version of a published Certificate of Analysis, corrected by the Analyst with a reason, re-approved by a Manager and published by the Coordinator; it is marked Amended and the superseded version stays on file.
 _Avoid_: Correction, reissue, revision
+
+### The lab and its system
+
+**Go-live**:
+The moment the Quality lead signs off Benchline's validation, from which the electronic record, not paper, is the official record.
+_Avoid_: Production, launch, cut-over
+
+**Quality lead**:
+The person responsible for the lab's quality system, who approves its controlled documents, signs off Benchline's validation for Go-live, and approves every account change and release of Benchline.
+_Avoid_: Quality manager, QA lead
+
+**System administrator**:
+Benchline's developer acting as an external provider with no laboratory role after Go-live, who develops and deploys Benchline and administers its accounts and configuration, each account change and release approved by the Quality lead.
+_Avoid_: Admin, super admin, IT
