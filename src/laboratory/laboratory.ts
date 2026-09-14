@@ -4,6 +4,8 @@ import {
   analytes,
   clients,
   commandSchema,
+  commandsNeedingValidSignatures,
+  invalidSignatureRefusal,
   limitInForce,
   type AcceptableIntake,
   type Person,
@@ -19,6 +21,7 @@ import {
   type Method,
   type Sample,
   type Signature,
+  type SignedContent,
   type SigningCommandType,
   type Snapshot,
   type Submission,
@@ -49,7 +52,7 @@ import {
 export { WorkflowError } from './workflow-error.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 /**
  * Verifies a signer's password against their stored hash. The accounts store
@@ -242,6 +245,15 @@ export class Laboratory {
     return found;
   }
 
+  /** The Signed content of the Electronic signature on a command, as stored
+   * when it was signed, with whether the signature is valid; null if that
+   * command was not signed. */
+  signedContent(
+    commandId: string,
+  ): { content: SignedContent | null; valid: boolean } | null {
+    return this.signatureStore.signedContent(keyOf(commandId));
+  }
+
   /** The audit trail, newest first: lab-wide, or one Sample's history
    * (the Sample, its Tests and Results, and its Submission). */
   auditTrail(sampleId?: string): AuditEntry[] {
@@ -286,6 +298,10 @@ export class Laboratory {
         commandType: command.type,
         commandId: command.commandId,
       });
+      // The Certificate this command issued, if any, for its signature's
+      // Signed content. Assigned inside a callback, which TypeScript does not
+      // follow, so the declared type is kept rather than narrowed to null.
+      let issued = null as Certificate | null;
       const context: Context = {
         at,
         people: this.people,
@@ -304,7 +320,7 @@ export class Laboratory {
         signatures: (sampleId) => this.signatureStore.list(sampleId),
         certificates: (sampleId) => this.certificateStore.summaries(sampleId),
         issueCertificate: (content) =>
-          this.certificateStore.issue(content, key),
+          (issued = this.certificateStore.issue(content, key)),
         recordPublication: (publication) =>
           this.certificateStore.recordPublication(publication, key),
         appendAcceptableIntake: (entry) =>
@@ -348,6 +364,17 @@ export class Laboratory {
         const lock = locks[sample.status];
         if (lock && !lock.allows.includes(command.type))
           throw new WorkflowError(lock.message);
+        // An altered signature stops the Sample reaching a Certificate until
+        // Quality has investigated; there is no override (ADR-0008).
+        const invalid = (
+          commandsNeedingValidSignatures as readonly Command['type'][]
+        ).includes(command.type)
+          ? invalidSignatureRefusal(
+              this.signatureStore.list(sample.id),
+              sample.id,
+            )
+          : null;
+        if (invalid) throw new WorkflowError(invalid, 409);
         // One cast, localised here, because TypeScript cannot correlate the
         // narrowed command with the handler selected by its own discriminant.
         // Each handler in the registry is individually typed to its own verb.
@@ -367,6 +394,13 @@ export class Laboratory {
             actor,
             signatureMeaning(signing, inAmendment),
             unsigned as Signature['command'],
+            {
+              sample,
+              certificate: issued && {
+                version: issued.version,
+                sha256: issued.sha256,
+              },
+            },
             context,
             key,
           );
@@ -422,6 +456,7 @@ export class Laboratory {
     signer: Actor,
     meaning: Signature['meaning'],
     command: Signature['command'],
+    content: SignedContent,
     { at, audit }: Context,
     commandId: Uint8Array,
   ) {
@@ -439,6 +474,7 @@ export class Laboratory {
         meaning,
         command,
       },
+      content,
       commandId,
     );
   }

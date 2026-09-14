@@ -1982,6 +1982,7 @@ test('submission and Approval are Electronic signatures with printed name, time,
       sampleId: s.id,
       revision: submit.revision,
     },
+    valid: true,
   });
   assert.equal(second.meaning, 'performed by');
   assert.deepEqual(third, {
@@ -1996,6 +1997,7 @@ test('submission and Approval are Electronic signatures with printed name, time,
       sampleId: s.id,
       revision: approve.revision,
     },
+    valid: true,
   });
   assert.match(third.signedAt, /T\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:\d\d)$/);
 });
@@ -2157,6 +2159,244 @@ test('a laboratory without credentials refuses every signature', () => {
   );
   assert.equal(lab.snapshot().samples[0].status, 'In progress');
   lab.close();
+});
+
+/** A laboratory on a database file, so the file can be reached as someone
+ * holding it could. */
+function onFile(t: { after: (fn: () => void) => void }) {
+  const folder = mkdtempSync(join(tmpdir(), 'lims-signed-'));
+  const file = join(folder, 'test.sqlite');
+  const lab = new Laboratory(file, { clock: () => NOW, credentials: accounts });
+  t.after(() => {
+    lab.close();
+    rmSync(folder, { recursive: true, force: true });
+  });
+  return { lab, file };
+}
+/** Alters stored signatures by direct SQL on the file, with the triggers
+ * dropped first, as file-level tampering would. */
+function tamper(
+  file: string,
+  sql: string,
+  ...params: (string | number | Uint8Array)[]
+) {
+  const db = new DatabaseSync(file);
+  db.exec(`DROP TRIGGER IF EXISTS signaturesNoUpdate;
+    DROP TRIGGER IF EXISTS signaturesNoDelete;`);
+  db.prepare(sql).run(...params);
+  db.close();
+}
+const verification = (lab: Laboratory) =>
+  lab.snapshot().signatures.map((x) => [x.sampleId, x.meaning, x.valid]);
+const invalidSignature =
+  /Electronic signature .* is invalid\. Contact the Quality lead/;
+
+test('the database refuses changing or deleting a recorded Electronic signature', (t) => {
+  const { lab, file } = onFile(t);
+  submitted(lab);
+  const recorded = lab.snapshot().signatures;
+  const db = new DatabaseSync(file);
+  t.after(() => db.close());
+  assert.throws(
+    () =>
+      db.exec(
+        "UPDATE signatures SET printedName='Someone Else', meaning='approved by'",
+      ),
+    /Electronic signatures cannot be changed/,
+  );
+  assert.throws(
+    () => db.exec('DELETE FROM signatures'),
+    /Electronic signatures cannot be deleted/,
+  );
+  assert.deepEqual(lab.snapshot().signatures, recorded);
+});
+
+test('each signing stores its Signed content: the Sample as saved and, for Approval, the Certificate issued', (t) => {
+  const lab = memory(t);
+  let s = entered(lab, assigned(lab));
+  const submit = {
+    commandId: newCommandId(),
+    type: 'submitForApproval',
+    ...target(s),
+    password: 'analyst-demo',
+  };
+  s = lab.execute(submit, 'analyst').samples[0];
+  assert.deepEqual(lab.signedContent(submit.commandId), {
+    content: { sample: s, certificate: null },
+    valid: true,
+  });
+  const approve = {
+    commandId: newCommandId(),
+    type: 'approve',
+    ...target(s),
+    password: 'manager-demo',
+  };
+  s = lab.execute(approve, 'manager').samples[0];
+  const issued = lab.certificate(s.id, 1);
+  assert.deepEqual(lab.signedContent(approve.commandId), {
+    content: {
+      sample: s,
+      certificate: { version: 1, sha256: issued.sha256 },
+    },
+    valid: true,
+  });
+  assert.equal(s.status, 'Approved', 'the Sample as saved by the Approval');
+  for (const password of ['analyst-demo', 'manager-demo'])
+    assert.ok(
+      !JSON.stringify(lab.signedContent(approve.commandId)).includes(password),
+    );
+  assert.equal(lab.signedContent(newCommandId()), null, 'nothing signed');
+});
+
+test('every signature still verifies after later commands change the Sample, through a full Amendment', (t) => {
+  const lab = memory(t);
+  let s = submitted(lab);
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  s = run(lab, publish(s), 'coordinator');
+  s = run(lab, startAmendment(s), 'manager');
+  s = run(
+    lab,
+    result(s, 'NIT-001-v1', 3.1, 'Transcription error on NIT-001.'),
+    'analyst',
+  );
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  run(lab, publish(s), 'coordinator');
+  assert.deepEqual(verification(lab), [
+    [s.id, 'performed by', true],
+    [s.id, 'approved by', true],
+    [s.id, 'amended by', true],
+    [s.id, 'approved by', true],
+  ]);
+  const [, firstApproval, , reApproval] = lab.snapshot().signatures;
+  assert.equal(
+    lab.signedContent(firstApproval.command.commandId)?.content?.sample.tests[0]
+      .results.length,
+    1,
+    'the first Approval keeps the Result it attested to',
+  );
+  assert.equal(
+    lab.signedContent(reApproval.command.commandId)?.content?.certificate
+      ?.version,
+    2,
+  );
+});
+
+test('a signature altered in the database reads as invalid, without hiding it or the rest of the record', (t) => {
+  const { lab, file } = onFile(t);
+  let s = submitted(lab);
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  const other = submitted(lab);
+  tamper(
+    file,
+    "UPDATE signatures SET printedName='Morgan Lee' WHERE meaning='approved by'",
+  );
+  tamper(
+    file,
+    `UPDATE signatures SET signedContent=replace(signedContent, '"value":2.5', '"value":1.5') WHERE sampleId=?`,
+    other.id,
+  );
+  const reopened = new Laboratory(file, { clock: () => NOW });
+  t.after(() => reopened.close());
+  for (const view of [lab, reopened]) {
+    assert.deepEqual(verification(view), [
+      [s.id, 'performed by', true],
+      [s.id, 'approved by', false],
+      [other.id, 'performed by', false],
+    ]);
+    const snapshot = view.snapshot();
+    assert.equal(snapshot.samples.length, 2, 'the Samples still load');
+    assert.equal(
+      snapshot.signatures[1].printedName,
+      'Morgan Lee',
+      'shown as stored, not hidden',
+    );
+    assert.ok(view.auditTrail(s.id).length > 0);
+    assert.equal(view.certificate(s.id).version, 1);
+  }
+});
+
+test('a signature moved to another command, or with unreadable Signed content, reads as invalid', (t) => {
+  const { lab, file } = onFile(t);
+  const s = submitted(lab);
+  const [signed] = lab.snapshot().signatures;
+  const elsewhere = newCommandId();
+  tamper(
+    file,
+    'UPDATE signatures SET commandId=? WHERE sampleId=?',
+    Uint8Array.from(Buffer.from(elsewhere.replace(/-/g, ''), 'hex')),
+    s.id,
+  );
+  assert.equal(lab.signedContent(signed.command.commandId), null);
+  assert.equal(lab.signedContent(elsewhere)?.valid, false);
+  assert.deepEqual(verification(lab), [[s.id, 'performed by', false]]);
+
+  tamper(file, "UPDATE signatures SET signedContent='{', command='{'");
+  assert.deepEqual(lab.signedContent(elsewhere), {
+    content: null,
+    valid: false,
+  });
+  assert.deepEqual(verification(lab), [[s.id, 'performed by', false]]);
+  assert.equal(lab.snapshot().signatures[0].command.commandId, elsewhere);
+});
+
+test('a Sample with an invalid signature refuses submission, Approval, Publishing and Amendment, while bench work continues', (t) => {
+  const { lab, file } = onFile(t);
+  const breakSignatures = (sample: Sample) =>
+    tamper(
+      file,
+      "UPDATE signatures SET meaning='performed by ' WHERE sampleId=?",
+      sample.id,
+    );
+  const refusedWithoutChange = (command: object, actor: string) => {
+    const before = lab.snapshot();
+    assert.throws(() => run(lab, command, actor), invalidSignature);
+    assert.deepEqual(lab.snapshot(), before, `${actor} changed nothing`);
+  };
+
+  // Awaiting approval: Approval refused for a Manager and for the Admin.
+  let awaiting = run(lab, receipt, 'coordinator');
+  awaiting = run(
+    lab,
+    { type: 'assign', ...target(awaiting), assignee: 'analyst' },
+    'coordinator',
+  );
+  awaiting = entered(lab, awaiting);
+  awaiting = run(
+    lab,
+    { type: 'submitForApproval', ...target(awaiting) },
+    'analyst',
+  );
+  breakSignatures(awaiting);
+  for (const actor of ['manager', 'admin'])
+    refusedWithoutChange({ type: 'approve', ...target(awaiting) }, actor);
+  // Returned to the bench: Result entry continues, submission is refused.
+  awaiting = run(
+    lab,
+    { type: 'return', ...target(awaiting), comment: 'Check NIT-001.' },
+    'manager',
+  );
+  awaiting = run(
+    lab,
+    result(awaiting, 'NIT-001-v1', 2.6, 'Recalculated from the worksheet.'),
+    'analyst',
+  );
+  assert.equal(awaiting.tests[0].results.at(-1)?.value, 2.6);
+  refusedWithoutChange(
+    { type: 'submitForApproval', ...target(awaiting) },
+    'analyst',
+  );
+
+  // Approved: Publishing refused.
+  const approved = throughApproval(lab, run(lab, receipt, 'coordinator'));
+  breakSignatures(approved);
+  refusedWithoutChange(publish(approved), 'coordinator');
+
+  // Published: starting an Amendment refused.
+  let published = throughApproval(lab, run(lab, receipt, 'coordinator'));
+  published = run(lab, publish(published), 'coordinator');
+  breakSignatures(published);
+  refusedWithoutChange(startAmendment(published), 'manager');
 });
 
 test('a Result must reference a stored worksheet attachment', (t) => {

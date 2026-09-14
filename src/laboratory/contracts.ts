@@ -497,7 +497,38 @@ export type Signature = {
     sampleId: string;
     revision: number;
   };
+  /** Whether the signature still matches its stored Signed content, checked
+   * on every read. A failing signature stays on record, shown as invalid. */
+  valid: boolean;
 };
+
+/** Exactly what an Electronic signature attests to, kept as it stood at the
+ * moment of signing: the Sample as saved by the signing command (attachments
+ * by ID) and, for Approval, the Certificate of Analysis version it issued. */
+export type SignedContent = {
+  sample: Sample;
+  certificate: { version: number; sha256: string } | null;
+};
+
+/** Commands refused on a Sample that has an invalid Electronic signature;
+ * bench work and OOS investigations continue (ADR-0008). */
+export const commandsNeedingValidSignatures = [
+  'submitForApproval',
+  'approve',
+  'publish',
+  'startAmendment',
+] as const satisfies readonly Command['type'][];
+
+/** The refusal for those commands, or null while every signature on the
+ * Sample verifies. */
+export function invalidSignatureRefusal(
+  signatures: readonly Signature[],
+  sampleId: string,
+): string | null {
+  return signatures.some((x) => x.sampleId === sampleId && !x.valid)
+    ? `An Electronic signature on Sample ${sampleId} is invalid. Contact the Quality lead.`
+    : null;
+}
 
 export type Snapshot = {
   submissions: Submission[];

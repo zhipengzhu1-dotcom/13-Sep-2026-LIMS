@@ -2066,6 +2066,10 @@ body.resizing {
 .cert-tag.superseded {
   color: var(--muted);
 }
+/* A signature that fails its check: said in words, not only colour. */
+.cert-tag.invalid {
+  color: var(--late);
+}
 .flash.amendment {
   background: var(--returned-wash);
   color: var(--returned);

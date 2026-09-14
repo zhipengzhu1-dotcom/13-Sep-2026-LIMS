@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { type Certificate } from '../laboratory/certificate';
 import {
+  invalidSignatureRefusal,
   issueChannels,
   type Snapshot,
   type Sample,
@@ -32,8 +33,12 @@ export function PublishForm({
 }) {
   const [channel, setChannel] =
     useState<(typeof issueChannels)[number]>('email');
-  // The OOS gate, as the core enforces it.
-  const blocker = resultsView(s).publishBlocker?.reason ?? null;
+  // An invalid signature, then the OOS gate, as the core enforces them.
+  const blocker =
+    invalidSignatureRefusal(data.signatures, s.id) ??
+    resultsView(s).publishBlocker?.reason ??
+    null;
+  const blockerId = useId();
   const version = data.certificates
     .filter((c) => c.sampleId === s.id)
     .at(-1)?.version;
@@ -43,6 +48,7 @@ export function PublishForm({
       aria-label="Publish the Certificate of Analysis"
       onSubmit={(e) => {
         e.preventDefault();
+        if (blocker) return;
         const f = new FormData(e.currentTarget);
         const when = String(f.get('publishedAt') ?? '');
         void execute({
@@ -57,7 +63,7 @@ export function PublishForm({
       }}
     >
       {blocker && (
-        <p className="flash warn inline" role="status">
+        <p id={blockerId} className="flash warn inline" role="status">
           {blocker}
         </p>
       )}
@@ -108,7 +114,13 @@ export function PublishForm({
           defaultValue={localDateTime(new Date())}
         />
       </label>
-      <button className="btn primary" disabled={busy || !!blocker}>
+      <button
+        className="btn primary"
+        disabled={busy}
+        // Blocked but focusable, its reason the visible note.
+        aria-disabled={blocker ? true : undefined}
+        aria-describedby={blocker ? blockerId : undefined}
+      >
         Publish{version ? ` version ${version}` : ''}
       </button>
     </form>
