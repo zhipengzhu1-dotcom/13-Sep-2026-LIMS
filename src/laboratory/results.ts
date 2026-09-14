@@ -152,12 +152,16 @@ export type TestResults = {
   correctionBlocker(options: { hasCertificate: boolean }): Refusal | null;
   /**
    * Why `worksheet` cannot be the calculation worksheet of a Retest recorded
-   * now, or null: it is the worksheet of the Invalidated result the Retest
-   * follows. A Retest is calculated again, on its own worksheet, and a
-   * correction of it is still that Retest. Null when neither a Retest is due
-   * nor the current Result is a Retest.
+   * now, or null: it has the content, by SHA-256, of the worksheet of an
+   * Invalidated result on the Test, as `worksheetOf` looks it up by id, so
+   * a fresh upload of the same bytes is refused too. A Retest is calculated
+   * again, on its own worksheet, and a correction of it is still that Retest.
+   * Null when neither a Retest is due nor the current Result is a Retest.
    */
-  retestBlocker(worksheet: Pick<Attachment, 'id'>): Refusal | null;
+  retestBlocker(
+    worksheet: Pick<Attachment, 'id' | 'sha256'>,
+    worksheetOf: WorksheetLookup,
+  ): Refusal | null;
 };
 
 /** Where an investigation stands. */
@@ -258,6 +262,11 @@ export type SampleResults = {
   readonly benchWork: BenchWorkEntry[];
 };
 
+/** A stored worksheet by its attachment id, or null when it was not found. */
+export type WorksheetLookup = (
+  attachmentId: string,
+) => Pick<Attachment, 'sha256'> | null;
+
 /** Who acts, when, and the audit writer their command's entries go to. */
 export type Act = { actor: string; at: string; audit: Audit };
 
@@ -277,7 +286,9 @@ export type RecordResultInput = {
    * only for a finished product. */
   limit: AcceptableIntake | null;
   /** The stored calculation worksheet, or null when it was not found. */
-  worksheet: Pick<Attachment, 'id'> | null;
+  worksheet: Pick<Attachment, 'id' | 'sha256'> | null;
+  /** Looks up an earlier Result's stored worksheet. */
+  worksheetOf: WorksheetLookup;
   /** Whether the Sample already has a Certificate of Analysis. */
   hasCertificate: boolean;
 };
@@ -431,20 +442,25 @@ export function resultsView(sample: Sample): SampleResults {
         };
       return null;
     },
-    retestBlocker(worksheet) {
+    retestBlocker(worksheet, worksheetOf) {
       // A Result recorded now is a Retest when one is due, and a correction
       // of a current Retest is still that Retest.
-      const current = this.current;
-      const due =
-        this.retestDue ??
-        (current?.retestAfter
-          ? lineageOf(sample, current.retestAfter)
-          : undefined);
-      if (due?.invalidated.attachmentId !== worksheet.id) return null;
-      const id = due.investigation.id;
+      if (!this.retestDue && !this.current?.retestAfter) return null;
+      // The same bytes uploaded again are a new attachment with the same
+      // SHA-256, so the content is compared, against every Invalidated
+      // result on the Test, the latest first.
+      const invalidated = test.results.findLast(
+        (r) =>
+          r.status === 'invalidated' &&
+          r.investigationId !== null &&
+          (r.attachmentId === worksheet.id ||
+            worksheetOf(r.attachmentId)?.sha256 === worksheet.sha256),
+      );
+      if (!invalidated?.investigationId) return null;
+      const id = invalidated.investigationId;
       return {
         code: 'worksheet reused',
-        reason: `This calculation worksheet is Result #${due.invalidated.sequence}'s, which OOS investigation ${id} Invalidated. A Retest needs its own calculation worksheet.`,
+        reason: `This calculation worksheet is Result #${invalidated.sequence}'s, which OOS investigation ${id} Invalidated. A Retest needs its own calculation worksheet.`,
         investigationId: id,
       };
     },
@@ -723,7 +739,7 @@ export function recordResult(
     );
   // A Retest, and a correction of one, is calculated again, so never on the
   // Invalidated result's worksheet.
-  const reused = view.retestBlocker(input.worksheet);
+  const reused = view.retestBlocker(input.worksheet, input.worksheetOf);
   if (reused) throw new WorkflowError(reused.reason);
   // A Retest follows the investigation that Invalidated the last Result, and
   // needs no reason of its own: that investigation's assignable cause stands.

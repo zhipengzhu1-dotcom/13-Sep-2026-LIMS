@@ -10,6 +10,7 @@ import {
   type Sample,
   type Test,
 } from '../src/laboratory/contracts.ts';
+import type { Attachment } from '../src/laboratory/attachment-contracts.ts';
 import { WorkflowError } from '../src/laboratory/workflow-error.ts';
 import { changeSummary } from '../src/laboratory/amendments.ts';
 import type { AuditEntry } from '../src/laboratory/contracts.ts';
@@ -109,6 +110,16 @@ function sampleOf(materialType: MaterialType = 'finished product'): Sample {
   };
 }
 
+/** The stored calculation worksheets by id. ATT-4 is a fresh upload of the
+ * same bytes as ATT-1. */
+const worksheets: Record<string, Pick<Attachment, 'id' | 'sha256'>> = {
+  'ATT-1': { id: 'ATT-1', sha256: '1'.repeat(64) },
+  'ATT-2': { id: 'ATT-2', sha256: '2'.repeat(64) },
+  'ATT-3': { id: 'ATT-3', sha256: '3'.repeat(64) },
+  'ATT-4': { id: 'ATT-4', sha256: '1'.repeat(64) },
+};
+const worksheetOf = (id: string) => worksheets[id] ?? null;
+
 const input = (fields: Partial<RecordResultInput> = {}): RecordResultInput => ({
   testId: 'NIT-001-v1',
   value: 2.5,
@@ -117,7 +128,8 @@ const input = (fields: Partial<RecordResultInput> = {}): RecordResultInput => ({
   analysedOn: '2026-09-10',
   reason: '',
   limit,
-  worksheet: { id: 'ATT-1' },
+  worksheet: worksheets['ATT-1'],
+  worksheetOf,
   hasCertificate: false,
   ...fields,
 });
@@ -153,7 +165,7 @@ function investigate(
   const result = test.results.find((r) => r.status === 'current')!;
   const closed = state !== 'Open';
   const investigation: OosInvestigation = {
-    id: 'OOS26-0001',
+    id: `OOS26-${String(sample.investigations.length + 1).padStart(4, '0')}`,
     testId: test.id,
     resultSequence: result.sequence,
     status: closed ? 'Closed' : 'Open',
@@ -348,7 +360,7 @@ const accepted: Accepted[] = [
       record(s, { value: 30 });
       investigate(s, 'Invalidated');
     },
-    fields: { worksheet: { id: 'ATT-2' } },
+    fields: { worksheet: worksheets['ATT-2'] },
     kind: 'retest',
     changes: [
       [RECORD, 'result.value', null, 2.5, null],
@@ -373,7 +385,7 @@ const accepted: Accepted[] = [
       record(s, { value: 30 });
       investigate(s, 'Invalidated');
     },
-    fields: { value: 30, worksheet: { id: 'ATT-2' } },
+    fields: { value: 30, worksheet: worksheets['ATT-2'] },
     kind: 'retest',
     changes: [
       [RECORD, 'result.value', null, 30, null],
@@ -399,9 +411,13 @@ const accepted: Accepted[] = [
     arrange: (s) => {
       record(s, { value: 30 });
       investigate(s, 'Invalidated');
-      record(s, { worksheet: { id: 'ATT-2' } });
+      record(s, { worksheet: worksheets['ATT-2'] });
     },
-    fields: { value: 2.6, reason: 'Re-integrated', worksheet: { id: 'ATT-2' } },
+    fields: {
+      value: 2.6,
+      reason: 'Re-integrated',
+      worksheet: worksheets['ATT-2'],
+    },
     kind: 'correction',
     changes: [[RECORD, 'result.value', 2.5, 2.6, 'Re-integrated']],
     statuses: ['invalidated', 'superseded', 'current'],
@@ -627,15 +643,61 @@ const refused: Refused[] = [
     reason: worksheetReused.reason,
   },
   {
+    // The same bytes uploaded again are a new attachment, not new work.
+    name: 'a Retest on a fresh upload of the calculation worksheet of the Invalidated result it follows',
+    arrange: (s) => {
+      record(s, { value: 30 });
+      investigate(s, 'Invalidated');
+    },
+    fields: { worksheet: worksheets['ATT-4'] },
+    blocker: retestCall,
+    retestBlocker: worksheetReused,
+    reason: worksheetReused.reason,
+  },
+  {
     // A correction of a Retest is still that Retest (R2).
     name: 'a correction of a Retest on the calculation worksheet of the Invalidated result it follows',
     arrange: (s) => {
       record(s, { value: 30 });
       investigate(s, 'Invalidated');
-      record(s, { worksheet: { id: 'ATT-2' } });
+      record(s, { worksheet: worksheets['ATT-2'] });
     },
     fields: { value: 2.6, reason: 'Re-integrated' },
     blocker: null,
+    retestBlocker: worksheetReused,
+    reason: worksheetReused.reason,
+  },
+  {
+    name: 'a correction of a Retest on a fresh upload of the calculation worksheet of the Invalidated result it follows',
+    arrange: (s) => {
+      record(s, { value: 30 });
+      investigate(s, 'Invalidated');
+      record(s, { worksheet: worksheets['ATT-2'] });
+    },
+    fields: {
+      value: 2.6,
+      reason: 'Re-integrated',
+      worksheet: worksheets['ATT-4'],
+    },
+    blocker: null,
+    retestBlocker: worksheetReused,
+    reason: worksheetReused.reason,
+  },
+  {
+    name: 'a Retest on the content of an earlier Invalidated result than the one it follows',
+    arrange: (s) => {
+      record(s, { value: 30 });
+      investigate(s, 'Invalidated');
+      record(s, { value: 30, worksheet: worksheets['ATT-2'] });
+      investigate(s, 'Invalidated');
+    },
+    fields: { worksheet: worksheets['ATT-4'] },
+    blocker: {
+      code: 'retest required',
+      reason:
+        'Result #2 was Invalidated by OOS investigation OOS26-0002, so it cannot be corrected. Enter a Retest instead.',
+      investigationId: 'OOS26-0002',
+    },
     retestBlocker: worksheetReused,
     reason: worksheetReused.reason,
   },
@@ -663,7 +725,7 @@ for (const c of refused)
       const { worksheet } = input(c.fields);
       if (worksheet)
         assert.deepEqual(
-          view.retestBlocker(worksheet),
+          view.retestBlocker(worksheet, worksheetOf),
           c.retestBlocker ?? null,
         );
     }
@@ -710,22 +772,32 @@ test('analysis dates are calendar days in the laboratory’s time zone, US Easte
   );
 });
 
-test('the Retest blocker refuses only the worksheet of the Invalidated result a Retest, or a correction of it, follows', () => {
+test('the Retest blocker refuses only a worksheet with the content of an Invalidated result on the Test, for a Retest or a correction of it', () => {
   const s = sampleOf();
   const view = resultsView(s).test('NIT-001-v1');
+  const blocker = (id: string) =>
+    view.retestBlocker(worksheets[id], worksheetOf);
   record(s, { value: 30 });
-  assert.equal(
-    view.retestBlocker({ id: 'ATT-1' }),
-    null,
-    'no Retest is due on a current Result',
-  );
+  assert.equal(blocker('ATT-1'), null, 'no Retest is due on a current Result');
   investigate(s, 'Invalidated');
-  assert.deepEqual(view.retestBlocker({ id: 'ATT-1' }), worksheetReused);
-  assert.equal(view.retestBlocker({ id: 'ATT-2' }), null);
-  // A correction of the Retest is still that Retest.
-  record(s, { worksheet: { id: 'ATT-2' } });
-  assert.deepEqual(view.retestBlocker({ id: 'ATT-1' }), worksheetReused);
-  assert.equal(view.retestBlocker({ id: 'ATT-2' }), null);
+  assert.deepEqual(blocker('ATT-1'), worksheetReused);
+  assert.deepEqual(blocker('ATT-4'), worksheetReused, 'the same bytes');
+  assert.equal(blocker('ATT-2'), null);
+  // A correction of the Retest is still that Retest, and may keep its own
+  // worksheet.
+  record(s, { value: 30, worksheet: worksheets['ATT-2'] });
+  assert.deepEqual(blocker('ATT-4'), worksheetReused);
+  assert.equal(blocker('ATT-2'), null);
+  // Once the Retest is Invalidated too, both worksheets are refused.
+  investigate(s, 'Invalidated');
+  assert.deepEqual(blocker('ATT-4'), worksheetReused);
+  assert.deepEqual(blocker('ATT-2'), {
+    code: 'worksheet reused',
+    reason:
+      "This calculation worksheet is Result #2's, which OOS investigation OOS26-0002 Invalidated. A Retest needs its own calculation worksheet.",
+    investigationId: 'OOS26-0002',
+  });
+  assert.equal(blocker('ATT-3'), null);
 });
 
 test('after invalidation the correction blocker calls for a Retest, and recording one keeps the Invalidated result', () => {
@@ -741,7 +813,7 @@ test('after invalidation the correction blocker calls for a Retest, and recordin
   // Entering a Result now never supersedes the Invalidated result: the
   // command records a Retest.
   assert.equal(
-    record(s, { value: 2.5, worksheet: { id: 'ATT-2' } }).kind,
+    record(s, { value: 2.5, worksheet: worksheets['ATT-2'] }).kind,
     'retest',
   );
   assert.deepEqual(
@@ -758,11 +830,11 @@ test('Result history lists every Result oldest first with its investigation', ()
   const s = sampleOf();
   record(s, { value: 30 });
   const investigation = investigate(s, 'Invalidated');
-  record(s, { value: 2.5, worksheet: { id: 'ATT-2' } });
+  record(s, { value: 2.5, worksheet: worksheets['ATT-2'] });
   record(s, {
     value: 2.6,
     reason: 'Re-integrated',
-    worksheet: { id: 'ATT-2' },
+    worksheet: worksheets['ATT-2'],
   });
   const view = resultsView(s);
   assert.deepEqual(
@@ -912,13 +984,13 @@ function staged(stage: Stage): Sample {
     if (stage === 'invalidated') return s;
     // Each Retest is calculated on its own worksheet.
     if (stage === 'retested' || stage === 'retest corrected')
-      record(s, { worksheet: { id: 'ATT-2' } });
-    else record(s, { value: 31, worksheet: { id: 'ATT-2' } });
+      record(s, { worksheet: worksheets['ATT-2'] });
+    else record(s, { value: 31, worksheet: worksheets['ATT-2'] });
     if (stage === 'retest corrected')
       record(s, {
         value: 2.6,
         reason: 'Re-integrated',
-        worksheet: { id: 'ATT-2' },
+        worksheet: worksheets['ATT-2'],
       });
     if (stage === 'invalidated again' || stage === 'retested again') {
       // The Retest over its Limit is its own OOS, investigated and
@@ -926,7 +998,8 @@ function staged(stage: Stage): Sample {
       open(s, 'NIT-001-v1', () => 2);
       check(s, true, SECOND);
       conclude(s, 'Invalidated', 'Column overloaded.', SECOND);
-      if (stage === 'retested again') record(s, { worksheet: { id: 'ATT-3' } });
+      if (stage === 'retested again')
+        record(s, { worksheet: worksheets['ATT-3'] });
     }
     return s;
   }
@@ -1557,7 +1630,7 @@ test('Bench work lists who entered, corrected or retested each Result, of every 
     ),
   );
   conclude(s, 'Invalidated', 'Standard diluted twice.');
-  as('admin', { value: 2.5, worksheet: { id: 'ATT-2' } });
+  as('admin', { value: 2.5, worksheet: worksheets['ATT-2'] });
   const testId = 'NIT-001-v1';
   assert.deepEqual(resultsView(s).benchWork, [
     { person: 'analyst', act: 'entered', testId, resultSequence: 1 },
@@ -1904,7 +1977,7 @@ test('through its link a Retest reaches the closed investigation that Invalidate
     '"Retest required" names the investigation the Retest will follow',
   );
   const before = structuredClone(s.tests[0].results);
-  const { changes } = record(s);
+  const { changes } = record(s, { worksheet: worksheets['ATT-3'] });
   // The earlier Results are untouched: the Retest only adds a Result.
   assert.deepEqual(s.tests[0].results.slice(0, 2), [
     { ...before[0] },
@@ -2020,7 +2093,7 @@ test('an Amendment change summary gives a Retest the investigation it follows as
   open(s, 'NIT-001-v1', () => 2);
   check(s, true, SECOND);
   conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
-  amendment.enter({ value: 12, worksheet: { id: 'ATT-2' } });
+  amendment.enter({ value: 12, worksheet: worksheets['ATT-2'] });
   assert.equal(
     changeSummary(s, amendment.history),
     'Impurity A (NIT-001 v1): Result 30 → 12 ng/day, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.)',
@@ -2050,7 +2123,7 @@ test('an Amendment change summary leads a correction and the Retest after it wit
   open(s, 'NIT-001-v1', () => 2);
   check(s, true, SECOND);
   conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
-  amendment.enter({ value: 25, worksheet: { id: 'ATT-2' } });
+  amendment.enter({ value: 25, worksheet: worksheets['ATT-2'] });
   assert.equal(
     changeSummary(s, amendment.history),
     'Impurity A (NIT-001 v1): Result 20 → 25 ng/day: 20 → 30, Conformity statement Complies → Does not comply (reason: "transcription error"); 30 → 25, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.)',
@@ -2066,7 +2139,7 @@ test('an Amendment change summary gives a reason typed with a Retest after the i
   conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
   amendment.enter({
     value: 12,
-    worksheet: { id: 'ATT-2' },
+    worksheet: worksheets['ATT-2'],
     reason: 're-prepared standard',
   });
   assert.equal(
@@ -2082,11 +2155,11 @@ test('an Amendment change summary leads two Retest cycles with the change report
   open(s, 'NIT-001-v1', () => 2);
   check(s, true, SECOND);
   conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
-  amendment.enter({ value: 28, worksheet: { id: 'ATT-2' } });
+  amendment.enter({ value: 28, worksheet: worksheets['ATT-2'] });
   open(s, 'NIT-001-v1', () => 3);
   check(s, true, 'OOS26-0003');
   conclude(s, 'Invalidated', 'Column overloaded.', 'OOS26-0003');
-  amendment.enter({ value: 12, worksheet: { id: 'ATT-3' } });
+  amendment.enter({ value: 12, worksheet: worksheets['ATT-3'] });
   assert.equal(
     changeSummary(s, amendment.history),
     'Impurity A (NIT-001 v1): Result 30 → 12 ng/day, Conformity statement Does not comply → Complies, worksheet replaced: 30 → 28, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.); 28 → 12, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0003, Invalidated: Column overloaded.)',
@@ -2100,8 +2173,12 @@ test('an Amendment change summary leads a Retest and its correction with the cha
   open(s, 'NIT-001-v1', () => 2);
   check(s, true, SECOND);
   conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
-  amendment.enter({ value: 25, worksheet: { id: 'ATT-2' } });
-  amendment.enter({ value: 24, worksheet: { id: 'ATT-2' }, reason: 'typo' });
+  amendment.enter({ value: 25, worksheet: worksheets['ATT-2'] });
+  amendment.enter({
+    value: 24,
+    worksheet: worksheets['ATT-2'],
+    reason: 'typo',
+  });
   assert.equal(
     changeSummary(s, amendment.history),
     'Impurity A (NIT-001 v1): Result 30 → 24 ng/day, Conformity statement Does not comply → Complies: 30 → 25, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.); 25 → 24 (reason: "typo")',
@@ -2152,8 +2229,12 @@ test('an Amendment change summary leads a correction, a Retest and a correction 
   open(s, 'NIT-001-v1', () => 2);
   check(s, true, SECOND);
   conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
-  amendment.enter({ value: 25, worksheet: { id: 'ATT-2' } });
-  amendment.enter({ value: 24, worksheet: { id: 'ATT-2' }, reason: 'typo' });
+  amendment.enter({ value: 25, worksheet: worksheets['ATT-2'] });
+  amendment.enter({
+    value: 24,
+    worksheet: worksheets['ATT-2'],
+    reason: 'typo',
+  });
   assert.equal(
     changeSummary(s, amendment.history),
     'Impurity A (NIT-001 v1): Result 20 → 24 ng/day: 20 → 30, Conformity statement Complies → Does not comply (reason: "transcription error"); 30 → 25, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.); 25 → 24 (reason: "typo")',

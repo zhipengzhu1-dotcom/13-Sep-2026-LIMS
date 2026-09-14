@@ -3295,6 +3295,89 @@ test('Invalidated: the Result stays on record with its cause and reference, and 
   );
 });
 
+test('a Retest is refused a worksheet with the content of any Invalidated result on its Test, even as a fresh upload', (t) => {
+  const lab = memory(t);
+  const upload = (content: string) =>
+    lab.storeAttachment(
+      {
+        filename: 'retest worksheet.csv',
+        contentType: 'text/csv',
+        content: Buffer.from(content),
+      },
+      'analyst',
+    ).id;
+  const invalidate = (s: Sample) => {
+    s = run(lab, openOos(s), 'manager');
+    const id = s.investigations.at(-1)!.id;
+    s = run(lab, labErrorCheck(s, id), 'analyst');
+    s = run(
+      lab,
+      conclude(s, id, 'Invalidated', 'Standard diluted twice.'),
+      'manager',
+    );
+    return run(
+      lab,
+      { type: 'return', ...target(s), comment: `Retest per ${id}.` },
+      'manager',
+    );
+  };
+  const retest = (s: Sample, attachmentId: string) => ({
+    ...result(s, 'NIT-001-v1', 2.5),
+    attachmentId,
+  });
+  /** The refusal of a Retest on the worksheet, asserting it wrote nothing. */
+  const refusal = (s: Sample, attachmentId: string) => {
+    const before = lab.snapshot();
+    let message = '';
+    assert.throws(
+      () => run(lab, retest(s, attachmentId), 'analyst'),
+      (e: Error & { status: number }) => {
+        message = e.message;
+        return e.status === 400;
+      },
+    );
+    assert.deepEqual(lab.snapshot(), before, 'the refusal writes nothing');
+    return message;
+  };
+  const reused = (sequence: number, id: string) =>
+    `This calculation worksheet is Result #${sequence}'s, which OOS investigation ${id} Invalidated. A Retest needs its own calculation worksheet.`;
+
+  let s = invalidate(outOfSpecification(lab));
+  // Result #1 was calculated on the lab's worksheet; the same bytes uploaded
+  // again are a new attachment with the same SHA-256.
+  const copyOfFirst = upload('reading,result\n1.25,2.5\n');
+  assert.notEqual(copyOfFirst, worksheet(lab));
+  assert.equal(refusal(s, copyOfFirst), reused(1, 'OOS26-0001'));
+  // The Retest over its Limit is investigated and Invalidated in turn.
+  const second = upload('reading,result\n1.25,30\n');
+  s = run(
+    lab,
+    { ...result(s, 'NIT-001-v1', 30), attachmentId: second },
+    'analyst',
+  );
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = invalidate(s);
+  assert.equal(refusal(s, copyOfFirst), reused(1, 'OOS26-0001'));
+  assert.equal(refusal(s, second), reused(2, 'OOS26-0002'));
+  assert.equal(
+    refusal(s, upload('reading,result\n1.25,30\n')),
+    reused(2, 'OOS26-0002'),
+  );
+  // A worksheet with different content is the Retest's own.
+  run(lab, retest(s, upload('reading,result\n1.25,12.4\n')), 'analyst');
+  assert.deepEqual(
+    lab
+      .snapshot()
+      .samples[0].tests[0].results.map((r) => [r.sequence, r.status]),
+    [
+      [1, 'invalidated'],
+      [2, 'invalidated'],
+      [3, 'current'],
+    ],
+    'the Invalidated results stay on record',
+  );
+});
+
 test('Confirmed: Approval is allowed with the Result still Does not comply and linked to its investigation', (t) => {
   const lab = memory(t);
   let s = outOfSpecification(lab);

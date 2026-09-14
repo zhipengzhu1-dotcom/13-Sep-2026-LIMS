@@ -501,6 +501,7 @@ export const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
         reason: command.reason,
         limit: limitInForce(test.analyteId),
         worksheet: attachment(command.attachmentId),
+        worksheetOf: attachment,
         hasCertificate: certificates(sample.id).length > 0,
       },
       { actor: actor.id, at, audit },
