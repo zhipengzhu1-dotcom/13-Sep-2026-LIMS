@@ -8,8 +8,19 @@ import type { Attachment } from './attachment-contracts.ts';
 import type { CertificateSummary } from './certificate.ts';
 
 export * from './limits.ts';
-export * from './investigations.ts';
-import type { OosInvestigation } from './investigations.ts';
+// The Result & OOS investigation module's answers, for callers that ask
+// through contracts. Their logic lives only in results.ts.
+export {
+  didBenchWork,
+  investigationOf,
+  oosRows,
+  outOfSpecification,
+  resultsView,
+  type OosInvestigation,
+  type OosOutcome,
+  type OosRow,
+} from './results.ts';
+import type { OosInvestigation } from './results.ts';
 
 /** Lab users as the workspace shows them. Sign-in accounts (with password
  * hashes, server side only) are seeded from this list in src/accounts. */
@@ -139,6 +150,10 @@ export type Result = {
   /** The OOS investigation opened on this Result, kept once it is closed
    * (its outcome and any assignable cause are on the investigation). */
   investigationId: string | null;
+  /** For a Retest, the OOS investigation that Invalidated the Result it
+   * follows, and through it that Invalidated result; null for a first entry
+   * or a correction. Written only by the Result & OOS investigation module. */
+  retestAfter: string | null;
 };
 
 /** One Method applied to one Sample. The Method's identity and Analyte are
@@ -698,6 +713,9 @@ export const commandSchema = z.discriminatedUnion('type', [
     outcome: z.enum(['Invalidated', 'Confirmed']),
     /** Mandatory for Invalidated; must be empty for Confirmed. */
     assignableCause: z.string().trim().max(2000),
+    /** The Manager confirms the identified laboratory error caused the value:
+     * true for Invalidated, false for Confirmed. Always stated. */
+    causationConfirmed: z.boolean(),
   }),
   z.object({
     commandId,
@@ -705,6 +723,15 @@ export const commandSchema = z.discriminatedUnion('type', [
     ...target,
     investigationId: text,
     contact: required('Client contact who was informed'),
+    /** What data and Laboratory error check findings were sent to the
+     * Client; the length rule is the module's. */
+    sent: z
+      .string({ error: 'State what was sent to the Client.' })
+      .trim()
+      .max(
+        2000,
+        'State what was sent to the Client in 2000 characters or fewer.',
+      ),
     notifiedAt: z.iso.datetime({
       offset: true,
       error: 'Enter when the Client was informed.',
@@ -795,16 +822,3 @@ export type CommandOutcome = {
       originalActorId: string;
     }
 );
-
-/**
- * Separation of duties (ADR-0003): whoever entered, corrected or retested any
- * Result on a Sample, current or earlier, in its first Approval or in any
- * Amendment, may not give it Approval. Every correction is its own Result, so
- * its author is on record. Shared so the core enforces it and the workspace
- * can explain a disabled Approve.
- */
-export function enteredResultOn(sample: Sample, actorId: string) {
-  return sample.tests.some((t) =>
-    t.results.some((r) => r.enteredBy === actorId),
-  );
-}

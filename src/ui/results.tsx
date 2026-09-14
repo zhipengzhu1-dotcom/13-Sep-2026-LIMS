@@ -1,9 +1,7 @@
 import { useRef, useState } from 'react';
 import {
   conformity,
-  currentResult,
   decisionRule,
-  investigationOf,
   isFinishedProduct,
   limitInForce,
   qualify,
@@ -19,9 +17,16 @@ import {
   attachmentAccept,
   attachmentContentType,
 } from '../laboratory/attachment-contracts';
-import { investigationLabel, OosNote } from './oos';
+import {
+  resultsView,
+  retestLabel,
+  type RetestLineage,
+} from '../laboratory/results';
+import { investigationStatusText, OosNote, RefusalNote } from './oos';
 import {
   ConformityTag,
+  InvestigationLink,
+  InvestigationLinkedText,
   type Draft,
   type Execute,
   initials,
@@ -348,18 +353,38 @@ export function WorksheetLink({ data, id }: { data: Snapshot; id: string }) {
   );
 }
 
+/** A Retest's lineage in the module's words, with the investigation linked. */
+function RetestLineageText({
+  test,
+  lineage,
+}: {
+  test: Test;
+  lineage: RetestLineage;
+}) {
+  return (
+    <InvestigationLinkedText
+      text={retestLabel(test, lineage)}
+      id={lineage.investigation.id}
+    />
+  );
+}
+
 /** Every requested test as one row. Unrecorded tests show their entry fields
  * inline for the assigned analyst, so a whole sample can be keyed in one pass
  * with Tab and Enter; a current Result opens for correction on request. */
 export function TestSheet({
   sample: s,
   canRecord,
+  hasCertificate,
   busy,
   execute,
   data,
 }: {
   sample: Sample;
   canRecord: boolean;
+  /** Whether the Sample has a Certificate of Analysis, decided from the
+   * loaded Certificates as the core decides it. */
+  hasCertificate: boolean;
   busy: boolean;
   execute: Execute;
   data: Snapshot;
@@ -376,15 +401,22 @@ export function TestSheet({
           <th>Entered</th>
         </tr>
       </thead>
-      {s.tests.map((t) => {
-        const current = currentResult(t);
-        const editing = canRecord && (!current || editingId === t.id);
+      {resultsView(s).tests.map((view) => {
+        const { test: t, current, history: results } = view;
+        // The rule the core refuses the correction with, asked the same way.
+        const blocker =
+          canRecord && current
+            ? view.correctionBlocker({ hasCertificate })
+            : null;
+        const blockerId = `correction-blocker-${s.id}-${t.id}`;
+        const editing =
+          canRecord && (!current || (editingId === t.id && !blocker));
         const history = openHistory === t.id;
         // Earlier Results besides the current one, such as an Invalidated
         // result awaiting its retest.
-        const earlier = t.results.length - (current ? 1 : 0);
-        const retest =
-          !current && t.results.some((r) => r.status === 'invalidated');
+        const earlier = results.length - (current ? 1 : 0);
+        const due = view.retestDue;
+        const lineage = results.find((h) => h.result === current)?.retestOf;
         return (
           <tbody key={t.id} className={editing ? 'editing' : undefined}>
             <tr>
@@ -414,7 +446,7 @@ export function TestSheet({
                     aria-expanded={history}
                     onClick={() => setOpenHistory(history ? null : t.id)}
                   >
-                    History ({t.results.length})
+                    History ({results.length})
                   </button>
                 )}
               </td>
@@ -423,9 +455,17 @@ export function TestSheet({
                   <>
                     <LimitCell result={current} />
                     <OosNote sample={s} result={current} />
+                    {lineage && (
+                      <span className="sub">
+                        <RetestLineageText test={t} lineage={lineage} />
+                      </span>
+                    )}
                   </>
-                ) : retest ? (
-                  <span className="oos-note">Retest required</span>
+                ) : due ? (
+                  <span className="oos-note">
+                    Retest required after{' '}
+                    <InvestigationLink id={due.investigation.id} />
+                  </span>
                 ) : (
                   <span className="dim">—</span>
                 )}
@@ -440,26 +480,34 @@ export function TestSheet({
                       </time>
                     </span>
                     <span className="rec-actions">
-                      {t.results.length > 1 && (
+                      {results.length > 1 && (
                         <button
                           className="link"
                           aria-expanded={history}
                           onClick={() => setOpenHistory(history ? null : t.id)}
                         >
-                          History ({t.results.length})
+                          History ({results.length})
                         </button>
                       )}
                       {canRecord && (
+                        // Disabled but focusable, so keyboard and
+                        // screen-reader users reach the reason it describes.
                         <button
                           className="link"
-                          onClick={() =>
-                            setEditingId(editingId === t.id ? null : t.id)
-                          }
+                          aria-disabled={blocker ? true : undefined}
+                          aria-describedby={blocker ? blockerId : undefined}
+                          onClick={() => {
+                            if (!blocker)
+                              setEditingId(editingId === t.id ? null : t.id);
+                          }}
                         >
-                          {editingId === t.id ? 'Cancel' : 'Correct'}
+                          {editing ? 'Cancel' : 'Correct'}
                         </button>
                       )}
                     </span>
+                    {blocker && (
+                      <RefusalNote id={blockerId} refusal={blocker} />
+                    )}
                   </span>
                 ) : (
                   <span className="dim">Not entered</span>
@@ -486,36 +534,45 @@ export function TestSheet({
               <tr className="revisions">
                 <td colSpan={4}>
                   <ol>
-                    {[...t.results].reverse().map((r) => (
-                      <li key={r.sequence} className={r.status}>
-                        <span className="num">#{r.sequence}</span>
-                        <span className={'result-status ' + r.status}>
-                          {r.status[0].toUpperCase() + r.status.slice(1)}
-                        </span>
-                        <ResultValue result={r} />
-                        <ConformityTag statement={r.conformity} />
-                        <span className="dim num">
-                          {r.limit ? `Limit ${r.limit.value} ng/day · ` : ''}
-                          {r.instrumentReading} ng/mL · {r.sequenceId}
-                        </span>
-                        <WorksheetLink data={data} id={r.attachmentId} />
-                        <span>{personName(data, r.enteredBy)}</span>
-                        <time className="dim" dateTime={r.enteredAt}>
-                          {stamp(r.enteredAt)}
-                        </time>
-                        {r.reason && (
-                          <span className="reason">Reason: {r.reason}</span>
-                        )}
-                        {r.investigationId && (
-                          <span className="reason">
-                            {r.investigationId} ·{' '}
-                            {investigationLabel(investigationOf(s, r))}
-                            {investigationOf(s, r)?.assignableCause &&
-                              ` · Assignable cause: ${investigationOf(s, r)!.assignableCause}`}
+                    {[...results]
+                      .reverse()
+                      .map(({ result: r, investigation, retestOf }) => (
+                        <li key={r.sequence} className={r.status}>
+                          <span className="num">#{r.sequence}</span>
+                          <span className={'result-status ' + r.status}>
+                            {r.status[0].toUpperCase() + r.status.slice(1)}
                           </span>
-                        )}
-                      </li>
-                    ))}
+                          <ResultValue result={r} />
+                          <ConformityTag statement={r.conformity} />
+                          <span className="dim num">
+                            {r.limit ? `Limit ${r.limit.value} ng/day · ` : ''}
+                            {r.instrumentReading} ng/mL · {r.sequenceId}
+                          </span>
+                          <WorksheetLink data={data} id={r.attachmentId} />
+                          <span>{personName(data, r.enteredBy)}</span>
+                          <time className="dim" dateTime={r.enteredAt}>
+                            {stamp(r.enteredAt)}
+                          </time>
+                          {r.reason && (
+                            <span className="reason">Reason: {r.reason}</span>
+                          )}
+                          {retestOf && (
+                            <span className="reason">
+                              <RetestLineageText test={t} lineage={retestOf} />
+                            </span>
+                          )}
+                          {r.investigationId && (
+                            <span className="reason">
+                              {r.investigationId} ·{' '}
+                              {investigationStatusText(investigation)}
+                              {investigation?.assignableCause &&
+                                ` · Assignable cause: ${investigation.assignableCause}`}
+                              {investigation?.causationConfirmed &&
+                                ' (confirmed by the Manager as the cause)'}
+                            </span>
+                          )}
+                        </li>
+                      ))}
                   </ol>
                 </td>
               </tr>

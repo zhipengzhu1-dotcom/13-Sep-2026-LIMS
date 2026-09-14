@@ -103,9 +103,23 @@ button {
   border: 0;
   padding: 0;
 }
-button:disabled {
+button:disabled,
+button[aria-disabled='true'] {
   cursor: not-allowed;
   opacity: 0.45;
+}
+/* A control a rule blocks stays focusable (its reason is described), but
+ * never looks actionable on hover. */
+.link[aria-disabled='true']:hover {
+  text-decoration: none;
+}
+/* The visible mark of a required field, beside its label text. */
+.required-mark {
+  margin-left: var(--space-1);
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--alert);
 }
 :focus-visible {
   outline: 2px solid var(--focus);
@@ -517,6 +531,11 @@ kbd {
 .flash.returned {
   background: var(--returned-wash);
   color: var(--returned);
+}
+/* Nothing is wrong, someone else acts: separation-of-duties notes. */
+.flash.neutral {
+  background: var(--sunk);
+  color: var(--ink-2);
 }
 .flash.inline {
   display: block;
@@ -1170,6 +1189,12 @@ body.resizing {
 .sheet .sub {
   white-space: normal;
   overflow-wrap: anywhere;
+}
+/* A blocked correction's reason, beneath the Test's actions. */
+.sheet .flash.refusal {
+  flex-basis: 100%;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1) var(--space-2);
 }
 .sheet tbody.editing td {
   background: var(--accent-wash);
@@ -1922,6 +1947,10 @@ body.resizing {
   border-bottom: 1px solid var(--rule-soft);
   font-size: 13px;
 }
+/* Where a refusal's investigation link lands. */
+.investigations li:target {
+  background: var(--accent-wash);
+}
 .investigations li:last-child {
   border-bottom: 0;
 }
@@ -1972,10 +2001,34 @@ body.resizing {
 .inv-form .priority {
   flex-basis: 100%;
 }
+.inv-form .field {
+  display: grid;
+  gap: 4px;
+  flex-basis: 100%;
+  color: var(--ink-2);
+}
+.investigations .sent-to-client {
+  display: block;
+  margin-top: 4px;
+  white-space: pre-line;
+}
 .inv-form .check {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-basis: 100%;
+  min-height: 32px;
+}
+/* An outcome a rule blocks: focusable, its reason beneath the outcomes, and
+ * never looks selectable. */
+.priority label.blocked {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.priority .flash.refusal {
+  flex-basis: 100%;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1) var(--space-2);
 }
 @media (max-width: 600px) {
   .inv-detail > div {
@@ -2159,6 +2212,14 @@ body.resizing {
 .certificate-table th {
   background: #eef1ef;
   font-weight: 600;
+}
+.certificate-lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.certificate-lines li + li {
+  margin-top: 2px;
 }
 .certificate-notes {
   margin: 6px 0 0;

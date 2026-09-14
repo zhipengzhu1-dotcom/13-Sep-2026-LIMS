@@ -1,5 +1,5 @@
 import { decisionRule, type ConformityStatement } from './limits.ts';
-import type { OosOutcome } from './investigations.ts';
+import { resultsView, type CertificateInvestigation } from './results.ts';
 import {
   isFinishedProduct,
   stabilityConditionLabels,
@@ -72,8 +72,9 @@ export type CertificateResult = {
   conformity: ConformityStatement;
   /** Every closed OOS investigation on the Test's Results, oldest first: on
    * the reported Result, on an Invalidated Result it retests, or on a Result
-   * an Amendment corrected. Empty when there was none. */
-  investigations: { id: string; outcome: OosOutcome }[];
+   * an Amendment corrected, each with the value, qualifier and unit of the
+   * Result it decided. Empty when there was none. */
+  investigations: CertificateInvestigation[];
 };
 
 export type CertificateContent = {
@@ -240,8 +241,8 @@ export function certificateContent({
         instructedAt: d.instruction.instructedAt,
       },
     })),
-    results: sample.tests.map((test): CertificateResult => {
-      const r = test.results.find((x) => x.status === 'current');
+    results: resultsView(sample).tests.map((view): CertificateResult => {
+      const { test, current: r } = view;
       if (!r)
         throw new Error(`Test ${test.id} has no current Result to certify.`);
       return {
@@ -266,11 +267,7 @@ export function certificateContent({
           illustrative: r.limit.illustrative,
         },
         conformity: r.conformity,
-        investigations: sample.investigations.flatMap((i) =>
-          i.testId === test.id && i.status === 'Closed' && i.outcome
-            ? [{ id: i.id, outcome: i.outcome }]
-            : [],
-        ),
+        investigations: view.certificateInvestigations,
       };
     }),
     decisionRule: finished ? decisionRule : rawMaterialDecisionRule,

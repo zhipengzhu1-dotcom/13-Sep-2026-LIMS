@@ -8,21 +8,21 @@ import { createHash } from 'node:crypto';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { discardOutdatedDemoDatabase, seed } from '../server/seed.ts';
 import { renderCertificate } from '../src/laboratory/certificate-renderer.ts';
+import type { CertificateResult } from '../src/laboratory/certificate.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
   auditEntriesWithin,
   currentResult,
-  enteredResultOn,
+  didBenchWork,
   investigationOf,
   methods,
-  oosApprovalBlocker,
-  oosPublishBlocker,
   oosRows,
   people,
   publishQueue,
   qualify,
   newCommandId,
+  resultsView,
   type AuditEntry,
   type Person,
   signatureMeanings,
@@ -67,6 +67,11 @@ const receipt = {
 };
 const NOW = '2026-09-10T12:00:00.000Z';
 const target = (s: Sample) => ({ sampleId: s.id, revision: s.revision });
+/** The text of the OOS rule blocking Approval or Publishing, or null. */
+const approvalBlockerReason = (s: Sample) =>
+  resultsView(s).approvalBlocker?.reason ?? null;
+const publishBlockerReason = (s: Sample) =>
+  resultsView(s).publishBlocker?.reason ?? null;
 
 const worksheets = new WeakMap<Laboratory, string>();
 /** One stored calculation worksheet per lab, for Results that do not test
@@ -85,6 +90,17 @@ function worksheet(lab: Laboratory) {
       ).id,
     );
   return worksheets.get(lab)!;
+}
+/** A new calculation worksheet, for a Retest, which is calculated again. */
+function retestWorksheet(lab: Laboratory) {
+  return lab.storeAttachment(
+    {
+      filename: 'retest worksheet.csv',
+      contentType: 'text/csv',
+      content: Buffer.from('reading,result\n1.25,12.4\n'),
+    },
+    'analyst',
+  ).id;
 }
 
 /** Mints a fresh key per call — a distinct laboratory act. Tests that exercise
@@ -926,6 +942,26 @@ test('the demo database is kept across restarts, and one from an older build is 
   let lab = start();
   const seeded = shape(lab);
   assert.ok(seeded.length, 'a new database is seeded');
+  // The demo shows a Retest linked to the investigation that Invalidated the
+  // Result before it.
+  const retests = lab.snapshot().samples.flatMap((x) =>
+    x.tests.flatMap((test) =>
+      test.results.flatMap((r) => {
+        const i = x.investigations.find((i) => i.id === r.retestAfter);
+        return i
+          ? [
+              [
+                i.outcome,
+                i.testId === test.id,
+                test.results.find((p) => p.sequence === i.resultSequence)
+                  ?.status,
+              ],
+            ]
+          : [];
+      }),
+    ),
+  );
+  assert.deepEqual(retests, [['Invalidated', true, 'invalidated']]);
   const added = execute(lab, receipt, 'coordinator').submission!.id;
   lab.close();
   // A database this build wrote is current, however often it is reopened.
@@ -2291,12 +2327,14 @@ const conclude = (
   investigationId: string,
   outcome: 'Invalidated' | 'Confirmed',
   assignableCause = '',
+  causationConfirmed = outcome === 'Invalidated',
 ) => ({
   type: 'concludeOosInvestigation',
   ...target(s),
   investigationId,
   outcome,
   assignableCause,
+  causationConfirmed,
 });
 
 test('a Result over its Limit is flagged and blocks Approval until an investigation is opened and closed', (t) => {
@@ -2333,6 +2371,7 @@ test('a Result over its Limit is flagged and blocks Approval until an investigat
     labErrorCheck: null,
     outcome: null,
     assignableCause: null,
+    causationConfirmed: null,
     closedBy: null,
     closedAt: null,
     clientNotification: null,
@@ -2411,8 +2450,25 @@ test('Invalidated: the Result stays on record with its cause and reference, and 
     'manager',
   );
   // The retest is a new Result on the same Test; no correction reason is
-  // needed because nothing current is being replaced.
-  s = run(lab, result(s, 'NIT-001-v1', 12.4), 'analyst');
+  // needed because nothing current is being replaced. It is calculated
+  // again, so the Invalidated result's worksheet is refused.
+  const before = lab.snapshot();
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 12.4), 'analyst'),
+    (e: Error & { status: number }) =>
+      e.status === 400 &&
+      e.message ===
+        "This calculation worksheet is Result #1's, which OOS investigation OOS26-0001 Invalidated. A Retest needs its own calculation worksheet.",
+  );
+  assert.deepEqual(lab.snapshot(), before, 'the refusal writes nothing');
+  s = run(
+    lab,
+    {
+      ...result(s, 'NIT-001-v1', 12.4),
+      attachmentId: retestWorksheet(lab),
+    },
+    'analyst',
+  );
   assert.deepEqual(
     s.tests[0].results.map((r) => [
       r.sequence,
@@ -2420,10 +2476,11 @@ test('Invalidated: the Result stays on record with its cause and reference, and 
       r.value,
       r.conformity,
       r.investigationId,
+      r.retestAfter,
     ]),
     [
-      [1, 'invalidated', 30, 'Does not comply', 'OOS26-0001'],
-      [2, 'current', 12.4, 'Complies', null],
+      [1, 'invalidated', 30, 'Does not comply', 'OOS26-0001', null],
+      [2, 'current', 12.4, 'Complies', null, 'OOS26-0001'],
     ],
   );
   s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
@@ -2469,7 +2526,7 @@ test('Confirmed: Approval is allowed with the Result still Does not comply and l
     ],
     ['Closed', 'Confirmed', null],
   );
-  assert.equal(oosApprovalBlocker(s), null);
+  assert.equal(approvalBlockerReason(s), null);
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
   assert.equal(s.status, 'Approved');
   const current = currentResult(s.tests[0])!;
@@ -2518,6 +2575,197 @@ test('OOS commands check roles, the assigned analyst and the order of the invest
     /already closed/,
   );
   refused(labErrorCheck(s, id), 'analyst', /already closed/);
+});
+
+test('the server invalidates only on an identified laboratory error the concluding Manager confirms caused the value, on the audit trail as themselves', (t) => {
+  const lab = memory(t);
+  let s = outOfSpecification(lab);
+  s = run(lab, openOos(s), 'manager');
+  s = run(lab, labErrorCheck(s, 'OOS26-0001'), 'analyst');
+  const cause = 'Standard diluted twice (prep log p. 14).';
+  const refused = (command: object, reason: string) => {
+    const before = lab.snapshot();
+    const entries = lab.auditTrail().length;
+    assert.throws(
+      () => run(lab, command, 'manager'),
+      (e: Error & { status: number }) =>
+        e.status === 400 && e.message === reason,
+    );
+    assert.deepEqual(lab.snapshot(), before);
+    assert.equal(lab.auditTrail().length, entries, 'no audit entry');
+  };
+  refused(
+    conclude(s, 'OOS26-0001', 'Invalidated', cause, false),
+    'Confirm that the laboratory error the check identified caused the value before invalidating the Result.',
+  );
+  // The command must state the confirmation; it is never assumed.
+  const { causationConfirmed: _, ...unstated } = conclude(
+    s,
+    'OOS26-0001',
+    'Invalidated',
+    cause,
+  );
+  assert.throws(
+    () => run(lab, unstated, 'manager'),
+    (e: Error & { status: number }) =>
+      e.status === 400 && /causationConfirmed/.test(e.message),
+  );
+
+  const concluded = audited(
+    lab,
+    conclude(s, 'OOS26-0001', 'Invalidated', cause),
+    'admin',
+  );
+  const confirmation = concluded.entries.find(
+    (e) => e.field === 'causationConfirmed',
+  );
+  assert.deepEqual(
+    confirmation && [
+      confirmation.recordType,
+      confirmation.recordId,
+      confirmation.oldValue,
+      confirmation.newValue,
+      confirmation.actor,
+      confirmation.at,
+      confirmation.commandType,
+    ],
+    [
+      'OOS investigation',
+      'OOS26-0001',
+      null,
+      true,
+      'admin',
+      NOW,
+      'concludeOosInvestigation',
+    ],
+  );
+  assert.ok(
+    concluded.entries.every((e) => e.actor === 'admin' && e.at === NOW),
+  );
+  const [investigation] = concluded.outcome.samples[0].investigations;
+  assert.deepEqual(
+    [
+      investigation.causationConfirmed,
+      investigation.closedBy,
+      investigation.closedAt,
+    ],
+    [true, 'admin', NOW],
+  );
+  assert.ok(
+    lab
+      .auditTrail(s.id)
+      .some((e) => e.field === 'causationConfirmed' && e.newValue === true),
+    "the confirmation is in the Sample's exported audit trail",
+  );
+});
+
+test('the server refuses Invalidated when the laboratory error check identified no error, and allows Confirmed', (t) => {
+  const lab = memory(t);
+  let s = outOfSpecification(lab);
+  s = run(lab, openOos(s), 'manager');
+  s = run(
+    lab,
+    { ...labErrorCheck(s, 'OOS26-0001'), errorIdentified: false },
+    'analyst',
+  );
+  const before = lab.snapshot();
+  assert.throws(
+    () =>
+      run(
+        lab,
+        conclude(s, 'OOS26-0001', 'Invalidated', 'Standard diluted twice.'),
+        'manager',
+      ),
+    (e: Error & { status: number }) =>
+      e.status === 400 &&
+      e.message ===
+        'The laboratory error check identified no laboratory error, so the Result cannot be Invalidated.',
+  );
+  assert.deepEqual(lab.snapshot(), before);
+  s = run(lab, conclude(s, 'OOS26-0001', 'Confirmed'), 'manager');
+  assert.deepEqual(
+    [s.investigations[0].outcome, s.investigations[0].causationConfirmed],
+    ['Confirmed', null],
+  );
+});
+
+test('an Admin assigned the Sample records the laboratory error check as themselves', (t) => {
+  const lab = memory(t);
+  let s = outOfSpecification(lab);
+  s = run(lab, openOos(s), 'manager');
+  s = run(
+    lab,
+    { type: 'return', ...target(s), comment: 'Reassigning for the OOS.' },
+    'manager',
+  );
+  s = run(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'admin' },
+    'coordinator',
+  );
+  assert.throws(
+    () => run(lab, labErrorCheck(s, 'OOS26-0001'), 'analyst'),
+    /assigned analyst/,
+  );
+  const checked = audited(lab, labErrorCheck(s, 'OOS26-0001'), 'admin');
+  assert.ok(checked.entries.length > 0);
+  assert.ok(checked.entries.every((e) => e.actor === 'admin' && e.at === NOW));
+  assert.equal(
+    checked.outcome.samples[0].investigations[0].labErrorCheck?.by,
+    'admin',
+  );
+});
+
+test('the server refuses correcting an uninvestigated OOS Result on its own, linking no worksheet and writing nothing', (t) => {
+  const lab = memory(t);
+  let s = assigned(lab);
+  s = run(lab, result(s, 'NIT-001-v1', 30), 'analyst');
+  // The Analyst uploads the corrected worksheet before saving.
+  const upload = lab.storeAttachment(
+    {
+      filename: 'corrected worksheet.csv',
+      contentType: 'text/csv',
+      content: Buffer.from('reading,result\n1.25,3\n'),
+    },
+    'analyst',
+  );
+  const before = lab.snapshot();
+  const entries = lab.auditTrail().length;
+  assert.throws(
+    () =>
+      run(
+        lab,
+        {
+          ...result(s, 'NIT-001-v1', 3, 'Transcription error.'),
+          attachmentId: upload.id,
+        },
+        'analyst',
+      ),
+    (e: Error & { status: number }) =>
+      e.status === 400 &&
+      e.message ===
+        'This Result does not comply with its Limit and has no OOS investigation, so it cannot be corrected.',
+  );
+  assert.deepEqual(lab.snapshot(), before);
+  assert.equal(lab.auditTrail().length, entries);
+  assert.ok(
+    !lab
+      .snapshot()
+      .samples.some((x) =>
+        x.tests.some((y) =>
+          y.results.some((r) => r.attachmentId === upload.id),
+        ),
+      ),
+    'the uploaded worksheet is linked to no Result',
+  );
+  assert.deepEqual(
+    oosRows(lab.snapshot().samples).map((r) => [
+      r.result.value,
+      r.investigation,
+    ]),
+    [[30, undefined]],
+    'the OOS Result stays in the queue',
+  );
 });
 
 test('a Result under investigation cannot be corrected around it', (t) => {
@@ -2592,6 +2840,7 @@ test('opening, checking and concluding an investigation audit each change', (t) 
   assert.deepEqual(concluded.changes, [
     [record, 'outcome', null, 'Invalidated', null],
     [record, 'assignableCause', null, cause, null],
+    [record, 'causationConfirmed', null, true, null],
     [record, 'status', 'Open', 'Closed', null],
     [record, 'closedBy', null, 'manager', null],
     [record, 'closedAt', null, at, null],
@@ -2716,7 +2965,7 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
         'ng/day',
         '26.5 ng/day',
         'Does not comply',
-        'OOS26-0001 (Confirmed)',
+        ['OOS26-0001, Confirmed, for Result 30 ng/day'],
       ],
       [
         'Impurity B',
@@ -2757,6 +3006,43 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
       },
     ],
   });
+
+  // The labels are locked, hashed content: a changed label is a different
+  // Certificate.
+  const relabelled = structuredClone(certificate.content);
+  relabelled.results[0].investigations[0].result.value = 29;
+  assert.notEqual(
+    createHash('sha256').update(JSON.stringify(relabelled)).digest('hex'),
+    certificate.sha256,
+  );
+  // A `< LOQ` or `< LOD` decided Result is labelled as the Certificate reports
+  // Results, with its unit.
+  const labels = (investigations: CertificateResult['investigations']) => {
+    const content = structuredClone(certificate.content);
+    content.results[0].investigations = investigations;
+    const doc = renderCertificate(content).sections.find(
+      (x) => x.kind === 'table',
+    );
+    return doc?.kind === 'table' && doc.rows[0].at(-1);
+  };
+  assert.deepEqual(
+    labels([
+      {
+        id: 'OOS26-0001',
+        outcome: 'Invalidated',
+        result: { value: 2, qualifier: '< LOQ', unit: 'ng/day' },
+      },
+      {
+        id: 'OOS26-0002',
+        outcome: 'Confirmed',
+        result: { value: 0.5, qualifier: '< LOD', unit: 'ppm' },
+      },
+    ]),
+    [
+      'OOS26-0001, Invalidated, for Result < LOQ (3) ng/day',
+      'OOS26-0002, Confirmed, for Result < LOD (1) ppm',
+    ],
+  );
 });
 
 test('a raw material Certificate reports each Result with Report and no Limit', (t) => {
@@ -2898,9 +3184,12 @@ const notifyClient = (s: Sample, investigationId: string, fields = {}) => ({
   ...target(s),
   investigationId,
   contact: 'Priya Nair, QA (phone)',
+  sent: SENT_TO_CLIENT,
   notifiedAt: NOW,
   ...fields,
 });
+const SENT_TO_CLIENT =
+  'OOS26-0001 data, worksheet and Laboratory error check findings, by email.';
 /** A finished product approved with a Confirmed OOS (OOS26-0001). */
 function approvedWithConfirmedOos(lab: Laboratory) {
   let s = outOfSpecification(lab);
@@ -3033,7 +3322,7 @@ test('a Confirmed OOS blocks Publishing until the Client notification is recorde
   let s = approvedWithConfirmedOos(lab);
   const blocked =
     /OOS investigation OOS26-0001 confirmed an OOS\. Record that the Client was informed before publishing\./;
-  assert.match(oosPublishBlocker(s)!, blocked);
+  assert.match(String(publishBlockerReason(s)), blocked);
   assert.throws(() => run(lab, publish(s), 'coordinator'), blocked);
   assert.equal(lab.snapshot().samples[0].status, 'Approved');
 
@@ -3042,11 +3331,23 @@ test('a Confirmed OOS blocks Publishing until the Client notification is recorde
     [{ contact: ' ' }, /Client contact who was informed/],
     [{ notifiedAt: '' }, /when the Client was informed/],
     [{ notifiedAt: '2026-09-10T12:00:01.000Z' }, /later than the time/],
-  ] as const)
+    [{ sent: undefined }, /what was sent to the Client/],
+    [
+      { sent: ' - ' },
+      /^State what data and Laboratory error check findings were sent to the Client\.$/,
+    ],
+    [{ sent: 'x'.repeat(2001) }, /what was sent to the Client/],
+  ] as const) {
+    const before = lab.snapshot();
+    const entries = lab.auditTrail().length;
     assert.throws(
       () => run(lab, notifyClient(s, 'OOS26-0001', fields), 'coordinator'),
-      message,
+      (e: Error & { status: number }) =>
+        e.status === 400 && message.test(e.message),
     );
+    assert.deepEqual(lab.snapshot(), before);
+    assert.equal(lab.auditTrail().length, entries, 'a refusal writes nothing');
+  }
 
   const notified = audited(lab, notifyClient(s, 'OOS26-0001'), 'coordinator');
   assert.deepEqual(notified.changes, [
@@ -3059,21 +3360,37 @@ test('a Confirmed OOS blocks Publishing until the Client notification is recorde
     ],
     [
       'OOS investigation OOS26-0001',
+      'clientNotification.sent',
+      null,
+      SENT_TO_CLIENT,
+      null,
+    ],
+    [
+      'OOS investigation OOS26-0001',
       'clientNotification.notifiedAt',
       null,
       NOW,
       null,
     ],
   ]);
+  // On the Sample's audit trail as the Coordinator, at the server's time.
+  assert.deepEqual(
+    lab
+      .auditTrail(s.id)
+      .filter((e) => e.field === 'clientNotification.sent')
+      .map((e) => [e.actor, e.at, e.commandType, e.newValue]),
+    [['coordinator', NOW, 'recordClientOosNotification', SENT_TO_CLIENT]],
+  );
   s = notified.outcome.samples[0];
   assert.equal(s.status, 'Approved', 'recording it is not a transition');
   assert.deepEqual(s.investigations[0].clientNotification, {
     contact: 'Priya Nair, QA (phone)',
+    sent: SENT_TO_CLIENT,
     notifiedAt: NOW,
     recordedBy: 'coordinator',
     recordedAt: NOW,
   });
-  assert.equal(oosPublishBlocker(s), null);
+  assert.equal(publishBlockerReason(s), null);
   assert.throws(
     () => run(lab, notifyClient(s, 'OOS26-0001'), 'coordinator'),
     /already recorded/,
@@ -3111,30 +3428,61 @@ test('Client notification is recorded only for a confirmed OOS', (t) => {
     { type: 'return', ...target(s), comment: 'Retest NIT-001 per OOS26-0001.' },
     'manager',
   );
-  s = run(lab, result(s, 'NIT-001-v1', 2.5), 'analyst');
+  s = run(
+    lab,
+    { ...result(s, 'NIT-001-v1', 2.5), attachmentId: retestWorksheet(lab) },
+    'analyst',
+  );
   s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
   assert.equal(
-    oosPublishBlocker(s),
+    publishBlockerReason(s),
     null,
     'an Invalidated OOS needs no notice',
   );
-  // The Certificate still names the investigation behind the retest.
+  // The Certificate still names the investigation behind the retest, with the
+  // value it invalidated; the row's Conformity statement is the Retest's own.
   const { content } = lab.certificate(s.id);
   assert.deepEqual(
     content.results.map((r) => [r.value, r.conformity, r.investigations]),
     [
-      [2.5, 'Complies', [{ id: 'OOS26-0001', outcome: 'Invalidated' }]],
+      [
+        2.5,
+        'Complies',
+        [
+          {
+            id: 'OOS26-0001',
+            outcome: 'Invalidated',
+            result: { value: 30, qualifier: 'quantified', unit: 'ng/day' },
+          },
+        ],
+      ],
       [2.5, 'Complies', []],
     ],
   );
   const table = renderCertificate(content).sections.find(
     (x) => x.kind === 'table',
   );
-  assert.deepEqual(
-    table?.kind === 'table' && table.rows.map((row) => row.at(-1)),
-    ['OOS26-0001 (Invalidated)', '—'],
-  );
+  assert.deepEqual(table?.kind === 'table' && table.rows, [
+    [
+      'Impurity A',
+      'NIT-001 v1 (LC-MS/MS)',
+      '< LOQ (3)',
+      'ng/day',
+      '26.5 ng/day',
+      'Complies',
+      ['OOS26-0001, Invalidated, for Result 30 ng/day'],
+    ],
+    [
+      'Impurity B',
+      'NIT-003 v1 (LC-MS/MS)',
+      '< LOQ (3)',
+      'ng/day',
+      '96 ng/day',
+      'Complies',
+      '—',
+    ],
+  ]);
   assert.equal(run(lab, publish(s), 'coordinator').status, 'Published');
 });
 
@@ -3316,7 +3664,7 @@ test('an Amendment corrects a Published Certificate and issues version n+1 marke
   const v2 = lab.certificate(s.id);
   assert.equal(v2.version, 2);
   const changeSummary =
-    'Impurity A (NIT-001 v1): Result 2.5 → 3.1 ng/day, qualifier < LOQ → quantified (reasons: "Keyed from the wrong injection."; "Transcription error: the worksheet gives 3.1 ng/day.")';
+    'Impurity A (NIT-001 v1): Result 2.5 → 3.1 ng/day, qualifier < LOQ → quantified: 2.5 → 3, qualifier < LOQ → quantified (reason: "Keyed from the wrong injection."); 3 → 3.1 (reason: "Transcription error: the worksheet gives 3.1 ng/day.")';
   assert.deepEqual(v2.content.amendment, {
     reason: amendmentReason,
     changeSummary,
@@ -3531,29 +3879,93 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
     conclude(s, 'OOS26-0002', 'Invalidated', 'Dilution error in the standard.'),
     'manager',
   );
-  s = run(lab, result(s, 'NIT-001-v1', 2.5), 'analyst');
+  s = run(
+    lab,
+    { ...result(s, 'NIT-001-v1', 2.5), attachmentId: retestWorksheet(lab) },
+    'analyst',
+  );
   s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
 
   const v2 = lab.certificate(s.id);
   assert.equal(v2.version, 2);
   const [corrected] = v2.content.results;
+  // Each investigation is labelled with the Result it decided: the confirmed
+  // OOS with the superseded value, the invalidation with the corrected value.
+  const decided = (value: number) => ({
+    value,
+    qualifier: 'quantified',
+    unit: 'ng/day',
+  });
   assert.deepEqual(
     [corrected.value, corrected.conformity, corrected.investigations],
     [
       2.5,
       'Complies',
       [
-        { id: 'OOS26-0001', outcome: 'Confirmed' },
-        { id: 'OOS26-0002', outcome: 'Invalidated' },
+        { id: 'OOS26-0001', outcome: 'Confirmed', result: decided(30) },
+        { id: 'OOS26-0002', outcome: 'Invalidated', result: decided(28) },
       ],
     ],
   );
-  assert.match(
-    v2.content.amendment!.changeSummary,
-    /^Impurity A \(NIT-001 v1\): Result 30 → 2\.5 ng\/day/,
+  assert.equal(
+    v2.sha256,
+    createHash('sha256').update(JSON.stringify(v2.content)).digest('hex'),
+    'the labels are part of the hashed content',
   );
-  assert.equal(oosPublishBlocker(s), null, 'the Client was already informed');
+  const v1 = lab.certificate(s.id, 1);
+  assert.deepEqual(v1.content.results[0].investigations, [
+    { id: 'OOS26-0001', outcome: 'Confirmed', result: decided(30) },
+  ]);
+  assert.equal(
+    v1.sha256,
+    createHash('sha256').update(JSON.stringify(v1.content)).digest('hex'),
+    'version 1 keeps its labels as issued',
+  );
+  const amended = renderCertificate(v2.content);
+  assert.equal(amended.marker, 'Amended');
+  const rows = amended.sections.find((x) => x.kind === 'table');
+  assert.deepEqual(rows?.kind === 'table' && rows.rows[0], [
+    'Impurity A',
+    'NIT-001 v1 (LC-MS/MS)',
+    '< LOQ (3)',
+    'ng/day',
+    '26.5 ng/day',
+    'Complies',
+    [
+      'OOS26-0001, Confirmed, for Result 30 ng/day',
+      'OOS26-0002, Invalidated, for Result 28 ng/day',
+    ],
+  ]);
+  assert.deepEqual(
+    amended.sections.find((x) => x.heading === 'Decision rule'),
+    {
+      kind: 'text',
+      heading: 'Decision rule',
+      paragraphs: [v2.content.decisionRule, v2.content.individualJudgement],
+    },
+  );
+  // ISO/IEC 17025 7.8.8.1: the Retest's value change is a change to the
+  // report, so the summary names it; its link to OOS26-0002 is on the trail
+  // but is no change to report. The correction and the Retest are separate
+  // steps, so the Invalidated value 28 is shown, each with its own reason,
+  // after the change reported: 30 on version 1, 2.5 now.
+  assert.equal(
+    v2.content.amendment!.changeSummary,
+    'Impurity A (NIT-001 v1): Result 30 → 2.5 ng/day, qualifier quantified → < LOQ, Conformity statement Does not comply → Complies: 30 → 28 (reason: "Recalculated with the dilution factor on the worksheet."); 28 → 2.5, qualifier quantified → < LOQ, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0002, Invalidated: Dilution error in the standard.)',
+  );
+  assert.deepEqual(
+    lab
+      .auditTrail(s.id)
+      .filter((e) => e.field === 'result.retestAfter')
+      .map((e) => [e.commandType, e.actor, e.recordId, e.oldValue, e.newValue]),
+    [['enterResult', 'analyst', `${s.id}/NIT-001-v1`, null, 'OOS26-0002']],
+  );
+  assert.equal(
+    publishBlockerReason(s),
+    null,
+    'the Client was already informed',
+  );
   assert.equal(run(lab, publish(s), 'coordinator').status, 'Published');
 });
 
@@ -3604,7 +4016,7 @@ test('a Manager never approves a Sample on which they entered or corrected a Res
     { type: 'submitForApproval', ...target(amended) },
     'analyst-2',
   );
-  assert.equal(enteredResultOn(amended, 'analyst-2'), true);
+  assert.equal(didBenchWork(amended, 'analyst-2'), true);
   lab.close();
 
   // Sam is then given the Manager role; the record of their work remains.
@@ -3622,14 +4034,18 @@ test('a Manager never approves a Sample on which they entered or corrected a Res
       [entered.id, 'Awaiting approval'],
     ],
   );
+  // Each refusal names the act that applies.
+  const acts = new Map([
+    [amended.id, 'corrected a Result on'],
+    [entered.id, 'entered a Result on'],
+  ]);
   for (const x of pending)
     assert.throws(
       () => run(promoted, { type: 'approve', ...target(x) }, 'analyst-2'),
       (e: Error & { status: number }) =>
         e.status === 403 &&
-        /^You cannot approve a Sample on which you entered, corrected or retested a Result\.$/.test(
-          e.message,
-        ),
+        e.message ===
+          `You ${acts.get(x.id)} Impurity A (NIT-001), so another Manager must give Approval.`,
     );
   assert.deepEqual(promoted.snapshot().samples, pending, 'nothing changed');
   assert.equal(promoted.certificates(amended.id).length, 1);
@@ -3701,9 +4117,8 @@ test('an Admin acts in every role as themselves, and is refused Approval of a Sa
     () => run(lab, { type: 'approve', ...target(s) }, 'admin'),
     (e: Error & { status: number }) =>
       e.status === 403 &&
-      /^You cannot approve a Sample on which you entered, corrected or retested a Result\.$/.test(
-        e.message,
-      ),
+      e.message ===
+        'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
   );
   assert.deepEqual(lab.snapshot(), before, 'nothing applied or audited');
 
@@ -3765,6 +4180,71 @@ test('an Admin acts in every role as themselves, and is refused Approval of a Sa
   });
   oos = run(lab, notifyClient(oos, id), 'admin');
   assert.equal(run(lab, publish(oos), 'admin').status, 'Published');
+});
+
+test('an Admin who recorded the Laboratory error check is refused Approval with 403, also in the Amendment; opening and concluding do not bar Approval', (t) => {
+  const lab = memory(t);
+  const checkRefusal =
+    'You recorded the Laboratory error check for OOS26-0001, so another Manager must give Approval.';
+  const refused = (s: Sample, actor: string) => {
+    const before = lab.snapshot();
+    assert.throws(
+      () => run(lab, { type: 'approve', ...target(s) }, actor),
+      (e: Error & { status: number }) =>
+        e.status === 403 && e.message === checkRefusal,
+    );
+    // No change, no audit entry and no Electronic signature.
+    assert.deepEqual(lab.snapshot(), before);
+  };
+
+  // The Analyst enters the Results; the Admin then takes the Sample over.
+  let s = assigned(lab);
+  s = run(lab, result(s, 'NIT-001-v1', 30), 'analyst');
+  s = run(lab, result(s, 'NIT-003-v1', 2.5), 'analyst');
+  s = run(lab, { type: 'assign', ...target(s), assignee: 'admin' }, 'admin');
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'admin');
+  s = run(lab, openOos(s), 'manager');
+  const id = s.investigations[0].id;
+  s = run(lab, { ...labErrorCheck(s, id), errorIdentified: false }, 'admin');
+  assert.equal(didBenchWork(s, 'admin'), true);
+  // Separation of duties is checked before the open investigation.
+  assert.notEqual(approvalBlockerReason(s), null);
+  refused(s, 'admin');
+  s = run(lab, conclude(s, id, 'Confirmed'), 'manager');
+  refused(s, 'admin');
+
+  // The Manager who opened and concluded the investigation gives Approval,
+  // signing with their own password.
+  assert.throws(
+    () =>
+      run(
+        lab,
+        { type: 'approve', ...target(s), password: 'admin-demo' },
+        'manager',
+      ),
+    /password is incorrect/,
+  );
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  assert.equal(s.status, 'Approved');
+  const approval = lab.snapshot().signatures.at(-1)!;
+  assert.deepEqual(
+    [approval.meaning, approval.signerId, Object.keys(approval.command).sort()],
+    ['approved by', 'manager', ['commandId', 'revision', 'sampleId', 'type']],
+  );
+
+  // The check stays Bench work in the Amendment.
+  s = run(lab, notifyClient(s, id), 'coordinator');
+  s = run(lab, publish(s), 'coordinator');
+  s = run(lab, startAmendment(s), 'coordinator');
+  s = run(lab, { type: 'assign', ...target(s), assignee: 'analyst' }, 'admin');
+  s = run(lab, result(s, 'NIT-003-v1', 2.6, 'Transcription error.'), 'analyst');
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  refused(s, 'admin');
+  assert.equal(
+    run(lab, { type: 'approve', ...target(s) }, 'manager').status,
+    'Approved',
+  );
+  assert.equal(lab.certificate(s.id).version, 2);
 });
 
 test('an Admin is not a role anyone else acquires: the other roles are still refused outside their own', (t) => {

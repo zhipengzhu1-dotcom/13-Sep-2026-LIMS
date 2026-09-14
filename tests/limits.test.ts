@@ -119,19 +119,19 @@ function append(
   );
 }
 /**
- * Judges each `[value, limit]` by entering the value as the Test's Result
- * while an entry with that Limit is in force, appended the same day so the
- * latest appended wins. Returns each Result's qualifier and Conformity
- * statement.
+ * Judges each `[value, limit]` by entering the value as a first Result on its
+ * own Sample while an entry with that Limit is in force, appended the same day
+ * so the latest appended wins. Each case gets a fresh Sample because a Result
+ * over its Limit is never corrected outside its OOS investigation (ADR-0006).
+ * Returns each Result's qualifier and Conformity statement.
  */
 function judged(
   lab: Laboratory,
   cases: readonly (readonly [number, number])[],
 ): [string, string][] {
-  let s = assigned(lab);
-  return cases.map(([value, limit], i) => {
+  return cases.map(([value, limit]) => {
     append(lab, entry('impurity-a', limit, '2026-09-10'));
-    s = run(lab, result(s, 'NIT-001-v1', value, i ? 'Re-read' : ''), 'analyst');
+    const s = run(lab, result(assigned(lab), 'NIT-001-v1', value), 'analyst');
     const r = currentResult(s.tests[0])!;
     assert.equal(r.limit?.value, limit);
     return [r.qualifier, r.conformity];
@@ -367,6 +367,8 @@ test('a finished product Result links the Limit in force and keeps it after a ne
         'Integration corrected',
       ],
       ['result.limit.value', 26.5, 18, 'Integration corrected'],
+      // The value re-entered unchanged is on the trail too.
+      ['result.value', 20, 20, 'Integration corrected'],
     ].sort(),
   );
 });
@@ -405,8 +407,10 @@ test('a < LOQ Result complies when the LOQ is below the Limit and not otherwise'
     [r.qualifier, r.limit?.value, r.conformity],
     ['< LOQ', 3, 'Does not comply'],
   );
+  // That Result is now decided only by its OOS investigation (ADR-0006), so
+  // the next is judged as a first Result on another Sample.
   clock.now = '2026-09-12T09:00:00.000Z';
-  s = run(lab, result(s, 'NIT-001-v1', 0.5, 'Re-injected'), 'analyst');
+  s = run(lab, result(assigned(lab), 'NIT-001-v1', 0.5), 'analyst');
   r = currentResult(s.tests[0])!;
   assert.deepEqual(
     [r.qualifier, r.limit?.value, r.conformity],

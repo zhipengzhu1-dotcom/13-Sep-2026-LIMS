@@ -68,7 +68,7 @@ The maximum acceptable level of an Analyte in a finished product: the Acceptable
 _Avoid_: Spec, threshold
 
 **Out-of-specification (OOS) investigation**:
-The recorded inquiry opened when a Result exceeds its Limit, opened and closed by the Manager after the assigned Analyst's Laboratory error check; it concludes either that the Result is Invalidated or that the OOS is confirmed, meaning no assignable laboratory cause was found and the Client's full-scale investigation follows, and Approval waits until it is closed. A Result that exceeds its Limit is never corrected except through its investigation, and a confirmed OOS is communicated to the Client before Publishing.
+The recorded inquiry opened when a Result exceeds its Limit, opened and closed by the Manager after the assigned Analyst's Laboratory error check; it concludes either that the Result is Invalidated or that the OOS is confirmed, meaning no assignable laboratory cause was found and the Client's full-scale investigation follows, and Approval waits until it is closed. A Result that exceeds its Limit is never corrected except through its investigation, and a confirmed OOS is communicated to the Client before Publishing, recording what data and Laboratory error check findings were sent for the Client's investigation.
 _Avoid_: Exception, investigate, deviation
 
 **Laboratory error check**:
@@ -80,7 +80,7 @@ A Result an OOS investigation found to have an assignable laboratory cause: a la
 _Avoid_: Deleted result, void, superseded result
 
 **Retest**:
-A new Result on a Test whose Result was Invalidated, recording the Invalidated result and the OOS investigation it follows.
+A new Result on a Test whose Result was Invalidated, recording the Invalidated result and the OOS investigation it follows. It is calculated again, on its own calculation worksheet, and a correction of it is still that Retest.
 _Avoid_: Re-analysis, repeat, correction
 
 **Bench work**:

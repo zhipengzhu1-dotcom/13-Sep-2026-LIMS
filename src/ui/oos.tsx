@@ -1,23 +1,34 @@
 import { useState } from 'react';
 import {
   actsAs,
-  currentResult,
-  investigationOf,
-  oosRows,
-  outOfSpecification,
-  type OosInvestigation,
-  type OosRow,
   type Result,
   type Snapshot,
   type Sample,
-  type Test,
 } from '../laboratory/contracts';
+import {
+  investigationOf,
+  oosRows,
+  outOfSpecification,
+  resultsView,
+  type OosInvestigation,
+  type OosRow,
+  type Refusal,
+} from '../laboratory/results';
 import { localDateTime } from './receiving';
 import { ResultValue } from './results';
-import { closed, type Execute, personName, stamp, Status } from './shared';
+import {
+  closed,
+  type Execute,
+  investigationAnchor,
+  InvestigationLinkedText,
+  personName,
+  RequiredMark,
+  stamp,
+  Status,
+} from './shared';
 
 /** Where an out-of-specification Result stands in its investigation. */
-export function investigationLabel(
+export function investigationStatusText(
   investigation: OosInvestigation | undefined,
 ) {
   if (!investigation) return 'Investigation required';
@@ -37,6 +48,23 @@ export const investigationClass = (
       ? 'open'
       : (investigation.outcome ?? '').toLowerCase());
 
+/** A rule's refusal as visible text, word for word the core's, with the
+ * investigation it names linking to that investigation. Separation of duties
+ * reads neutral ("someone else approves"); every other rule is a warning.
+ * Give the blocked control `aria-describedby={id}`. */
+export function RefusalNote({ id, refusal }: { id: string; refusal: Refusal }) {
+  const tone = refusal.code === 'separation of duties' ? 'neutral' : 'warn';
+  return (
+    // A block-level span, so it can sit beneath inline actions.
+    <span id={id} className={`flash ${tone} inline refusal`}>
+      <InvestigationLinkedText
+        text={refusal.reason}
+        id={refusal.investigationId}
+      />
+    </span>
+  );
+}
+
 /** Flags a current Result that is out of specification, with its
  * investigation reference once one is opened. */
 export function OosNote({
@@ -51,7 +79,7 @@ export function OosNote({
   return (
     <span className="sub">
       <span className={investigationClass(investigation)}>
-        {investigationLabel(investigation)}
+        {investigationStatusText(investigation)}
       </span>{' '}
       {investigation && <span className="num">{investigation.id}</span>}
     </span>
@@ -73,7 +101,8 @@ export function Investigations({
   busy: boolean;
   execute: Execute;
 }) {
-  const rows = oosRows([s]);
+  const results = resultsView(s);
+  const rows = results.oosRows;
   if (!rows.length) return null;
   const person = data.people.find((p) => p.id === actor)!;
   const manager =
@@ -88,11 +117,14 @@ export function Investigations({
       <h3>OOS investigations</h3>
       <ul>
         {rows.map(({ test: t, result: r, investigation: inv }) => (
-          <li key={`${t.id}-${r.sequence}`}>
+          <li
+            key={`${t.id}-${r.sequence}`}
+            id={inv ? investigationAnchor(inv.id) : undefined}
+          >
             <div className="inv-head">
               <strong className="num">{inv?.id ?? 'Not opened'}</strong>
               <span className={investigationClass(inv)}>
-                {investigationLabel(inv)}
+                {investigationStatusText(inv)}
               </span>
               <span>
                 {t.analyteName} · {t.methodCode} v{t.methodVersion} · Result #
@@ -199,30 +231,41 @@ export function Investigations({
                     {inv.status === 'Closed' ? (
                       <>
                         <strong>{inv.outcome}</strong>
+                        {inv.causationConfirmed &&
+                          '. The Manager confirmed the identified laboratory error caused the value'}
                         {inv.assignableCause &&
                           `. Assignable cause: ${inv.assignableCause}`}{' '}
                         <span className="dim">
                           Closed by {personName(data, inv.closedBy)},{' '}
                           {stamp(inv.closedAt!)}
                         </span>
-                        {inv.outcome === 'Invalidated' && !currentResult(t) && (
-                          <span className="oos-note">
-                            {' '}
-                            A retest Result is required on this Test.
-                          </span>
-                        )}
+                        {inv.outcome === 'Invalidated' &&
+                          results.test(t.id).retestRequired && (
+                            <span className="oos-note">
+                              {' '}
+                              A retest Result is required on this Test.
+                            </span>
+                          )}
                       </>
                     ) : manager && inv.labErrorCheck ? (
                       <ConcludeForm
                         investigation={inv}
+                        invalidatedBlocker={results
+                          .investigation(inv.id)
+                          .concludeBlocker('Invalidated')}
                         busy={busy}
-                        onConclude={(outcome, assignableCause) =>
+                        onConclude={(
+                          outcome,
+                          assignableCause,
+                          causationConfirmed,
+                        ) =>
                           void execute({
                             type: 'concludeOosInvestigation',
                             ...target,
                             investigationId: inv.id,
                             outcome,
                             assignableCause,
+                            causationConfirmed,
                           })
                         }
                       />
@@ -251,6 +294,10 @@ export function Investigations({
                             )}
                             , {stamp(inv.clientNotification.recordedAt)}
                           </span>
+                          <span className="sent-to-client">
+                            <strong>Sent to the Client:</strong>{' '}
+                            {inv.clientNotification.sent}
+                          </span>
                         </>
                       ) : coordinator ? (
                         <form
@@ -265,27 +312,52 @@ export function Investigations({
                               ...target,
                               investigationId: inv.id,
                               contact: String(f.get('contact') ?? '').trim(),
+                              sent: String(f.get('sent') ?? ''),
                               notifiedAt: when
                                 ? new Date(when).toISOString()
                                 : '',
                             });
                           }}
                         >
-                          <input
-                            name="contact"
-                            aria-label="Client contact who was informed"
-                            required
-                            maxLength={200}
-                            placeholder="Name and role at the Client"
-                          />
-                          <input
-                            type="datetime-local"
-                            name="notifiedAt"
-                            aria-label="When the Client was informed"
-                            required
-                            max={localDateTime(new Date())}
-                            defaultValue={localDateTime(new Date())}
-                          />
+                          <label className="field">
+                            <span>
+                              Client contact who was informed <RequiredMark />
+                            </span>
+                            <input
+                              name="contact"
+                              required
+                              maxLength={200}
+                              placeholder="Name and role at the Client"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>
+                              What data and Laboratory error check findings were
+                              sent to the Client <RequiredMark />
+                            </span>
+                            <textarea
+                              name="sent"
+                              required
+                              minLength={3}
+                              maxLength={2000}
+                              rows={3}
+                              defaultValue={
+                                results.investigation(inv.id).findingsForClient
+                              }
+                            />
+                          </label>
+                          <label className="field">
+                            <span>
+                              When the Client was informed <RequiredMark />
+                            </span>
+                            <input
+                              type="datetime-local"
+                              name="notifiedAt"
+                              required
+                              max={localDateTime(new Date())}
+                              defaultValue={localDateTime(new Date())}
+                            />
+                          </label>
                           <button className="btn sm primary" disabled={busy}>
                             Record Client informed
                           </button>
@@ -308,58 +380,111 @@ export function Investigations({
   );
 }
 
+/**
+ * The Manager's conclusion of an investigation. No outcome is pre-selected.
+ * Invalidated stays focusable but blocked, with the core's reason as visible
+ * text, when the Laboratory error check identified no error; choosing it asks
+ * the Manager to confirm that the identified error caused the value and to
+ * give the assignable cause (ADR-0006).
+ */
 export function ConcludeForm({
   investigation,
+  invalidatedBlocker,
   busy,
   onConclude,
 }: {
   investigation: OosInvestigation;
+  /** Why Invalidated cannot be concluded now, from the core, or null. */
+  invalidatedBlocker: Refusal | null;
   busy: boolean;
   onConclude: (
     outcome: 'Invalidated' | 'Confirmed',
     assignableCause: string,
+    causationConfirmed: boolean,
   ) => void;
 }) {
-  const [outcome, setOutcome] = useState<'Invalidated' | 'Confirmed'>(
-    investigation.labErrorCheck?.errorIdentified ? 'Invalidated' : 'Confirmed',
+  const [outcome, setOutcome] = useState<'Invalidated' | 'Confirmed' | null>(
+    null,
   );
+  // Counts attempts to choose a blocked outcome: the choice is not taken, and
+  // each attempt announces the refusal afresh.
+  const [refusals, setRefusals] = useState(0);
+  const reasonId = `conclude-invalidated-${investigation.id}`;
   return (
     <form
       className="inv-form"
+      aria-label={`Conclude OOS investigation ${investigation.id}`}
       onSubmit={(e) => {
         e.preventDefault();
+        if (!outcome) return;
         const f = new FormData(e.currentTarget);
+        const invalidated = outcome === 'Invalidated';
         onConclude(
           outcome,
-          outcome === 'Invalidated' ? String(f.get('assignableCause')) : '',
+          invalidated ? String(f.get('assignableCause')) : '',
+          invalidated && f.get('causationConfirmed') === 'on',
         );
       }}
     >
       <fieldset className="priority">
-        <legend>Outcome</legend>
-        {(['Invalidated', 'Confirmed'] as const).map((o) => (
-          <label key={o}>
-            <input
-              type="radio"
-              name="outcome"
-              value={o}
-              checked={outcome === o}
-              onChange={() => setOutcome(o)}
-            />
-            {o}
-          </label>
-        ))}
+        <legend>
+          Outcome <RequiredMark />
+        </legend>
+        {(['Invalidated', 'Confirmed'] as const).map((o) => {
+          const blocked = o === 'Invalidated' && !!invalidatedBlocker;
+          return (
+            <label key={o} className={blocked ? 'blocked' : undefined}>
+              <input
+                type="radio"
+                name="outcome"
+                value={o}
+                required
+                checked={outcome === o}
+                // Blocked but focusable (ARIA 1.2: aria-disabled inherits
+                // into radio): its reason is its description, and choosing it
+                // is refused with that reason announced.
+                aria-disabled={blocked || undefined}
+                aria-describedby={blocked ? reasonId : undefined}
+                onChange={() => {
+                  if (blocked) setRefusals((n) => n + 1);
+                  else setOutcome(o);
+                }}
+              />
+              {o}
+            </label>
+          );
+        })}
+        {invalidatedBlocker && (
+          <RefusalNote id={reasonId} refusal={invalidatedBlocker} />
+        )}
+        <span className="sr-only" role="status">
+          {refusals > 0 && invalidatedBlocker && (
+            // A new node per attempt, so a repeated attempt is announced.
+            <span key={refusals}>{invalidatedBlocker.reason}</span>
+          )}
+        </span>
       </fieldset>
       {outcome === 'Invalidated' && (
-        <textarea
-          name="assignableCause"
-          aria-label="Assignable cause"
-          required
-          minLength={3}
-          maxLength={2000}
-          rows={2}
-          placeholder="Required: the assignable laboratory cause"
-        />
+        <>
+          <label className="check">
+            <input type="checkbox" name="causationConfirmed" required />I
+            confirm the laboratory error the check identified caused this value{' '}
+            <RequiredMark />
+          </label>
+          <label className="field">
+            <span>
+              Assignable cause <RequiredMark />
+            </span>
+            <textarea
+              name="assignableCause"
+              required
+              minLength={3}
+              maxLength={2000}
+              rows={2}
+              placeholder="The laboratory error that caused the value"
+            />
+          </label>
+        </>
       )}
       <button className="btn sm primary" disabled={busy}>
         Conclude and close
@@ -419,7 +544,7 @@ export function OosTable({
             </td>
             <td>
               <span className={investigationClass(inv)}>
-                {investigationLabel(inv)}
+                {investigationStatusText(inv)}
               </span>
             </td>
             <td className="num">

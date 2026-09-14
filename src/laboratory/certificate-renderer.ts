@@ -1,5 +1,6 @@
 import type { CertificateContent, CertificateResult } from './certificate.ts';
 import { isFinishedProduct } from './contracts.ts';
+import { reportedValue } from './results.ts';
 
 /**
  * The Certificate renderer: a pure projection from a locked Certificate
@@ -11,13 +12,16 @@ import { isFinishedProduct } from './contracts.ts';
 
 export type DocumentField = { label: string; value: string };
 
+/** A table cell: one line of text, or several entries printed one per line. */
+export type DocumentCell = string | string[];
+
 export type DocumentSection =
   | { kind: 'fields'; heading: string; fields: DocumentField[] }
   | {
       kind: 'table';
       heading: string;
       columns: string[];
-      rows: string[][];
+      rows: DocumentCell[][];
       /** Shown under the table; empty when there is nothing to note. */
       notes: string[];
     }
@@ -51,11 +55,15 @@ export function utcStamp(iso: string) {
 const text = (value: string | null | undefined) => value || none;
 const capital = (value: string) => value[0].toUpperCase() + value.slice(1);
 
-/** The Result as reported: the number, or `< LOD` / `< LOQ` with that value. */
-export function reportedResult(r: CertificateResult) {
-  if (r.qualifier === '< LOD') return `< LOD (${r.lod})`;
-  if (r.qualifier === '< LOQ') return `< LOQ (${r.loq})`;
-  return String(r.value);
+/** An investigation as its row lists it, e.g. "OOS26-0003, Invalidated, for
+ * Result 31.2 ng/day": the Result it decided is reported like the row's own,
+ * against the same Test's LOD and LOQ. */
+export function certificateInvestigationText(
+  i: CertificateResult['investigations'][number],
+  row: Pick<CertificateResult, 'lod' | 'loq'>,
+) {
+  const value = reportedValue(row, i.result);
+  return `${i.id}, ${i.outcome}, for Result ${value} ${i.result.unit}`;
 }
 
 function limitSource(limit: NonNullable<CertificateResult['limit']>) {
@@ -159,17 +167,17 @@ export function renderCertificate(
       'Conformity statement',
       'OOS investigation',
     ],
-    rows: content.results.map((r) => [
+    rows: content.results.map((r): DocumentCell[] => [
       r.analyte,
       `${r.methodCode} v${r.methodVersion} (${r.technique})`,
-      reportedResult(r),
+      reportedValue({ lod: r.lod, loq: r.loq }, r),
       r.unit,
       ...(finished
         ? [r.limit ? `${r.limit.value} ${r.limit.unit}` : none]
         : []),
       r.conformity,
       r.investigations.length
-        ? r.investigations.map((i) => `${i.id} (${i.outcome})`).join('; ')
+        ? r.investigations.map((i) => certificateInvestigationText(i, r))
         : none,
     ]),
     notes,

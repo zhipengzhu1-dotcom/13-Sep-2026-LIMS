@@ -10,7 +10,6 @@ import {
   currentResult,
   materialTypes,
   newCommandId,
-  oosRows,
   reportingUnit,
   type Command,
   type Result,
@@ -18,6 +17,7 @@ import {
   type Sample,
   type Test,
 } from '../laboratory/contracts';
+import { oosRows, resultsView } from '../laboratory/results';
 import { LabAuditTrail } from './audit-trail';
 import { OosTable } from './oos';
 import { Intake } from './receiving';
@@ -656,7 +656,7 @@ export function App() {
                                 Urgent
                               </span>
                             )}
-                            {oosRows([s]).some(
+                            {resultsView(s).oosRows.some(
                               (r) => r.investigation?.status !== 'Closed',
                             ) && (
                               <span

@@ -1,4 +1,5 @@
-import type { AuditEntry, AuditValue, Sample } from './contracts.ts';
+import type { AuditEntry, AuditValue, Result, Sample } from './contracts.ts';
+import { resultsView, type RetestLineage } from './results.ts';
 
 /**
  * Amendments of published Certificates of Analysis. Pure and browser-safe: the
@@ -47,29 +48,49 @@ export function amendmentOf(
   );
 }
 
-/** Result fields a change summary names, in the order it names them. */
-const summarised: readonly { field: string; label: string; unit?: string }[] = [
-  { field: 'result.value', label: 'Result', unit: 'test' },
-  { field: 'result.qualifier', label: 'qualifier' },
-  { field: 'result.limit.value', label: 'Limit', unit: 'ng/day' },
-  { field: 'result.conformity', label: 'Conformity statement' },
-  {
-    field: 'result.instrumentReading',
-    label: 'instrument reading',
-    unit: 'ng/mL',
-  },
-  { field: 'result.sequenceId', label: 'sequence ID' },
+/** Result fields a change summary names, in the order it names them. Only
+ * reported content is named: a Retest's link to the OOS investigation it
+ * follows (`result.retestAfter`) is on the audit trail but is no change to
+ * the report, while the Retest's value is. */
+const summarised: readonly {
+  /** The Result field's path, as the audit trail names it after `result.`. */
+  path: string;
+  label: string;
+  unit?: string;
+  /** Printed in the Result's row on the Certificate, so a lead names its
+   * change even when one step made it. */
+  row?: true;
+}[] = [
+  { path: 'value', label: 'Result', unit: 'test', row: true },
+  { path: 'qualifier', label: 'qualifier', row: true },
+  { path: 'limit.value', label: 'Limit', unit: 'ng/day', row: true },
+  { path: 'conformity', label: 'Conformity statement', row: true },
+  { path: 'instrumentReading', label: 'instrument reading', unit: 'ng/mL' },
+  { path: 'sequenceId', label: 'sequence ID' },
   // A worksheet is named by an internal ID, so the summary says only that
   // it was replaced; the audit trail keeps both IDs.
-  { field: 'result.attachmentId', label: 'worksheet', unit: 'replaced' },
+  { path: 'attachmentId', label: 'worksheet', unit: 'replaced' },
 ];
+
+/** A Result's value at `path`, as the audit trail writes it. */
+const valueAt = (result: Result, path: string): AuditValue => {
+  let value: unknown = result;
+  for (const key of path.split('.'))
+    value = (value as Record<string, unknown> | null)?.[key] ?? null;
+  return value as AuditValue;
+};
 
 const shown = (value: AuditValue) => (value === null ? '—' : String(value));
 
 /**
  * What an Amendment changed, from the Result entries written since it was
- * started: per corrected Test, each field's value before the first correction
- * → after the last, and the reasons given. Null when no Result was corrected.
+ * started: per corrected Test, each step in order. Every correction and every
+ * Retest is a step of its own, never netted with the steps around it, so each
+ * change shows its own reason and the Invalidated result's value is always
+ * shown. When a field changed in more than one step, the steps follow a lead
+ * giving the change reported, e.g. `Result 20 → 21 ng/day: 20 → 22 (reason:
+ * "typo"); 22 → 21 (reason: "recalculated")`. Null when no Result was
+ * corrected.
  */
 export function changeSummary(
   sample: Sample,
@@ -91,27 +112,93 @@ export function changeSummary(
       (e) => e.recordId === `${sample.id}/${test.id}`,
     );
     if (!entries.length) return [];
-    const changes = summarised.flatMap(({ field, label, unit }) => {
-      const own = entries.filter((e) => e.field === field);
-      if (!own.length) return [];
-      const from = own[0].oldValue;
-      const to = own.at(-1)!.newValue;
-      if (from === to) return [];
-      if (unit === 'replaced') return [`${label} replaced`];
-      const suffix = unit === 'test' ? ` ${test.unit}` : unit ? ` ${unit}` : '';
-      return [`${label} ${shown(from)} → ${shown(to)}${suffix}`];
+    // Steps, one per command in the order they were recorded.
+    const view = resultsView(sample);
+    const steps: { entries: AuditEntry[]; retest?: RetestLineage }[] = [
+      ...new Set(entries.map((e) => e.commandId)),
+    ].map((commandId) => {
+      const command = entries.filter((e) => e.commandId === commandId);
+      return { entries: command, retest: view.retestRecordedBy(command) };
     });
-    // Each correction's reason once, quoted, as the Analyst gave it.
-    const reasons = [
-      ...new Set(entries.map((e) => e.reason).filter((r) => r !== null)),
-    ].map((r) => `"${r}"`);
-    const why = reasons.length
-      ? ` (${reasons.length > 1 ? 'reasons' : 'reason'}: ${reasons.join('; ')})`
-      : '';
+    // What each step changed, field by field in the summarised order.
+    const changed = steps.map(({ entries, retest }) =>
+      summarised.flatMap((field) => {
+        const own = entries.filter((e) => e.field === `result.${field.path}`);
+        if (!own.length) return [];
+        // A Retest is a new Result, so its entries have no old values: what
+        // it replaced on the report is the Invalidated result it follows.
+        const from = retest
+          ? valueAt(retest.invalidated, field.path)
+          : own[0].oldValue;
+        const to = own.at(-1)!.newValue;
+        return from === to ? [] : [{ ...field, from, to }];
+      }),
+    );
+    const suffix = (unit?: string) =>
+      unit === 'test' ? ` ${test.unit}` : unit ? ` ${unit}` : '';
+    // A field changed in more than one step passed through values that were
+    // never reported, so the summary leads with the change reported: from
+    // the previous issued version to now, for each such field and each
+    // field of the Certificate row. The Result always leads, even when it is
+    // back where it was; another field only when its value on the report
+    // changed, or when no field could lead otherwise.
+    const across = (path: string) =>
+      changed.flatMap((c) => c.filter((f) => f.path === path));
+    const stepwise = summarised.some(({ path }) => across(path).length > 1);
+    const lead = summarised.flatMap(({ path, label, unit, row }) => {
+      const own = across(path);
+      if (!stepwise || own.length < (row ? 1 : 2)) return [];
+      const from = own[0].from;
+      const to = own.at(-1)!.to;
+      return [
+        {
+          path,
+          from,
+          to,
+          text:
+            from === to
+              ? unit === 'replaced'
+                ? `${label} unchanged`
+                : `${label} unchanged at ${shown(from)}${suffix(unit)}`
+              : unit === 'replaced'
+                ? `${label} replaced`
+                : `${label} ${shown(from)} → ${shown(to)}${suffix(unit)}`,
+        },
+      ];
+    });
+    const reported = lead.filter((f) => f.path === 'value' || f.from !== f.to);
+    const leading = reported.length ? reported : lead;
+    // Under a lead naming the Result, each step gives the Result's values
+    // bare: its label and unit are in the lead.
+    const bare = leading.some((f) => f.path === 'value');
+    const step = ({ entries, retest }: (typeof steps)[number], i: number) => {
+      const changes = changed[i].map(({ path, label, unit, from, to }) =>
+        unit === 'replaced'
+          ? `${label} replaced`
+          : bare && path === 'value'
+            ? `${shown(from)} → ${shown(to)}`
+            : `${label} ${shown(from)} → ${shown(to)}${suffix(unit)}`,
+      );
+      // A Retest cites the investigation it follows; then the reason typed
+      // with the step, quoted, as the Analyst gave it.
+      const typed = entries.find((e) => e.reason !== null)?.reason;
+      const why = [
+        ...(retest
+          ? [
+              `Retest after ${retest.investigation.id}, Invalidated: ${retest.investigation.assignableCause}`,
+            ]
+          : []),
+        ...(typed === undefined || typed === null
+          ? []
+          : [`reason: "${typed}"`]),
+      ];
+      const reasons = why.length ? ` (${why.join('; ')})` : '';
+      return `${changes.length ? changes.join(', ') : 're-entered unchanged'}${reasons}`;
+    };
     return [
       `${test.analyteName} (${test.methodCode} v${test.methodVersion}): ${
-        changes.length ? changes.join(', ') : 're-entered unchanged'
-      }${why}`,
+        leading.length ? `${leading.map((f) => f.text).join(', ')}: ` : ''
+      }${steps.map(step).join('; ')}`,
     ];
   });
   return clauses.length ? clauses.join('; ') : null;

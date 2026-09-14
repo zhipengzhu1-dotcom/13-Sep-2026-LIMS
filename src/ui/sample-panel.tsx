@@ -5,9 +5,7 @@ import {
   actsAs,
   auditsSample,
   currentResult,
-  enteredResultOn,
   heldStatuses,
-  oosApprovalBlocker,
   signatureMeaning,
   type Result,
   type Snapshot,
@@ -15,9 +13,10 @@ import {
   type Signature,
   type SigningCommandType,
 } from '../laboratory/contracts';
+import { resultsView } from '../laboratory/results';
 import { AuditTable } from './audit-trail';
 import { CertificateVersions } from './certificate-view';
-import { Investigations } from './oos';
+import { Investigations, RefusalNote } from './oos';
 import { PublishForm } from './publish';
 import { ReceiptDeviations, ReceiptRecord } from './receiving';
 import { TestSheet } from './results';
@@ -53,16 +52,16 @@ export function SamplePanel({
   const [signing, setSigning] = useState<SigningCommandType | null>(null);
   useEffect(() => setSigning(null), [s.id]);
   const tabIds = useId();
+  const approvalNoteId = useId();
   const person = data.people.find((p) => p.id === actor)!;
   const canRecord =
     s.assignee === actor &&
     ['In progress', 'Returned', 'Amendment in progress'].includes(s.status);
   const canDecide =
     actsAs(person, 'manager') && s.status === 'Awaiting approval';
-  // Separation of duties (ADR-0003): the core refuses this Approval too.
-  const ownResults = enteredResultOn(s, actor);
-  // The OOS gate, as the core enforces it.
-  const oosBlocker = oosApprovalBlocker(s);
+  const results = resultsView(s);
+  // The first rule refusing this Approval, asked as the core asks it.
+  const approvalRefusal = results.approvalRefusal(actor);
   const canAssign =
     actsAs(person, 'coordinator') &&
     !['Approved', 'Published', 'Awaiting approval', ...heldStatuses].includes(
@@ -267,6 +266,7 @@ export function SamplePanel({
             <TestSheet
               sample={s}
               canRecord={canRecord}
+              hasCertificate={versions.length > 0}
               busy={busy}
               execute={execute}
               data={data}
@@ -330,10 +330,10 @@ export function SamplePanel({
                 });
               }}
             >
-              {oosBlocker && (
-                <p className="flash warn inline" role="status">
-                  {oosBlocker}
-                </p>
+              {approvalRefusal && (
+                <div>
+                  <RefusalNote id={approvalNoteId} refusal={approvalRefusal} />
+                </div>
               )}
               <textarea
                 name="comment"
@@ -355,12 +355,15 @@ export function SamplePanel({
                   className="btn primary"
                   name="choice"
                   value="approve"
-                  disabled={busy || ownResults || !!oosBlocker}
-                  title={
-                    ownResults
-                      ? 'You entered a Result on this Sample, so another Manager must approve it.'
-                      : (oosBlocker ?? undefined)
+                  disabled={busy}
+                  // Blocked but focusable, its reason the visible note.
+                  aria-disabled={approvalRefusal ? true : undefined}
+                  aria-describedby={
+                    approvalRefusal ? approvalNoteId : undefined
                   }
+                  onClick={(e) => {
+                    if (approvalRefusal) e.preventDefault();
+                  }}
                 >
                   Approve…
                 </button>
