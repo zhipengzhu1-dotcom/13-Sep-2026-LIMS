@@ -23,3 +23,7 @@ Code follows Matt Pocock's recommendations: deep modules, test-first through pub
 ### Front-end design
 
 Before designing, building or reviewing a change to workspace screens, styles or the rendered Certificate of Analysis, invoke the `ui-ux-pro-max` skills. See `docs/agents/frontend-design.md`.
+
+### Seeing the web UI
+
+When you need to see what the workspace looks like or how it behaves (finishing or reviewing a UI change, or a UI bug), use the `agent-browser` CLI against `npm run dev`. See `docs/agents/browser-verification.md`.
