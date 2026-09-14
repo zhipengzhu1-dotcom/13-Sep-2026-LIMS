@@ -1,0 +1,233 @@
+exports[`Approval freezes Certificate version 1 for a finished product with a Receipt deviation and a Confirmed OOS 1`] = `
+{
+  "sampleId": "26-00001",
+  "version": 1,
+  "approvedAt": "2026-09-10T12:00:00.000Z",
+  "amendment": null,
+  "laboratory": {
+    "name": "Benchline Analytical Laboratory",
+    "address": "1 Example Park, Research Way, Anytown",
+    "accreditation": "ISO/IEC 17025:2017 (illustrative accreditation reference)"
+  },
+  "client": {
+    "id": "northstar",
+    "name": "Northstar Pharma",
+    "kind": "external"
+  },
+  "submission": {
+    "id": "S26-0001",
+    "clientReference": "PO-4471",
+    "receivedAt": "2026-09-10T12:00:00.000Z"
+  },
+  "sample": {
+    "id": "26-00001",
+    "clientSampleId": "NP-STB-06",
+    "product": "Demo tablets 10 mg",
+    "strength": "10 mg",
+    "batch": "B-001",
+    "manufacturer": "Northstar Pharma, Plant 2",
+    "manufactureDate": "2026-01-15",
+    "expiryDate": "2028-01-14",
+    "expiryKind": "expiry",
+    "quantity": {
+      "value": 60,
+      "unit": "units"
+    },
+    "containers": {
+      "count": 2,
+      "type": "bottle"
+    },
+    "conditionOnReceipt": "Intact",
+    "dueDate": "2026-10-01"
+  },
+  "materialType": "finished product",
+  "maximumDailyDose": 40,
+  "stability": {
+    "studyId": "STB-2026-04",
+    "timePoint": "6M",
+    "condition": "ACC",
+    "conditionLabel": "40 °C / 75% RH"
+  },
+  "deviations": [
+    {
+      "sequence": 1,
+      "kind": "broken seal",
+      "description": "Tamper seal on bottle 2 broken on arrival.",
+      "recordedAt": "2026-09-10T12:00:00.000Z",
+      "instruction": {
+        "decision": "proceed",
+        "contact": "Dana Wells, QA Northstar",
+        "instructedAt": "2026-09-10T10:30:00.000Z"
+      }
+    }
+  ],
+  "results": [
+    {
+      "testId": "NIT-001-v1",
+      "analyte": "Impurity A",
+      "methodCode": "NIT-001",
+      "methodVersion": 1,
+      "technique": "LC-MS/MS",
+      "value": 30,
+      "qualifier": "quantified",
+      "unit": "ng/day",
+      "lod": 1,
+      "loq": 3,
+      "limit": {
+        "entryId": 1,
+        "value": 26.5,
+        "unit": "ng/day",
+        "sourceTitle": "CDER Nitrosamine Impurity Acceptable Intake Limits",
+        "sourceUrl": "https://www.fda.gov/regulatory-information/search-fda-guidance-documents/cder-nitrosamine-impurity-acceptable-intake-limits",
+        "sourceRevisionDate": "2023-08-04",
+        "effectiveFrom": "2023-08-04",
+        "illustrative": true
+      },
+      "conformity": "Does not comply",
+      "investigations": [
+        {
+          "id": "OOS26-0001",
+          "outcome": "Confirmed"
+        }
+      ]
+    },
+    {
+      "testId": "NIT-003-v1",
+      "analyte": "Impurity B",
+      "methodCode": "NIT-003",
+      "methodVersion": 1,
+      "technique": "LC-MS/MS",
+      "value": 0.5,
+      "qualifier": "< LOD",
+      "unit": "ng/day",
+      "lod": 1,
+      "loq": 3,
+      "limit": {
+        "entryId": 3,
+        "value": 96,
+        "unit": "ng/day",
+        "sourceTitle": "CDER Nitrosamine Impurity Acceptable Intake Limits",
+        "sourceUrl": "https://www.fda.gov/regulatory-information/search-fda-guidance-documents/cder-nitrosamine-impurity-acceptable-intake-limits",
+        "sourceRevisionDate": "2025-06-23",
+        "effectiveFrom": "2025-07-01",
+        "illustrative": true
+      },
+      "conformity": "Complies",
+      "investigations": []
+    }
+  ],
+  "decisionRule": "The Result is rounded to the decimal places of the Limit and complies when it is at or below the Limit. A Result reported as < LOD or < LOQ complies when that LOD or LOQ is below the Limit. Each Result is judged on its own.",
+  "individualJudgement": "Each Result is judged individually. No combined nitrosamine assessment was made.",
+  "signatures": [
+    {
+      "meaning": "performed by",
+      "signerId": "analyst",
+      "printedName": "Alex Chen",
+      "signedAt": "2026-09-10T12:00:00.000Z"
+    },
+    {
+      "meaning": "approved by",
+      "signerId": "manager",
+      "printedName": "Taylor Brooks",
+      "signedAt": "2026-09-10T12:00:00.000Z"
+    }
+  ]
+}
+`;
+
+exports[`a raw material Certificate reports each Result with Report and no Limit 1`] = `
+{
+  "sampleId": "26-00001",
+  "version": 1,
+  "approvedAt": "2026-09-10T12:00:00.000Z",
+  "amendment": null,
+  "laboratory": {
+    "name": "Benchline Analytical Laboratory",
+    "address": "1 Example Park, Research Way, Anytown",
+    "accreditation": "ISO/IEC 17025:2017 (illustrative accreditation reference)"
+  },
+  "client": {
+    "id": "northstar",
+    "name": "Northstar Pharma",
+    "kind": "external"
+  },
+  "submission": {
+    "id": "S26-0001",
+    "clientReference": "",
+    "receivedAt": "2026-09-10T12:00:00.000Z"
+  },
+  "sample": {
+    "id": "26-00001",
+    "clientSampleId": "",
+    "product": "Demo API",
+    "strength": "",
+    "batch": "API-001",
+    "manufacturer": "",
+    "manufactureDate": null,
+    "expiryDate": null,
+    "expiryKind": "expiry",
+    "quantity": {
+      "value": 10,
+      "unit": "g"
+    },
+    "containers": {
+      "count": 2,
+      "type": "bottle"
+    },
+    "conditionOnReceipt": "Intact",
+    "dueDate": "2026-10-01"
+  },
+  "materialType": "raw material",
+  "maximumDailyDose": null,
+  "stability": null,
+  "deviations": [],
+  "results": [
+    {
+      "testId": "NIT-001-v1",
+      "analyte": "Impurity A",
+      "methodCode": "NIT-001",
+      "methodVersion": 1,
+      "technique": "LC-MS/MS",
+      "value": 0.02,
+      "qualifier": "< LOQ",
+      "unit": "ppm",
+      "lod": 0.01,
+      "loq": 0.03,
+      "limit": null,
+      "conformity": "Report",
+      "investigations": []
+    },
+    {
+      "testId": "NIT-005-v1",
+      "analyte": "Impurity C",
+      "methodCode": "NIT-005",
+      "methodVersion": 1,
+      "technique": "LC-MS/MS",
+      "value": 0.05,
+      "qualifier": "quantified",
+      "unit": "ppm",
+      "lod": 0.01,
+      "loq": 0.03,
+      "limit": null,
+      "conformity": "Report",
+      "investigations": []
+    }
+  ],
+  "decisionRule": "Raw materials have no Limit: each Result is reported as is, with the Conformity statement Report.",
+  "individualJudgement": "Each Result is judged individually. No combined nitrosamine assessment was made.",
+  "signatures": [
+    {
+      "meaning": "performed by",
+      "signerId": "analyst",
+      "printedName": "Alex Chen",
+      "signedAt": "2026-09-10T12:00:00.000Z"
+    },
+    {
+      "meaning": "approved by",
+      "signerId": "manager",
+      "printedName": "Taylor Brooks",
+      "signedAt": "2026-09-10T12:00:00.000Z"
+    }
+  ]
+}
+`;

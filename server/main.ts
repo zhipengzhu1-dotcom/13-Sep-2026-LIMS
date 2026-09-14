@@ -2,13 +2,22 @@ import { createServer } from 'node:http';
 import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { resolve, extname, sep } from 'node:path';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
+import { Accounts } from '../src/accounts/accounts.ts';
+import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import { api } from './http.ts';
-import { seed } from './seed.ts';
+import { discardOutdatedDemoDatabase, seed } from './seed.ts';
+import { Sessions } from './sessions.ts';
 
 mkdirSync('data', { recursive: true });
-const lab = new Laboratory(resolve('data/prototype.sqlite'));
+const database = resolve('data/prototype.sqlite');
+// Discard before either store opens the file, so old accounts go with it.
+discardOutdatedDemoDatabase(database);
+const accounts = new Accounts(database);
+accounts.seed(demoAccounts);
+// The core verifies Electronic signatures against these accounts' hashes.
+const lab = new Laboratory(database, { credentials: accounts });
 seed(lab);
-const handleApi = api(lab);
+const handleApi = api(lab, { accounts, sessions: new Sessions() });
 const development = process.env.NODE_ENV !== 'production';
 const vite = development
   ? await (
@@ -60,6 +69,7 @@ async function shutdown() {
   await vite?.close();
   server.close(() => {
     lab.close();
+    accounts.close();
     process.exit(0);
   });
 }
