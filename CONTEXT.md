@@ -68,12 +68,24 @@ The maximum acceptable level of an Analyte in a finished product: the Acceptable
 _Avoid_: Spec, threshold
 
 **Out-of-specification (OOS) investigation**:
-The recorded inquiry opened when a Result exceeds its Limit, opened and closed by the Manager; it concludes either that the Result is Invalidated or that the OOS is confirmed, and Approval waits until it is closed. A confirmed OOS is communicated to the Client before Publishing.
+The recorded inquiry opened when a Result exceeds its Limit, opened and closed by the Manager after the assigned Analyst's Laboratory error check; it concludes either that the Result is Invalidated or that the OOS is confirmed, meaning no assignable laboratory cause was found and the Client's full-scale investigation follows, and Approval waits until it is closed. A Result that exceeds its Limit is never corrected except through its investigation, and a confirmed OOS is communicated to the Client before Publishing.
 _Avoid_: Exception, investigate, deviation
 
+**Laboratory error check**:
+The assigned Analyst's recorded review of their own work on a Result under OOS investigation, stating the findings and whether a laboratory error was identified.
+_Avoid_: Lab check, Phase I, self-review
+
 **Invalidated result**:
-A Result an OOS investigation found to have an assignable laboratory cause; it stays on record, marked with that cause, and is superseded by a retest Result.
-_Avoid_: Deleted result, void
+A Result an OOS investigation found to have an assignable laboratory cause: a laboratory error the Laboratory error check identified and the Manager confirmed caused the value; it stays on record, marked with that cause, and is followed by a Retest.
+_Avoid_: Deleted result, void, superseded result
+
+**Retest**:
+A new Result on a Test whose Result was Invalidated, recording the Invalidated result and the OOS investigation it follows.
+_Avoid_: Re-analysis, repeat, correction
+
+**Bench work**:
+A person's own work on a Sample's Results: entering, correcting or retesting a Result, or recording a Laboratory error check. Whoever did bench work on a Sample never gives it Approval.
+_Avoid_: Own work, involvement, contribution
 
 **Conformity statement**:
 The per-Result verdict on a Certificate of Analysis: `Complies` or `Does not comply` for finished products, decided by rounding the Result to the Limit's decimal places and comparing (a `< LOD` or `< LOQ` Result complies when that value is below the Limit), and `Report` for raw materials. Each Result is judged on its own; no combined nitrosamine assessment is made.
@@ -90,7 +102,7 @@ The person who gives Approval or returns a Sample to its Analyst with a comment;
 _Avoid_: Reviewer, approver, QA
 
 **Admin**:
-The person who may act in every role — as Coordinator, Analyst (when a Sample is assigned to them) and Manager — for a lab too small to staff each role separately; every act is still their own, signed with their own password, and they never give Approval to a Sample on which they entered, corrected or retested a Result.
+The person who may act in every role — as Coordinator, Analyst (when a Sample is assigned to them) and Manager — for a lab too small to staff each role separately; every act is still their own, signed with their own password, and they never give Approval to a Sample on which they entered, corrected or retested a Result or recorded a Laboratory error check.
 _Avoid_: Super admin, superuser, root
 
 **Approval**:
