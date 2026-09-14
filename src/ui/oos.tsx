@@ -406,9 +406,9 @@ export function ConcludeForm({
   const [outcome, setOutcome] = useState<'Invalidated' | 'Confirmed' | null>(
     null,
   );
-  // Set when a blocked outcome is chosen: the refusal is announced then, and
-  // the choice is not taken.
-  const [refused, setRefused] = useState(false);
+  // Counts attempts to choose a blocked outcome: the choice is not taken, and
+  // each attempt announces the refusal afresh.
+  const [refusals, setRefusals] = useState(0);
   const reasonId = `conclude-invalidated-${investigation.id}`;
   return (
     <form
@@ -440,12 +440,14 @@ export function ConcludeForm({
                 value={o}
                 required
                 checked={outcome === o}
-                // Blocked but focusable: its reason is its description, and
-                // choosing it is refused with that reason announced.
+                // Blocked but focusable (ARIA 1.2: aria-disabled inherits
+                // into radio): its reason is its description, and choosing it
+                // is refused with that reason announced.
+                aria-disabled={blocked || undefined}
                 aria-describedby={blocked ? reasonId : undefined}
                 onChange={() => {
-                  setRefused(blocked);
-                  if (!blocked) setOutcome(o);
+                  if (blocked) setRefusals((n) => n + 1);
+                  else setOutcome(o);
                 }}
               />
               {o}
@@ -455,10 +457,11 @@ export function ConcludeForm({
         {invalidatedBlocker && (
           <RefusalNote id={reasonId} refusal={invalidatedBlocker} />
         )}
-        <span className="visually-hidden" role="status">
-          {refused && invalidatedBlocker
-            ? `Invalidated cannot be chosen. ${invalidatedBlocker.reason}`
-            : ''}
+        <span className="sr-only" role="status">
+          {refusals > 0 && invalidatedBlocker && (
+            // A new node per attempt, so a repeated attempt is announced.
+            <span key={refusals}>{invalidatedBlocker.reason}</span>
+          )}
         </span>
       </fieldset>
       {outcome === 'Invalidated' && (
