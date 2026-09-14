@@ -44,3 +44,4 @@ A failed check exits with an error after it is recorded. Where backups are kept,
 - Benchline listens only on 127.0.0.1. The reverse proxy terminates TLS and passes on the `Host` header, since same-origin writes are checked against `https://<Host>`.
 - The printed version is the approved release's version and commit, without `not the release` (see `docs/releases.md`), and the printed settings match the approved release record.
 - A test lockout notice reaches both the System administrator and the Quality lead.
+- Certificates of Analysis are printed or saved as PDF from Chrome or Edge, the browsers their print output is validated in. Each printed page then carries the Certificate's Sample number, version and "Page x of y" (ISO/IEC 17025 7.8.2.1 d, #85). Firefox and Safari print the end statement but no page footer. Check that a printed multi-page Certificate shows the footer on every page.
