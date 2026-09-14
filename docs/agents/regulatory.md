@@ -2,11 +2,11 @@
 
 Benchline is a GMP laboratory system of record, bound by 21 CFR Part 11, 21 CFR 211 and ISO/IEC 17025:2017 (ADR-0001). The requirements live in `docs/regulatory/`, one file per source family. Each maps every requirement to Benchline, cites its source, and ends with a developer checklist.
 
-| File | Consult when the change touches |
-|---|---|
-| `docs/regulatory/fda-electronic-records-and-lab-records.md` | the audit trail, Electronic signatures, accounts and access, record copies, retention or backup, the laboratory record behind a Result |
-| `docs/regulatory/fda-oos-and-nitrosamine-control.md` | Results, LOD/LOQ, Limits and Acceptable intakes, Conformity statements, OOS investigations, Retests |
-| `docs/regulatory/iso-17025-laboratory-information.md` | Sample receipt, handling and custody, Certificates of Analysis and Amendments, decision rules, nonconforming work, validation of changes |
+| File                                                        | Consult when the change touches                                                                                                          |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/regulatory/fda-electronic-records-and-lab-records.md` | the audit trail, Electronic signatures, accounts and access, record copies, retention or backup, the laboratory record behind a Result   |
+| `docs/regulatory/fda-oos-and-nitrosamine-control.md`        | Results, LOD/LOQ, Limits and Acceptable intakes, Conformity statements, OOS investigations, Retests                                      |
+| `docs/regulatory/iso-17025-laboratory-information.md`       | Sample receipt, handling and custody, Certificates of Analysis and Amendments, decision rules, nonconforming work, validation of changes |
 
 ## Consult before building
 

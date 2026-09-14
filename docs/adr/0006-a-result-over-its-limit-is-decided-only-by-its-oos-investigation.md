@@ -5,5 +5,7 @@ A Result that exceeds its Limit leaves the record's current state only through i
 ## Consequences
 
 - The one exception is an Amendment correcting a Confirmed OOS Result, which its investigation has already decided; the corrected value is judged afresh, and a new value over its Limit needs its own investigation.
+- This exception still meets FDA's OOS guidance §III, that an OOS result leaves its state only through its investigation (see `docs/regulatory/fda-oos-and-nitrosamine-control.md`). The Confirmed investigation has already decided that Result, so the correction never removes an OOS nobody decided. It is not an invalidation either: the superseded Result keeps its investigation on record, and the Certificate of Analysis goes on listing that investigation. The correction needs a reason, is Bench work, and waits for re-approval by a Manager who did none.
+- A Result whose investigation Invalidated it is never corrected; the Test calls for a Retest.
 - An investigation may still conclude Confirmed when the Laboratory error check identified an error that does not explain the value.
 - Confirmed means the laboratory found no assignable cause; as a contract laboratory, Benchline hands its data and findings to the Client, whose full-scale investigation follows.

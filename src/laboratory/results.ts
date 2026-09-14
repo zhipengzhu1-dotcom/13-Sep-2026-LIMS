@@ -109,9 +109,13 @@ export type TestResults = {
    * lists. */
   readonly certificateInvestigations: CertificateInvestigation[];
   /**
-   * Why the current Result cannot be corrected now, or null. `hasCertificate`
-   * is whether the Sample already has a Certificate of Analysis, as it does
-   * in an Amendment.
+   * Why the Test's Result cannot be corrected now, or null (ADR-0006): it does
+   * not comply and has no investigation, its investigation is open, it is a
+   * confirmed OOS outside an Amendment, or it was Invalidated and the Test
+   * calls for a Retest. `hasCertificate` is whether the Sample already has a
+   * Certificate of Analysis, as it does in an Amendment. Recording a Result
+   * refuses a correction with this reason; the Retest case has no current
+   * Result to correct, so the command records a Retest instead.
    */
   correctionBlocker(options: { hasCertificate: boolean }): Refusal | null;
 };
@@ -237,12 +241,35 @@ export function resultsView(sample: Sample): SampleResults {
     },
     correctionBlocker({ hasCertificate }) {
       const current = this.current;
-      const investigation = current && investigationOf(sample, current);
-      if (!investigation) return null;
-      // An investigated Result is decided by its investigation, never
-      // corrected around it: an open one must be concluded first, and a
-      // confirmed OOS stands until an Amendment of its published Certificate
-      // corrects it (see amendments.ts).
+      if (!current) {
+        // An Invalidated result is never corrected: the Test calls for a
+        // Retest, which keeps it on record.
+        if (!this.retestRequired) return null;
+        const { result, investigation } = this.history.findLast(
+          (h) => h.result.status === 'invalidated',
+        )!;
+        const id = investigation!.id;
+        return {
+          code: 'retest required',
+          reason: `Result #${result.sequence} was Invalidated by OOS investigation ${id}, so it cannot be corrected. Enter a Retest instead.`,
+          investigationId: id,
+        };
+      }
+      // A Result over its Limit is decided only by its OOS investigation
+      // (ADR-0006), so it is never corrected before one is opened.
+      const investigation = investigationOf(sample, current);
+      if (!investigation)
+        return outOfSpecification(current)
+          ? {
+              code: 'OOS uninvestigated',
+              reason:
+                'This Result does not comply with its Limit and has no OOS investigation, so it cannot be corrected.',
+              investigationId: null,
+            }
+          : null;
+      // An open investigation must be concluded first, and a confirmed OOS
+      // stands until an Amendment of its published Certificate corrects it;
+      // the corrected value is then judged afresh.
       if (investigation.status === 'Open')
         return {
           code: 'investigation open',
@@ -438,8 +465,12 @@ export function recordResult(
   const view = resultsView(sample).test(input.testId);
   const { test } = view;
   const previous = view.current;
-  const blocked = view.correctionBlocker(input);
-  if (blocked) throw new WorkflowError(blocked.reason);
+  // Only a correction supersedes a Result; without a current one this is a
+  // first entry or a Retest, which the blocker does not stop.
+  if (previous) {
+    const blocked = view.correctionBlocker(input);
+    if (blocked) throw new WorkflowError(blocked.reason);
+  }
   if (previous && input.reason.length < 3)
     throw new WorkflowError('Give a reason for changing the Result.');
   // Finished products are judged against the entry in force now; raw

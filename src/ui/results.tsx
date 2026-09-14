@@ -18,7 +18,7 @@ import {
   attachmentContentType,
 } from '../laboratory/attachment-contracts';
 import { resultsView } from '../laboratory/results';
-import { investigationLabel, OosNote } from './oos';
+import { investigationLabel, OosNote, RefusalNote } from './oos';
 import {
   ConformityTag,
   type Draft,
@@ -353,12 +353,16 @@ export function WorksheetLink({ data, id }: { data: Snapshot; id: string }) {
 export function TestSheet({
   sample: s,
   canRecord,
+  hasCertificate,
   busy,
   execute,
   data,
 }: {
   sample: Sample;
   canRecord: boolean;
+  /** Whether the Sample has a Certificate of Analysis, decided from the
+   * loaded Certificates as the core decides it. */
+  hasCertificate: boolean;
   busy: boolean;
   execute: Execute;
   data: Snapshot;
@@ -377,7 +381,14 @@ export function TestSheet({
       </thead>
       {resultsView(s).tests.map((view) => {
         const { test: t, current, history: results } = view;
-        const editing = canRecord && (!current || editingId === t.id);
+        // The rule the core refuses the correction with, asked the same way.
+        const blocker =
+          canRecord && current
+            ? view.correctionBlocker({ hasCertificate })
+            : null;
+        const blockerId = `correction-blocker-${s.id}-${t.id}`;
+        const editing =
+          canRecord && (!current || (editingId === t.id && !blocker));
         const history = openHistory === t.id;
         // Earlier Results besides the current one, such as an Invalidated
         // result awaiting its retest.
@@ -448,16 +459,24 @@ export function TestSheet({
                         </button>
                       )}
                       {canRecord && (
+                        // Disabled but focusable, so keyboard and
+                        // screen-reader users reach the reason it describes.
                         <button
                           className="link"
-                          onClick={() =>
-                            setEditingId(editingId === t.id ? null : t.id)
-                          }
+                          aria-disabled={blocker ? true : undefined}
+                          aria-describedby={blocker ? blockerId : undefined}
+                          onClick={() => {
+                            if (!blocker)
+                              setEditingId(editingId === t.id ? null : t.id);
+                          }}
                         >
-                          {editingId === t.id ? 'Cancel' : 'Correct'}
+                          {editing ? 'Cancel' : 'Correct'}
                         </button>
                       )}
                     </span>
+                    {blocker && (
+                      <RefusalNote id={blockerId} refusal={blocker} />
+                    )}
                   </span>
                 ) : (
                   <span className="dim">Not entered</span>

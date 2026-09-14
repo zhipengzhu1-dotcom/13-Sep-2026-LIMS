@@ -2547,6 +2547,58 @@ test('an Admin assigned the Sample records the laboratory error check as themsel
   );
 });
 
+test('the server refuses correcting an uninvestigated OOS Result on its own, linking no worksheet and writing nothing', (t) => {
+  const lab = memory(t);
+  let s = assigned(lab);
+  s = run(lab, result(s, 'NIT-001-v1', 30), 'analyst');
+  // The Analyst uploads the corrected worksheet before saving.
+  const upload = lab.storeAttachment(
+    {
+      filename: 'corrected worksheet.csv',
+      contentType: 'text/csv',
+      content: Buffer.from('reading,result\n1.25,3\n'),
+    },
+    'analyst',
+  );
+  const before = lab.snapshot();
+  const entries = lab.auditTrail().length;
+  assert.throws(
+    () =>
+      run(
+        lab,
+        {
+          ...result(s, 'NIT-001-v1', 3, 'Transcription error.'),
+          attachmentId: upload.id,
+        },
+        'analyst',
+      ),
+    (e: Error & { status: number }) =>
+      e.status === 400 &&
+      e.message ===
+        'This Result does not comply with its Limit and has no OOS investigation, so it cannot be corrected.',
+  );
+  assert.deepEqual(lab.snapshot(), before);
+  assert.equal(lab.auditTrail().length, entries);
+  assert.ok(
+    !lab
+      .snapshot()
+      .samples.some((x) =>
+        x.tests.some((y) =>
+          y.results.some((r) => r.attachmentId === upload.id),
+        ),
+      ),
+    'the uploaded worksheet is linked to no Result',
+  );
+  assert.deepEqual(
+    oosRows(lab.snapshot().samples).map((r) => [
+      r.result.value,
+      r.investigation,
+    ]),
+    [[30, undefined]],
+    'the OOS Result stays in the queue',
+  );
+});
+
 test('a Result under investigation cannot be corrected around it', (t) => {
   const lab = memory(t);
   let s = assigned(lab);

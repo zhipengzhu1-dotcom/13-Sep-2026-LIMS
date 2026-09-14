@@ -181,6 +181,32 @@ const firstEntryChanges = [
   [RECORD, 'result.conformity', null, 'Complies', null],
 ];
 
+/** ADR-0006's refusals of a correction outside the OOS investigation. */
+const uninvestigatedCorrection: Refusal = {
+  code: 'OOS uninvestigated',
+  reason:
+    'This Result does not comply with its Limit and has no OOS investigation, so it cannot be corrected.',
+  investigationId: null,
+};
+const openCorrection: Refusal = {
+  code: 'investigation open',
+  reason:
+    'OOS investigation OOS26-0001 is open on this Result, so it cannot be corrected.',
+  investigationId: 'OOS26-0001',
+};
+const confirmedCorrection: Refusal = {
+  code: 'confirmed OOS',
+  reason:
+    'This Result is a confirmed OOS (OOS26-0001) and cannot be corrected.',
+  investigationId: 'OOS26-0001',
+};
+const retestCall: Refusal = {
+  code: 'retest required',
+  reason:
+    'Result #1 was Invalidated by OOS investigation OOS26-0001, so it cannot be corrected. Enter a Retest instead.',
+  investigationId: 'OOS26-0001',
+};
+
 type Accepted = {
   name: string;
   materialType?: MaterialType;
@@ -190,6 +216,8 @@ type Accepted = {
   changes: unknown[][];
   /** The statuses of the Test's Results afterwards, oldest first. */
   statuses: Result['status'][];
+  /** The correction blocker beforehand, which a Retest does not ask. */
+  blocker?: Refusal;
 };
 
 const accepted: Accepted[] = [
@@ -238,25 +266,6 @@ const accepted: Accepted[] = [
     statuses: ['superseded', 'current'],
   },
   {
-    // Today's permissive rule, which #22 changes (ADR-0006): a Result over its
-    // Limit with no investigation can still be corrected.
-    name: 'a Result over its Limit with no investigation can be corrected',
-    arrange: (s) => record(s, { value: 30 }),
-    fields: { value: 3, reason: 'Transcription error' },
-    kind: 'correction',
-    changes: [
-      [RECORD, 'result.value', 30, 3, 'Transcription error'],
-      [
-        RECORD,
-        'result.conformity',
-        'Does not comply',
-        'Complies',
-        'Transcription error',
-      ],
-    ],
-    statuses: ['superseded', 'current'],
-  },
-  {
     name: 'a confirmed OOS is corrected once the Sample has a Certificate',
     arrange: (s) => {
       record(s, { value: 30 });
@@ -290,6 +299,7 @@ const accepted: Accepted[] = [
     kind: 'retest',
     changes: firstEntryChanges,
     statuses: ['invalidated', 'current'],
+    blocker: retestCall,
   },
   {
     name: 'a raw material Result has no Limit, whatever is in force',
@@ -315,11 +325,11 @@ for (const c of accepted)
     const s = sampleOf(c.materialType);
     c.arrange(s);
     const view = resultsView(s).test('NIT-001-v1');
-    assert.equal(
+    assert.deepEqual(
       view.correctionBlocker({
         hasCertificate: c.fields.hasCertificate ?? false,
       }),
-      null,
+      c.blocker ?? null,
     );
     const { kind, changes } = record(s, c.fields);
     assert.equal(kind, c.kind);
@@ -388,6 +398,31 @@ const refused: Refused[] = [
       'This Result is a confirmed OOS (OOS26-0001) and cannot be corrected.',
   },
   {
+    // ADR-0006: an OOS Result nobody investigated is never corrected away.
+    name: 'a correction of a Result over its Limit with no investigation',
+    arrange: (s) => record(s, { value: 30 }),
+    fields: { value: 3, reason: 'Transcription error' },
+    blocker: uninvestigatedCorrection,
+    reason: uninvestigatedCorrection.reason,
+  },
+  {
+    name: 'a correction of an uninvestigated OOS Result, even in an Amendment',
+    arrange: (s) => record(s, { value: 30 }),
+    fields: { value: 3, reason: 'Transcription error', hasCertificate: true },
+    blocker: uninvestigatedCorrection,
+    reason: uninvestigatedCorrection.reason,
+  },
+  {
+    name: 'an Amendment correction of a confirmed OOS without a reason',
+    arrange: (s) => {
+      record(s, { value: 30 });
+      investigate(s, 'Confirmed');
+    },
+    fields: { value: 3, reason: 'no', hasCertificate: true },
+    blocker: null,
+    reason: 'Give a reason for changing the Result.',
+  },
+  {
     name: 'the investigation is refused before a missing reason',
     arrange: (s) => {
       record(s, { value: 30 });
@@ -450,15 +485,26 @@ for (const c of refused)
     assert.deepEqual(s, before);
   });
 
-test('the correction blocker has nothing to block without a current Result', () => {
+test('after invalidation the correction blocker calls for a Retest, and recording one keeps the Invalidated result', () => {
   const s = sampleOf();
   const view = resultsView(s).test('NIT-001-v1');
-  assert.equal(view.current, undefined);
-  assert.deepEqual(view.history, []);
+  assert.equal(view.history.length, 0);
   assert.equal(view.correctionBlocker({ hasCertificate: false }), null);
   record(s, { value: 30 });
   investigate(s, 'Invalidated');
   assert.equal(view.current, undefined, 'an Invalidated result is not current');
+  for (const hasCertificate of [false, true])
+    assert.deepEqual(view.correctionBlocker({ hasCertificate }), retestCall);
+  // Entering a Result now never supersedes the Invalidated result: the
+  // command records a Retest.
+  assert.equal(record(s, { value: 2.5 }).kind, 'retest');
+  assert.deepEqual(
+    view.history.map((h) => [h.result.status, h.investigation?.id]),
+    [
+      ['invalidated', 'OOS26-0001'],
+      ['current', undefined],
+    ],
+  );
   assert.equal(view.correctionBlocker({ hasCertificate: false }), null);
 });
 
@@ -1057,6 +1103,129 @@ test('OOS rows list investigations and uninvestigated OOS Results, those needing
     [[1, 'Invalidated']],
     'a complying Retest is not listed; its Invalidated result stays',
   );
+});
+
+// ADR-0006: a Result over its Limit is decided only by its OOS investigation.
+
+/** Per stage: the correction blocker without a Certificate, and in an
+ * Amendment. */
+const correctionBlockers: [Stage, Refusal | null, Refusal | null][] = [
+  ['empty', null, null],
+  ['complying', null, null],
+  ['uninvestigated', uninvestigatedCorrection, uninvestigatedCorrection],
+  ['open', openCorrection, openCorrection],
+  ['checked', openCorrection, openCorrection],
+  ['invalidated', retestCall, retestCall],
+  ['retested', null, null],
+  [
+    'retested over its Limit',
+    uninvestigatedCorrection,
+    uninvestigatedCorrection,
+  ],
+  ['confirmed', confirmedCorrection, null],
+  ['notified', confirmedCorrection, null],
+];
+
+for (const [stage, without, inAmendment] of correctionBlockers)
+  for (const [hasCertificate, blocker] of [
+    [false, without],
+    [true, inAmendment],
+  ] as const)
+    test(`the correction blocker for a Sample ${stage}${hasCertificate ? ' in an Amendment' : ''}, and the command agrees`, () => {
+      const s = staged(stage);
+      const view = resultsView(s).test('NIT-001-v1');
+      assert.deepEqual(view.correctionBlocker({ hasCertificate }), blocker);
+      // Only a current Result can be corrected; without one the command
+      // records a first entry or a Retest instead.
+      if (!blocker || !view.current) return;
+      const before = structuredClone(s);
+      const audit = recordingAudit();
+      assert.throws(
+        () =>
+          recordResult(
+            s,
+            input({ value: 3, reason: 'Transcription error', hasCertificate }),
+            { actor: 'analyst', at: AT, audit },
+          ),
+        (e) => e instanceof WorkflowError && e.message === blocker.reason,
+      );
+      assert.deepEqual(audit.entries, []);
+      assert.deepEqual(s, before);
+    });
+
+test('a refused correction leaves the uninvestigated OOS Result current and in the OOS queue', () => {
+  const s = staged('uninvestigated');
+  assert.throws(() => record(s, { value: 3, reason: 'Transcription error' }));
+  const view = resultsView(s);
+  assert.equal(view.test('NIT-001-v1').current?.value, 30);
+  assert.deepEqual(
+    view.oosRows.map((r) => [r.result.sequence, r.investigation]),
+    [[1, undefined]],
+  );
+  assert.deepEqual(view.approvalBlocker, uninvestigatedBlocker);
+});
+
+test('an Amendment corrects a confirmed OOS with a reason, keeps it on record with its investigation, and a corrected value over its Limit needs its own investigation', () => {
+  const s = staged('notified');
+  const reason = 'Recalculated with the dilution factor on the worksheet.';
+  const corrected = acted('admin', (act) =>
+    recordResult(s, input({ value: 28, reason, hasCertificate: true }), act),
+  );
+  assert.equal(corrected.outcome, 'correction');
+  assert.deepEqual(corrected.changes, [
+    [RECORD, 'result.value', 30, 28, reason],
+  ]);
+  const view = resultsView(s);
+  const t = view.test('NIT-001-v1');
+  assert.deepEqual(
+    t.history.map((h) => [
+      h.result.value,
+      h.result.status,
+      h.result.conformity,
+      h.investigation?.id,
+      h.investigation?.outcome,
+    ]),
+    [
+      [30, 'superseded', 'Does not comply', ID, 'Confirmed'],
+      [28, 'current', 'Does not comply', undefined, undefined],
+    ],
+    'the confirmed OOS Result and its investigation stay on record, linked',
+  );
+  // The corrected value is judged afresh: still over its Limit, it is a new
+  // OOS that only its own investigation decides.
+  assert.deepEqual(
+    t.correctionBlocker({ hasCertificate: true }),
+    uninvestigatedCorrection,
+  );
+  const before = structuredClone(s);
+  const audit = recordingAudit();
+  assert.throws(
+    () =>
+      recordResult(
+        s,
+        input({
+          value: 2.5,
+          reason: 'Recalculated again.',
+          hasCertificate: true,
+        }),
+        { actor: 'analyst', at: AT, audit },
+      ),
+    (e) =>
+      e instanceof WorkflowError &&
+      e.message === uninvestigatedCorrection.reason,
+  );
+  assert.deepEqual(audit.entries, []);
+  assert.deepEqual(s, before);
+  assert.deepEqual(view.approvalBlocker, uninvestigatedBlocker);
+  // The Amendment correction is Bench work, so the Admin who made it cannot
+  // give the re-approval.
+  assert.deepEqual(view.benchWork.at(-1), {
+    person: 'admin',
+    act: 'corrected',
+    testId: 'NIT-001-v1',
+    resultSequence: 2,
+  });
+  assert.equal(enteredResultOn(s, 'admin'), true);
 });
 
 test('an investigation whose Result cannot be found is a programming error, not a refusal', () => {

@@ -267,6 +267,7 @@ export function SamplePanel({
             <TestSheet
               sample={s}
               canRecord={canRecord}
+              hasCertificate={versions.length > 0}
               busy={busy}
               execute={execute}
               data={data}
