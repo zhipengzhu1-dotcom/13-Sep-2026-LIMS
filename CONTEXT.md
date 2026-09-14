@@ -113,6 +113,10 @@ _Avoid_: Review, release, sign-off
 A password-confirmed act that records the signer's name, the date and time, and its meaning (performed by, approved by, amended by).
 _Avoid_: E-sign, initials
 
+**Signed content**:
+Exactly what an Electronic signature attests to, kept unchanged as it stood at the moment of signing: the Sample with its Results and OOS investigations and, for Approval, the Certificate of Analysis issued. A signature is valid only while it still matches its Signed content, so later changes to the Sample, such as an Amendment, never invalidate an earlier signature.
+_Avoid_: Signed record, signature payload, snapshot
+
 **Certificate of Analysis**:
 The locked, signed report of a Sample's approved Results that is issued to the Client.
 _Avoid_: CoA (in prose), report, results sheet
