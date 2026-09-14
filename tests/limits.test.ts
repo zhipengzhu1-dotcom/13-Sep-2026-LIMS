@@ -101,6 +101,8 @@ function clocked(
 const entry = (analyteId: string, value: number, effectiveFrom: string) => ({
   analyteId,
   value,
+  potencyCategory: 'not categorised',
+  limitType: 'compound-specific',
   ...cderSource,
   sourceRevisionDate: effectiveFrom,
   effectiveFrom,
@@ -232,12 +234,19 @@ test('Acceptable intake entries are seeded, marked illustrative and only ever ap
   const { lab } = clocked(t);
   const seeded = lab.snapshot().acceptableIntakes;
   assert.deepEqual(
-    seeded.map((e) => [e.id, e.analyteId, e.value, e.effectiveFrom]),
+    seeded.map((e) => [
+      e.id,
+      e.analyteId,
+      e.value,
+      e.potencyCategory,
+      e.limitType,
+      e.effectiveFrom,
+    ]),
     [
-      [1, 'impurity-a', 26.5, '2023-08-04'],
-      [2, 'impurity-b', 26.5, '2023-08-04'],
-      [3, 'impurity-b', 96, '2025-07-01'],
-      [4, 'impurity-c', 1500, '2023-08-04'],
+      [1, 'impurity-a', 26.5, 1, 'CPCA-predicted', '2023-08-04'],
+      [2, 'impurity-b', 26.5, 1, 'CPCA-predicted', '2023-08-04'],
+      [3, 'impurity-b', 96, 'not categorised', 'interim', '2025-07-01'],
+      [4, 'impurity-c', 1500, 4, 'CPCA-predicted', '2023-08-04'],
     ],
   );
   assert.ok(seeded.every((e) => e.illustrative));
@@ -310,6 +319,103 @@ test('Acceptable intake entries are seeded, marked illustrative and only ever ap
   // A retry is not a second entry.
   assert.equal(append(lab, revised, 'manager', commandId).outcome, 'replayed');
   assert.equal(lab.snapshot().acceptableIntakes.length, after.length);
+});
+
+test('an Acceptable intake entry is refused without a potency category and a limit type, and records nothing', (t) => {
+  const { lab } = clocked(t);
+  const before = lab.snapshot().acceptableIntakes;
+  const { potencyCategory: _c, ...uncategorised } = entry(
+    'impurity-a',
+    18,
+    '2026-10-01',
+  );
+  const { limitType: _l, ...untyped } = entry('impurity-a', 18, '2026-10-01');
+  const refusals = [
+    [uncategorised, /Give the potency category: 1 to 5, or not categorised/],
+    [
+      { ...uncategorised, potencyCategory: 6 },
+      /Give the potency category: 1 to 5, or not categorised/,
+    ],
+    [
+      untyped,
+      /Give the limit type: CPCA-predicted, compound-specific or interim/,
+    ],
+    [
+      { ...untyped, limitType: 'provisional' },
+      /Give the limit type: CPCA-predicted, compound-specific or interim/,
+    ],
+    [
+      { ...untyped, limitType: 'CPCA-predicted' },
+      /A CPCA-predicted limit needs its potency category/,
+    ],
+    // Categories 1 to 5 predict 26.5, 100, 400, 1500 and 1500 ng/day.
+    ...(
+      [
+        [1, 26.4, '26.5'],
+        [2, 26.5, '100'],
+        [3, 100, '400'],
+        [4, 400, '1500'],
+        [5, 1501, '1500'],
+      ] as const
+    ).map(
+      ([potencyCategory, value, predicted]) =>
+        [
+          { ...untyped, value, potencyCategory, limitType: 'CPCA-predicted' },
+          new RegExp(
+            `A CPCA-predicted limit for potency category ${potencyCategory} is ${predicted} ng/day`,
+          ),
+        ] as const,
+    ),
+  ] as const;
+  for (const [fields, refusal] of refusals)
+    assert.throws(() => append(lab, fields), refusal);
+  assert.deepEqual(lab.snapshot().acceptableIntakes, before);
+  assert.deepEqual(lab.auditTrail(), [], 'nothing refused is recorded');
+
+  const accepted = (
+    [
+      [1, 26.5, 'CPCA-predicted'],
+      [2, 100, 'CPCA-predicted'],
+      [3, 400, 'CPCA-predicted'],
+      [4, 1500, 'CPCA-predicted'],
+      [5, 1500, 'CPCA-predicted'],
+      [3, 178, 'compound-specific'],
+      ['not categorised', 96, 'compound-specific'],
+      [2, 37, 'interim'],
+      ['not categorised', 26.5, 'interim'],
+    ] as const
+  ).map(([potencyCategory, value, limitType]) => ({
+    ...untyped,
+    value,
+    potencyCategory,
+    limitType,
+  }));
+  for (const fields of accepted)
+    assert.equal(append(lab, fields).outcome, 'applied');
+  assert.deepEqual(
+    lab
+      .snapshot()
+      .acceptableIntakes.slice(before.length)
+      .map(({ id: _id, ...fields }) => fields),
+    accepted,
+  );
+});
+
+test('a Result keeps the potency category and limit type of the Limit it was judged against', (t) => {
+  const { lab } = clocked(t);
+  let s = assigned(lab);
+  s = run(lab, result(s, 'NIT-001-v1', 20), 'analyst');
+  s = run(lab, result(s, 'NIT-003-v1', 20), 'analyst');
+  assert.deepEqual(
+    s.tests.map((x) => {
+      const limit = currentResult(x)?.limit;
+      return [limit?.id, limit?.potencyCategory, limit?.limitType];
+    }),
+    [
+      [1, 1, 'CPCA-predicted'],
+      [3, 'not categorised', 'interim'],
+    ],
+  );
 });
 
 test('a finished product Result links the Limit in force and keeps it after a newer entry is added', (t) => {

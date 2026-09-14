@@ -166,8 +166,13 @@ export type Result = {
   /** Empty for a first Result; required when it replaces the current one. */
   reason: string;
   /** A copy of the Acceptable intake entry in force when the Result was
-   * entered, kept even after a newer entry is added; null for raw materials. */
-  limit: AcceptableIntake | null;
+   * entered, kept even after a newer entry is added; null for raw materials.
+   * A copy made before entries recorded their Potency category and Limit
+   * type has neither field. */
+  limit:
+    | (Omit<AcceptableIntake, 'potencyCategory' | 'limitType'> &
+        Partial<Pick<AcceptableIntake, 'potencyCategory' | 'limitType'>>)
+    | null;
   /** Decided by the core when the Result is entered; never entered. */
   conformity: ConformityStatement;
   /** The OOS investigation opened on this Result, kept once it is closed

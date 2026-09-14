@@ -2339,7 +2339,7 @@ test('the database refuses changing, replacing or deleting signatures, audit ent
       refusal: /Acceptable intake entries are append-only/,
       replacing: [
         `INSERT OR REPLACE INTO acceptableIntakes
-          SELECT id, 'TAMPERED', value, sourceTitle, sourceUrl, sourceRevisionDate, effectiveFrom, illustrative FROM acceptableIntakes`,
+          SELECT id, 'TAMPERED', value, sourceTitle, sourceUrl, sourceRevisionDate, effectiveFrom, illustrative, potencyCategory, limitType FROM acceptableIntakes`,
       ],
     },
     {
@@ -3616,6 +3616,8 @@ test('a Certificate stays as issued through replays, reference data changes and 
       type: 'appendAcceptableIntake',
       analyteId: 'impurity-a',
       value: 18,
+      potencyCategory: 'not categorised',
+      limitType: 'compound-specific',
       sourceTitle: 'CDER Nitrosamine Impurity Acceptable Intake Limits',
       sourceUrl: 'https://www.fda.gov/example-revision',
       sourceRevisionDate: '2026-09-01',

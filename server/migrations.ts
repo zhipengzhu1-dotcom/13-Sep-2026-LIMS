@@ -78,6 +78,16 @@ export const migrations: readonly Migration[] = [
     WHEN EXISTS (SELECT 1 FROM acceptableIntakes WHERE id = NEW.id)
     BEGIN SELECT RAISE(ABORT, 'Acceptable intake entries are append-only.'); END;`),
   },
+  {
+    version: 22,
+    change:
+      'Acceptable intake entries record their Potency category and Limit type',
+    // Entries appended before keep null for both, shown as not recorded.
+    apply: (db) =>
+      db.exec(`
+  ALTER TABLE acceptableIntakes ADD COLUMN potencyCategory TEXT;
+  ALTER TABLE acceptableIntakes ADD COLUMN limitType TEXT;`),
+  },
 ];
 
 function latestVersion(pending: readonly Migration[]) {

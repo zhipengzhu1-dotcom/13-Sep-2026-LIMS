@@ -26,6 +26,7 @@ import {
   type SignatureMeaning,
   type Submission,
   type Test,
+  potencyRefusal,
 } from './contracts.ts';
 import { auditRecord, type Audit } from './audit-writer.ts';
 import {
@@ -395,6 +396,8 @@ export function appendAcceptableIntake(
   const { commandId: _commandId, type: _type, ...fields } = command;
   if (!analytes.some((a) => a.id === fields.analyteId))
     throw new WorkflowError(`Analyte ${fields.analyteId} is not known.`);
+  const refusal = potencyRefusal(fields);
+  if (refusal) throw new WorkflowError(refusal);
   const entry = appendAcceptableIntake(fields);
   audit.compare(auditRecord.acceptableIntake(entry), null, fields);
 }

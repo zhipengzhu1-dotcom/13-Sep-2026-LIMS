@@ -21,11 +21,37 @@ const isoDate = z
     return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
   }, 'Enter a valid date.');
 
+/** The recommended Acceptable intake, in ng/day, FDA's Carcinogenic Potency
+ * Categorization Approach (CPCA) predicts for each Potency category. */
+export const cpcaPredictedValues = {
+  1: 26.5,
+  2: 100,
+  3: 400,
+  4: 1500,
+  5: 1500,
+} as const;
+
+export const potencyCategorySchema = z.union(
+  [z.literal([1, 2, 3, 4, 5]), z.literal('not categorised')],
+  { error: 'Give the potency category: 1 to 5, or not categorised.' },
+);
+export type PotencyCategory = z.infer<typeof potencyCategorySchema>;
+
+export const limitTypeSchema = z.enum(
+  ['CPCA-predicted', 'compound-specific', 'interim'],
+  {
+    error: 'Give the limit type: CPCA-predicted, compound-specific or interim.',
+  },
+);
+export type LimitType = z.infer<typeof limitTypeSchema>;
+
 /** A new Acceptable intake entry as it is appended; the core assigns its id. */
 export const acceptableIntakeEntrySchema = z.object({
   analyteId: z.string().trim().min(1).max(200),
   /** ng/day, written as published: its decimal places set the rounding. */
   value: z.number().finite().positive(),
+  potencyCategory: potencyCategorySchema,
+  limitType: limitTypeSchema,
   sourceTitle: z.string().trim().min(1).max(200),
   sourceUrl: z.url().max(500),
   sourceRevisionDate: isoDate,
@@ -37,12 +63,38 @@ export type AcceptableIntakeEntry = z.infer<typeof acceptableIntakeEntrySchema>;
 
 /**
  * One append-only Acceptable intake entry. A changed Acceptable intake is a new
- * entry with a later `effectiveFrom`; no entry is ever edited or removed.
+ * entry with a later `effectiveFrom`; no entry is ever edited or removed. An
+ * entry appended before Potency categories and Limit types were recorded has
+ * null for both.
  */
-export type AcceptableIntake = AcceptableIntakeEntry & {
+export type AcceptableIntake = Omit<
+  AcceptableIntakeEntry,
+  'potencyCategory' | 'limitType'
+> & {
   /** Append order, starting at 1. */
   id: number;
+  potencyCategory: PotencyCategory | null;
+  limitType: LimitType | null;
 };
+
+/**
+ * Why an entry's Potency category and Limit type can't stand together, or
+ * null if they can: a CPCA-predicted limit is its category's predicted value.
+ */
+export function potencyRefusal({
+  value,
+  potencyCategory,
+  limitType,
+}: Pick<AcceptableIntakeEntry, 'value' | 'potencyCategory' | 'limitType'>):
+  string | null {
+  if (limitType !== 'CPCA-predicted') return null;
+  if (potencyCategory === 'not categorised')
+    return 'A CPCA-predicted limit needs its potency category.';
+  const predicted = cpcaPredictedValues[potencyCategory];
+  return value === predicted
+    ? null
+    : `A CPCA-predicted limit for potency category ${potencyCategory} is ${predicted} ng/day.`;
+}
 
 /**
  * Illustrative placeholders, to be replaced with values checked against the
@@ -53,6 +105,8 @@ export const seededAcceptableIntakes: readonly AcceptableIntakeEntry[] = [
   {
     analyteId: 'impurity-a',
     value: 26.5,
+    potencyCategory: 1,
+    limitType: 'CPCA-predicted',
     ...cderSource,
     sourceRevisionDate: '2023-08-04',
     effectiveFrom: '2023-08-04',
@@ -61,6 +115,8 @@ export const seededAcceptableIntakes: readonly AcceptableIntakeEntry[] = [
   {
     analyteId: 'impurity-b',
     value: 26.5,
+    potencyCategory: 1,
+    limitType: 'CPCA-predicted',
     ...cderSource,
     sourceRevisionDate: '2023-08-04',
     effectiveFrom: '2023-08-04',
@@ -69,6 +125,8 @@ export const seededAcceptableIntakes: readonly AcceptableIntakeEntry[] = [
   {
     analyteId: 'impurity-b',
     value: 96,
+    potencyCategory: 'not categorised',
+    limitType: 'interim',
     ...cderSource,
     sourceRevisionDate: '2025-06-23',
     effectiveFrom: '2025-07-01',
@@ -77,6 +135,8 @@ export const seededAcceptableIntakes: readonly AcceptableIntakeEntry[] = [
   {
     analyteId: 'impurity-c',
     value: 1500,
+    potencyCategory: 4,
+    limitType: 'CPCA-predicted',
     ...cderSource,
     sourceRevisionDate: '2023-08-04',
     effectiveFrom: '2023-08-04',

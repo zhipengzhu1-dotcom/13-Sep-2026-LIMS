@@ -266,6 +266,26 @@ test('a migration that fails is refused and leaves the database as it was, earli
   });
 });
 
+/** Removes the Potency category and Limit type from every Acceptable intake
+ * entry, as databases before migration version 22 hold them. */
+function withoutPotencyColumns(db: DatabaseSync) {
+  db.exec(`ALTER TABLE acceptableIntakes DROP COLUMN potencyCategory;
+    ALTER TABLE acceptableIntakes DROP COLUMN limitType;`);
+}
+
+/** Records as Benchline shows them once a database from before migration
+ * version 22 is migrated: no entry has a Potency category or Limit type. */
+function uncategorised(records: ReturnType<Laboratory['snapshot']>) {
+  return {
+    ...records,
+    acceptableIntakes: records.acceptableIntakes.map((e) => ({
+      ...e,
+      potencyCategory: null,
+      limitType: null,
+    })),
+  };
+}
+
 /** The triggers that refuse replacing inserts on the tables protected before
  * migrations existed, which migration version 21 adds. */
 const replaceProtection = [
@@ -308,6 +328,7 @@ function databaseBeforeCommandProtection(t: TestContext) {
   lab.execute(retried, 'coordinator');
   assert.equal(lab.execute(retried, 'coordinator').outcome, 'replayed');
   close();
+  const before = uncategorised(records(file));
   const db = new DatabaseSync(file);
   for (const { name } of db
     .prepare(
@@ -317,8 +338,9 @@ function databaseBeforeCommandProtection(t: TestContext) {
     db.exec(`DROP TRIGGER ${name}`);
   for (const name of replaceProtection)
     db.exec(`DROP TRIGGER IF EXISTS ${name}`);
+  withoutPotencyColumns(db);
   db.close();
-  return file;
+  return { file, before };
 }
 
 /** A version 20 database as that build left it: its protected tables refuse
@@ -326,11 +348,26 @@ function databaseBeforeCommandProtection(t: TestContext) {
  * replacing insert. It holds the demo's records. */
 function databaseBeforeReplaceProtection(t: TestContext) {
   const file = seededDatabase(t);
+  const before = uncategorised(records(file));
   const db = new DatabaseSync(file);
   for (const name of replaceProtection) db.exec(`DROP TRIGGER ${name}`);
+  withoutPotencyColumns(db);
   db.exec('PRAGMA user_version=20');
   db.close();
-  return file;
+  return { file, before };
+}
+
+/** A version 21 database as that build left it: its Acceptable intake
+ * entries record no Potency category or Limit type. It holds the demo's
+ * records. */
+function databaseBeforePotencyCategories(t: TestContext) {
+  const file = seededDatabase(t);
+  const before = uncategorised(records(file));
+  const db = new DatabaseSync(file);
+  withoutPotencyColumns(db);
+  db.exec('PRAGMA user_version=21');
+  db.close();
+  return { file, before };
 }
 
 /** Every row of the tables protected before migrations existed. */
@@ -376,8 +413,7 @@ function commandRecords(file: string) {
 }
 
 test('migrating to version 20 keeps every applied command and command replay, and the database then refuses changing or deleting them', (t) => {
-  const file = databaseBeforeCommandProtection(t);
-  const before = records(file);
+  const { file, before } = databaseBeforeCommandProtection(t);
   const commands = commandRecords(file);
   assert.ok(commands.commands.length && commands.commandReplays.length);
 
@@ -385,7 +421,7 @@ test('migrating to version 20 keeps every applied command and command replay, an
   assert.equal(migration.outcome, 'migrated');
   if (migration.outcome === 'migrated') {
     assert.equal(migration.from, 19);
-    assert.equal(migration.to, 21);
+    assert.equal(migration.to, 22);
   }
   assert.deepEqual(records(file), before);
   assert.deepEqual(commandRecords(file), commands);
@@ -419,21 +455,21 @@ test('migrating to version 20 keeps every applied command and command replay, an
 });
 
 test('migrating to version 21 keeps every protected record, and the database then refuses replacing signatures, audit entries, attachments, Certificates, publications and Acceptable intake entries', (t) => {
-  const file = databaseBeforeReplaceProtection(t);
-  const before = records(file);
+  const { file, before } = databaseBeforeReplaceProtection(t);
   const rows = protectedRecords(file);
   assert.ok(before.signatures.every((s) => s.valid));
 
   assert.deepEqual(migrate(file), {
     outcome: 'migrated',
     from: 20,
-    to: 21,
+    to: 22,
     applied: [
       'Signatures, audit entries, attachments, Certificates, publications and Acceptable intake entries cannot be replaced',
+      'Acceptable intake entries record their Potency category and Limit type',
     ],
   });
   assert.deepEqual(records(file), before);
-  assert.deepEqual(protectedRecords(file), rows);
+  assert.deepEqual(protectedRecords(file), uncategorisedRows(rows));
 
   const db = new DatabaseSync(file);
   t.after(() => db.close());
@@ -470,16 +506,136 @@ test('migrating to version 21 keeps every protected record, and the database the
     ],
     [
       `INSERT OR REPLACE INTO acceptableIntakes
-        SELECT id, 'TAMPERED', value, sourceTitle, sourceUrl, sourceRevisionDate, effectiveFrom, illustrative FROM acceptableIntakes`,
+        SELECT id, 'TAMPERED', value, sourceTitle, sourceUrl, sourceRevisionDate, effectiveFrom, illustrative, potencyCategory, limitType FROM acceptableIntakes`,
       /Acceptable intake entries are append-only/,
     ],
   ] as const)
     assert.throws(() => db.exec(sql), refusal, sql);
-  assert.deepEqual(protectedRecords(file), rows);
+  assert.deepEqual(protectedRecords(file), uncategorisedRows(rows));
+});
+
+/** Protected rows as a migration to version 22 leaves them: each Acceptable
+ * intake entry gains an empty Potency category and Limit type. */
+function uncategorisedRows(rows: ReturnType<typeof protectedRecords>) {
+  return {
+    ...rows,
+    // Rows read from SQLite have no prototype; so do these.
+    acceptableIntakes: rows.acceptableIntakes.map((row) =>
+      Object.assign(Object.create(null), row, {
+        potencyCategory: null,
+        limitType: null,
+      }),
+    ),
+  };
+}
+
+test('migrating to version 22 keeps every Acceptable intake entry, marked with no potency category or limit type and still in force, and later entries record both', (t) => {
+  const { file, before } = databaseBeforePotencyCategories(t);
+  const rows = protectedRecords(file);
+  assert.ok(before.acceptableIntakes.length);
+
+  assert.deepEqual(migrate(file), {
+    outcome: 'migrated',
+    from: 21,
+    to: 22,
+    applied: [
+      'Acceptable intake entries record their Potency category and Limit type',
+    ],
+  });
+  assert.deepEqual(records(file), before);
+  assert.deepEqual(protectedRecords(file), uncategorisedRows(rows));
+
+  const { lab, close } = open(file);
+  t.after(close);
+  // A Result judged against an entry from before still gets its Limit.
+  const attachmentId = lab.storeAttachment(
+    {
+      filename: 'worksheet.csv',
+      contentType: 'text/csv',
+      content: Buffer.from('reading,result\n1.25,2.5\n'),
+    },
+    'analyst',
+  ).id;
+  const received = lab.execute(
+    {
+      commandId: newCommandId(),
+      type: 'receiveSubmission',
+      clientId: 'northstar',
+      shippingCondition: 'ambient',
+      packageCondition: 'intact',
+      samples: [
+        {
+          product: 'Demo tablets 10 mg',
+          batch: 'B-002',
+          materialType: 'finished product',
+          quantity: { value: 60, unit: 'units' },
+          containers: { count: 2, type: 'bottle' },
+          conditionOnReceipt: 'Intact',
+          maximumDailyDose: 40,
+          methodIds: ['NIT-001-v1'],
+          dueDate: '2026-10-01',
+          priority: 'Routine',
+        },
+      ],
+    },
+    'coordinator',
+  ).samples[0];
+  const assigned = lab.execute(
+    {
+      commandId: newCommandId(),
+      type: 'assign',
+      sampleId: received.id,
+      revision: received.revision,
+      assignee: 'analyst',
+    },
+    'coordinator',
+  ).samples[0];
+  const judged = lab.execute(
+    {
+      commandId: newCommandId(),
+      type: 'enterResult',
+      sampleId: assigned.id,
+      revision: assigned.revision,
+      testId: 'NIT-001-v1',
+      value: 2,
+      instrumentReading: 1.25,
+      sequenceId: 'SEQ-0001',
+      attachmentId,
+      reason: '',
+    },
+    'analyst',
+  ).samples[0];
+  const limit = judged.tests[0].results[0].limit;
+  assert.deepEqual(
+    [limit?.id, limit?.value, limit?.potencyCategory, limit?.limitType],
+    [1, 26.5, null, null],
+  );
+
+  lab.execute(
+    {
+      commandId: newCommandId(),
+      type: 'appendAcceptableIntake',
+      analyteId: 'impurity-a',
+      value: 100,
+      potencyCategory: 2,
+      limitType: 'CPCA-predicted',
+      sourceTitle: 'CDER Nitrosamine Impurity Acceptable Intake Limits',
+      sourceUrl: 'https://www.fda.gov/',
+      sourceRevisionDate: '2026-09-01',
+      effectiveFrom: '2026-10-01',
+      illustrative: false,
+    },
+    'manager',
+  );
+  const added = lab.snapshot().acceptableIntakes.at(-1);
+  assert.deepEqual(
+    [added?.potencyCategory, added?.limitType],
+    [2, 'CPCA-predicted'],
+  );
 });
 
 test('a rehearsal of the Benchline migrations on a version 19 database passes', (t) => {
-  const source = databaseBeforeCommandProtection(t);
+  const { file: source } = databaseBeforeCommandProtection(t);
   const rehearsal = rehearseMigration(
     source,
     join(folder(t), 'rehearsal.sqlite'),

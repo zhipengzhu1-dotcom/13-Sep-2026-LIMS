@@ -1376,6 +1376,11 @@ body.resizing {
   letter-spacing: 0.04em;
   color: var(--returned);
 }
+.not-recorded {
+  font-style: italic;
+  font-weight: 600;
+  color: var(--returned);
+}
 .entry .preview {
   display: grid;
   gap: 2px;

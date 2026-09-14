@@ -43,6 +43,8 @@ const limit: AcceptableIntake = {
   id: 1,
   analyteId: 'impurity-a',
   value: 26.5,
+  potencyCategory: 1,
+  limitType: 'CPCA-predicted',
   sourceTitle: 'CDER Nitrosamine Impurity Acceptable Intake Limits',
   sourceUrl: 'https://www.fda.gov/',
   sourceRevisionDate: '2023-08-04',

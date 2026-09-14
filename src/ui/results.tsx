@@ -82,6 +82,8 @@ export function AcceptableIntakeTable({ data }: { data: Snapshot }) {
           <tr>
             <th>Analyte</th>
             <th className="r">Limit, ng/day</th>
+            <th>Potency category</th>
+            <th>Limit type</th>
             <th>Effective from</th>
             <th>Standing</th>
             <th>Source</th>
@@ -99,6 +101,22 @@ export function AcceptableIntakeTable({ data }: { data: Snapshot }) {
               >
                 <td className="strong">{analyte.name}</td>
                 <td className="r num strong">{e.value}</td>
+                <td>
+                  {e.potencyCategory === null ? (
+                    <NotRecorded />
+                  ) : e.potencyCategory === 'not categorised' ? (
+                    'Not categorised'
+                  ) : (
+                    `Category ${e.potencyCategory}`
+                  )}
+                </td>
+                <td>
+                  {e.limitType === null ? (
+                    <NotRecorded />
+                  ) : (
+                    e.limitType[0].toUpperCase() + e.limitType.slice(1)
+                  )}
+                </td>
                 <td className="num">{e.effectiveFrom}</td>
                 <td>
                   <span
@@ -132,6 +150,12 @@ export function AcceptableIntakeTable({ data }: { data: Snapshot }) {
       </p>
     </>
   );
+}
+
+/** Marks a field an Acceptable intake entry was appended without, before
+ * entries recorded it. */
+function NotRecorded() {
+  return <span className="not-recorded">Not recorded</span>;
 }
 
 export function LimitCell({ result: r }: { result: Result }) {

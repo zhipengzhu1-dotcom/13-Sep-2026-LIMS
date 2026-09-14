@@ -64,8 +64,15 @@ The highest Maximum daily dose, in mg/day, a Method may be requested for; receip
 _Avoid_: Dose limit, maximum dose
 
 **Acceptable intake**:
-The FDA-recommended maximum daily exposure to a specific nitrosamine, in ng/day, as published on CDER's Nitrosamine Impurity Acceptable Intake Limits list.
+The FDA-recommended maximum daily exposure to a specific nitrosamine, in ng/day, as published on CDER's Nitrosamine Impurity Acceptable Intake Limits list. Each entry records its Potency category and Limit type; a changed value, category or type is a new entry.
 _Avoid_: AI (in prose), FDA limit
+
+**Potency category**:
+The nitrosamine's category, 1 to 5, under FDA's Carcinogenic Potency Categorization Approach (CPCA), or "not categorised". Benchline allows "not categorised" only for a compound-specific or interim limit (a lab decision, not an FDA rule). Entries appended before categories were recorded show it as not recorded.
+
+**Limit type**:
+How an Acceptable intake was set: CPCA-predicted (the value FDA predicts for the Potency category: 26.5, 100, 400, 1500 or 1500 ng/day for categories 1 to 5), compound-specific, or interim.
+_Avoid_: Provisional limit
 
 **Limit**:
 The maximum acceptable level of an Analyte in a finished product: the Acceptable intake in ng/day in force when the Result was judged. Raw materials currently have no Limit and are reported as is.
