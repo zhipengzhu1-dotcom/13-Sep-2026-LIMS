@@ -3,6 +3,7 @@ import {
   isFinishedProduct,
   qualify,
   type AcceptableIntake,
+  type AuditEntry,
   type Result,
   type Sample,
   type Test,
@@ -149,10 +150,11 @@ export type TestResults = {
    */
   correctionBlocker(options: { hasCertificate: boolean }): Refusal | null;
   /**
-   * Why `worksheet` cannot be the calculation worksheet of the Retest due now,
-   * or null: it is the worksheet of the Invalidated result the Retest follows.
-   * A Retest is calculated again, on its own worksheet. Null when no Retest
-   * is due.
+   * Why `worksheet` cannot be the calculation worksheet of a Retest recorded
+   * now, or null: it is the worksheet of the Invalidated result the Retest
+   * follows. A Retest is calculated again, on its own worksheet, and a
+   * correction of it is still that Retest. Null when neither a Retest is due
+   * nor the current Result is a Retest.
    */
   retestBlocker(worksheet: Pick<Attachment, 'id'>): Refusal | null;
 };
@@ -177,13 +179,25 @@ export type InvestigationResults = {
   readonly findingsForClient: string;
 };
 
+/** A person's own work on a Result, as Bench work names it. */
+export type ResultAct =
+  'entered' | 'corrected' | 'retested' | 'corrected a Retest';
+
+/** How the separation-of-duties refusal names each act, before the Test. */
+const resultActWording: Record<ResultAct, string> = {
+  entered: 'entered a Result on',
+  corrected: 'corrected a Result on',
+  retested: 'retested',
+  'corrected a Retest': 'corrected a Retest on',
+};
+
 /** An act that counts as Bench work: the person's own work on a Result, or
  * their Laboratory error check of it (ADR-0005). Opening or concluding an
  * investigation is not Bench work. */
 export type BenchWorkEntry =
   | {
       person: string;
-      act: 'entered' | 'corrected' | 'retested' | 'corrected a Retest';
+      act: ResultAct;
       testId: string;
       resultSequence: number;
     }
@@ -226,6 +240,15 @@ export type SampleResults = {
   approvalRefusal(person: string): Refusal | null;
   /** A Confirmed OOS whose Client notification is not yet recorded. */
   readonly publishBlocker: Refusal | null;
+  /**
+   * The Retest one command recorded, from the audit entries it wrote: the
+   * investigation it follows and the Invalidated result, or undefined when the
+   * command recorded no Retest. A correction of a Retest keeps its link
+   * without writing it, so it is a correction here.
+   */
+  retestRecordedBy(
+    entries: readonly Pick<AuditEntry, 'field' | 'newValue'>[],
+  ): RetestLineage | undefined;
   /** The Sample's lines of the OOS investigations list. */
   readonly oosRows: OosRow[];
   /** Every Result entered, corrected or retested on the Sample, of every
@@ -401,7 +424,14 @@ export function resultsView(sample: Sample): SampleResults {
       return null;
     },
     retestBlocker(worksheet) {
-      const due = this.retestDue;
+      // A Result recorded now is a Retest when one is due, and a correction
+      // of a current Retest is still that Retest.
+      const current = this.current;
+      const due =
+        this.retestDue ??
+        (current?.retestAfter
+          ? lineageOf(sample, current.retestAfter)
+          : undefined);
       if (due?.invalidated.attachmentId !== worksheet.id) return null;
       const id = due.investigation.id;
       return {
@@ -540,6 +570,12 @@ export function resultsView(sample: Sample): SampleResults {
     get oosRows() {
       return oosRows([sample]);
     },
+    retestRecordedBy(entries) {
+      const link = entries.find(
+        (e) => e.field === 'result.retestAfter' && e.newValue !== null,
+      );
+      return link ? lineageOf(sample, String(link.newValue)) : undefined;
+    },
     get benchWork() {
       return sample.tests.flatMap((test) => [
         ...test.results.map((result, i): BenchWorkEntry => {
@@ -547,15 +583,13 @@ export function resultsView(sample: Sample): SampleResults {
           // correction, an invalidated one by Retest. A correction of a
           // Retest keeps its link, so it is still the Retest's work.
           const before = test.results[i - 1];
+          let act: ResultAct = 'corrected';
+          if (!before) act = 'entered';
+          else if (before.status === 'invalidated') act = 'retested';
+          else if (result.retestAfter) act = 'corrected a Retest';
           return {
             person: result.enteredBy,
-            act: !before
-              ? 'entered'
-              : before.status === 'invalidated'
-                ? 'retested'
-                : result.retestAfter
-                  ? 'corrected a Retest'
-                  : 'corrected',
+            act,
             testId: test.id,
             resultSequence: result.sequence,
           };
@@ -620,15 +654,9 @@ export function separationOfDutiesRefusal(
       investigationId: entry.investigationId,
     };
   const label = testLabel(resultsView(sample).test(entry.testId).test);
-  const did =
-    entry.act === 'retested'
-      ? `retested ${label}`
-      : entry.act === 'corrected a Retest'
-        ? `corrected a Retest on ${label}`
-        : `${entry.act} a Result on ${label}`;
   return {
     code: 'separation of duties',
-    reason: `You ${did}, ${then}`,
+    reason: `You ${resultActWording[entry.act]} ${label}, ${then}`,
     investigationId: null,
   };
 }
@@ -674,14 +702,13 @@ export function recordResult(
     throw new WorkflowError(
       'The worksheet attachment was not found. Upload the calculation worksheet again.',
     );
+  // A Retest, and a correction of one, is calculated again, so never on the
+  // Invalidated result's worksheet.
+  const reused = view.retestBlocker(input.worksheet);
+  if (reused) throw new WorkflowError(reused.reason);
   // A Retest follows the investigation that Invalidated the last Result, and
   // needs no reason of its own: that investigation's assignable cause stands.
-  // It is calculated again, so never on the Invalidated result's worksheet.
   const due = previous ? undefined : view.retestDue;
-  if (due) {
-    const reused = view.retestBlocker(input.worksheet);
-    if (reused) throw new WorkflowError(reused.reason);
-  }
   const kind: RecordedKind = previous
     ? 'correction'
     : due

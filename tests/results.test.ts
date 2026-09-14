@@ -10,6 +10,8 @@ import {
   type Test,
 } from '../src/laboratory/contracts.ts';
 import { WorkflowError } from '../src/laboratory/workflow-error.ts';
+import { changeSummary } from '../src/laboratory/amendments.ts';
+import type { AuditEntry } from '../src/laboratory/contracts.ts';
 import {
   concludeInvestigation,
   didBenchWork,
@@ -125,6 +127,7 @@ function record(sample: Sample, fields: Partial<RecordResultInput> = {}) {
   });
   return {
     kind,
+    entries: audit.entries,
     changes: audit.entries.map((e) => [
       `${e.recordType} ${e.recordId}`,
       e.field,
@@ -439,6 +442,9 @@ type Refused = {
   fields: Partial<RecordResultInput>;
   /** The refusal the correction blocker gives, when the rule is one. */
   blocker: Refusal | null;
+  /** The refusal the Retest blocker gives the worksheet, when the rule is
+   * one. */
+  retestBlocker?: Refusal;
   reason: string;
 };
 
@@ -559,6 +565,20 @@ const refused: Refused[] = [
     },
     fields: {},
     blocker: retestCall,
+    retestBlocker: worksheetReused,
+    reason: worksheetReused.reason,
+  },
+  {
+    // A correction of a Retest is still that Retest (R2).
+    name: 'a correction of a Retest on the calculation worksheet of the Invalidated result it follows',
+    arrange: (s) => {
+      record(s, { value: 30 });
+      investigate(s, 'Invalidated');
+      record(s, { worksheet: { id: 'ATT-2' } });
+    },
+    fields: { value: 2.6, reason: 'Re-integrated' },
+    blocker: null,
+    retestBlocker: worksheetReused,
     reason: worksheetReused.reason,
   },
   {
@@ -575,12 +595,19 @@ for (const c of refused)
     const s = sampleOf();
     c.arrange(s);
     if (c.fields.testId === undefined) {
-      const blocker = resultsView(s)
-        .test('NIT-001-v1')
-        .correctionBlocker({
+      const view = resultsView(s).test('NIT-001-v1');
+      assert.deepEqual(
+        view.correctionBlocker({
           hasCertificate: c.fields.hasCertificate ?? false,
-        });
-      assert.deepEqual(blocker, c.blocker);
+        }),
+        c.blocker,
+      );
+      const { worksheet } = input(c.fields);
+      if (worksheet)
+        assert.deepEqual(
+          view.retestBlocker(worksheet),
+          c.retestBlocker ?? null,
+        );
     }
     const before = structuredClone(s);
     const audit = recordingAudit();
@@ -593,7 +620,7 @@ for (const c of refused)
     assert.deepEqual(s, before);
   });
 
-test('the Retest blocker refuses only the worksheet of the Invalidated result the Retest follows', () => {
+test('the Retest blocker refuses only the worksheet of the Invalidated result a Retest, or a correction of it, follows', () => {
   const s = sampleOf();
   const view = resultsView(s).test('NIT-001-v1');
   record(s, { value: 30 });
@@ -603,6 +630,10 @@ test('the Retest blocker refuses only the worksheet of the Invalidated result th
     'no Retest is due on a current Result',
   );
   investigate(s, 'Invalidated');
+  assert.deepEqual(view.retestBlocker({ id: 'ATT-1' }), worksheetReused);
+  assert.equal(view.retestBlocker({ id: 'ATT-2' }), null);
+  // A correction of the Retest is still that Retest.
+  record(s, { worksheet: { id: 'ATT-2' } });
   assert.deepEqual(view.retestBlocker({ id: 'ATT-1' }), worksheetReused);
   assert.equal(view.retestBlocker({ id: 'ATT-2' }), null);
 });
@@ -638,7 +669,11 @@ test('Result history lists every Result oldest first with its investigation', ()
   record(s, { value: 30 });
   const investigation = investigate(s, 'Invalidated');
   record(s, { value: 2.5, worksheet: { id: 'ATT-2' } });
-  record(s, { value: 2.6, reason: 'Re-integrated' });
+  record(s, {
+    value: 2.6,
+    reason: 'Re-integrated',
+    worksheet: { id: 'ATT-2' },
+  });
   const view = resultsView(s);
   assert.deepEqual(
     view.tests.map((t) => t.test.id),
@@ -1532,8 +1567,12 @@ test('the Approval refusal asks separation of duties before the OOS gate', () =>
       'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
     investigationId: null,
   });
-  assert.deepEqual(view.approvalRefusal('manager'), view.approvalBlocker);
-  assert.equal(view.approvalRefusal('manager')?.code, 'investigation open');
+  assert.deepEqual(view.approvalRefusal('manager'), {
+    code: 'investigation open',
+    reason:
+      'OOS investigation OOS26-0001 is open. Approval waits until it is closed.',
+    investigationId: 'OOS26-0001',
+  });
   assert.equal(
     resultsView(staged('complying')).approvalRefusal('manager'),
     null,
@@ -1842,5 +1881,73 @@ test('an investigation whose Result cannot be found is a programming error, not 
   assert.throws(
     () => resultsView(s).investigation(ID),
     (e) => e instanceof Error && !(e instanceof WorkflowError),
+  );
+});
+
+// The Amendment change summary of a Retest, from the entries its commands
+// wrote. Only Result entries after the start belong to the Amendment.
+
+/** An Amendment's audit history, as the trail keeps it: the start, then each
+ * Result recorded, one command each. */
+function amendmentHistory(s: Sample) {
+  const history: AuditEntry[] = [
+    {
+      sequence: 1,
+      recordType: 'Sample',
+      recordId: s.id,
+      sampleId: s.id,
+      field: 'status',
+      oldValue: 'Published',
+      newValue: 'In progress',
+      reason: 'Result reported against the wrong run.',
+      actor: 'manager',
+      at: AT,
+      commandType: 'startAmendment',
+      commandId: 'C1',
+    },
+  ];
+  return {
+    history,
+    enter(fields: Partial<RecordResultInput>) {
+      const commandId = `C${history.length + 1}`;
+      for (const change of record(s, fields).entries)
+        history.push({
+          ...change,
+          sequence: history.length + 1,
+          actor: 'analyst',
+          at: AT,
+          commandType: 'enterResult',
+          commandId,
+        });
+    },
+  };
+}
+
+test('an Amendment change summary gives a Retest the investigation it follows as its reason', () => {
+  const s = sampleOf();
+  record(s, { value: 30 });
+  const amendment = amendmentHistory(s);
+  open(s, 'NIT-001-v1', () => 2);
+  check(s, true, SECOND);
+  conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
+  amendment.enter({ value: 12, worksheet: { id: 'ATT-2' } });
+  assert.equal(
+    changeSummary(s, amendment.history),
+    'Impurity A (NIT-001 v1): Result 30 → 12 ng/day, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.)',
+  );
+});
+
+test("an Amendment change summary never gives a Retest an earlier correction's reason", () => {
+  const s = sampleOf();
+  record(s, { value: 20 });
+  const amendment = amendmentHistory(s);
+  amendment.enter({ value: 30, reason: 'transcription error' });
+  open(s, 'NIT-001-v1', () => 2);
+  check(s, true, SECOND);
+  conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
+  amendment.enter({ value: 25, worksheet: { id: 'ATT-2' } });
+  assert.equal(
+    changeSummary(s, amendment.history),
+    'Impurity A (NIT-001 v1): Result 20 → 25 ng/day, worksheet replaced (reason: "transcription error"; Retest after OOS26-0002, Invalidated: Standard diluted twice.)',
   );
 });
