@@ -91,12 +91,16 @@ export class SignatureStore {
     ) as Row[];
     return rows.map((row) => {
       const command = parseStored<Signature['command']>(row.command);
+      const statement = parseStored<SignedContent>(
+        row.signedContent,
+      )?.reviewStatement;
       return {
         sampleId: row.sampleId,
         signerId: row.signerId,
         printedName: row.printedName,
         signedAt: row.signedAt,
         meaning: row.meaning,
+        ...(typeof statement === 'string' && { reviewStatement: statement }),
         // A command altered past reading is shown by its key alone, with
         // no revision; the signature necessarily fails its check. Every
         // signing command is Submit for approval or Approval.

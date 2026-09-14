@@ -1128,6 +1128,7 @@ body.resizing {
 /* Everything below the test sheet sits on the panel's gutter, like the head. */
 .sample-body > .flash.inline,
 .sample-body > .deviations,
+.sample-body > .approval-audit,
 .sample-body > .signatures,
 .sample-body > .investigations {
   margin: var(--space-3) var(--gutter) 0;
@@ -1773,6 +1774,23 @@ body.resizing {
 .signatures li:last-child {
   border-bottom: 0;
 }
+.sig-review-statement {
+  grid-column: 2 / -1;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.approval-audit > summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 13px;
+}
+.approval-audit[open] > summary {
+  margin-bottom: var(--space-2);
+}
+.approval-audit .audit {
+  overflow-x: auto;
+}
 .sig-meaning,
 .signatures time {
   font-size: 12px;
@@ -1794,6 +1812,9 @@ body.resizing {
   .signatures li {
     grid-template-columns: minmax(0, 1fr);
     gap: 2px;
+  }
+  .sig-review-statement {
+    grid-column: 1;
   }
 }
 

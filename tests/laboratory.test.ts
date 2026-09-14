@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
+import { SignatureStore } from '../src/laboratory/signature-store.ts';
 import { discardOutdatedDemoDatabase, seed } from '../server/seed.ts';
 import { migrate } from '../server/migrations.ts';
 import { renderCertificate } from '../src/laboratory/certificate-renderer.ts';
@@ -76,6 +77,9 @@ const receipt = {
   samples: [finishedProduct],
 };
 const NOW = '2026-09-10T12:00:00.000Z';
+/** What an Approval signature attests was reviewed, as issue #31 words it. */
+const reviewStatement =
+  "The Results, their calculation worksheets, the original instrument data, any OOS investigations and the Sample's audit trail were reviewed.";
 const target = (s: Sample) => ({ sampleId: s.id, revision: s.revision });
 /** The text of the OOS rule blocking Approval or Publishing, or null. */
 const approvalBlockerReason = (s: Sample) =>
@@ -2100,6 +2104,7 @@ test('submission and Approval are Electronic signatures with printed name, time,
     printedName: 'Taylor Brooks',
     signedAt: '2026-09-10T12:00:00.000Z',
     meaning: 'approved by',
+    reviewStatement,
     command: {
       commandId: approve.commandId,
       type: 'approve',
@@ -2535,6 +2540,7 @@ test('each signing stores its Signed content: the Sample as saved and, for Appro
     content: {
       sample: s,
       certificate: { version: 1, sha256: issued.sha256 },
+      reviewStatement,
     },
     valid: true,
   });
@@ -2578,6 +2584,93 @@ test('every signature still verifies after later commands change the Sample, thr
       ?.version,
     2,
   );
+});
+
+test('an Approval signature, first or of an Amendment, attests that the Results, worksheets, instrument data, OOS investigations and audit trail were reviewed', (t) => {
+  const statement = reviewStatement;
+  const { lab, file } = onFile(t);
+  let s = submitted(lab);
+  // The statement is Benchline's, never text sent with the command.
+  s = run(
+    lab,
+    { type: 'approve', ...target(s), reviewStatement: 'Nothing reviewed.' },
+    'manager',
+  );
+  s = run(lab, publish(s), 'coordinator');
+  s = run(lab, startAmendment(s), 'manager');
+  s = run(
+    lab,
+    result(s, 'NIT-001-v1', 3.1, 'Transcription error on NIT-001.'),
+    'analyst',
+  );
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  const signatures = lab.snapshot().signatures;
+  assert.deepEqual(
+    signatures.map((x) => [x.meaning, x.reviewStatement]),
+    [
+      ['performed by', undefined],
+      ['approved by', statement],
+      ['amended by', undefined],
+      ['approved by', statement],
+    ],
+  );
+  const reApproval = lab.signedContent(signatures[3].command.commandId);
+  assert.equal(reApproval?.content?.reviewStatement, statement);
+  assert.equal(
+    lab.certificate(s.id, 2).content.signatures.at(-1)?.meaning,
+    'approved by',
+    'the Certificate still prints the meaning alone',
+  );
+
+  tamper(
+    file,
+    `UPDATE signatures SET signedContent=replace(signedContent, ', any OOS investigations', '') WHERE command LIKE '%"revision":${signatures[1].command.revision}%'`,
+  );
+  // Only signatures recorded before the statement existed may lack it.
+  tamper(
+    file,
+    `UPDATE signatures SET signedContent=json_remove(signedContent, '$.reviewStatement') WHERE command LIKE '%"revision":${signatures[3].command.revision}%'`,
+  );
+  assert.deepEqual(
+    lab.snapshot().signatures.map((x) => [x.meaning, x.valid]),
+    [
+      ['performed by', true],
+      ['approved by', false],
+      ['amended by', true],
+      ['approved by', false],
+    ],
+    'a changed or removed statement invalidates its signature',
+  );
+});
+
+test('an Approval signed before the review statement existed still verifies, with no statement shown', (t) => {
+  const lab = memory(t);
+  const sample = submitted(lab);
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  const store = new SignatureStore(db);
+  // Signed content in its pre-#31 shape: the Sample and Certificate only.
+  store.record(
+    {
+      sampleId: sample.id,
+      signerId: 'manager',
+      printedName: 'Taylor Brooks',
+      signedAt: NOW,
+      meaning: 'approved by',
+      command: {
+        commandId: '00000000-0000-4000-8000-000000000031',
+        type: 'approve',
+        sampleId: sample.id,
+        revision: sample.revision,
+      },
+    },
+    { sample, certificate: { version: 1, sha256: 'a'.repeat(64) } },
+    Uint8Array.from(Buffer.from('00000000000040008000000000000031', 'hex')),
+  );
+  const [signature] = store.list();
+  assert.equal(signature.valid, true);
+  assert.equal('reviewStatement' in signature, false);
 });
 
 test('a signature altered in the database reads as invalid, without hiding it or the rest of the record', (t) => {

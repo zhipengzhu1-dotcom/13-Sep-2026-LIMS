@@ -125,11 +125,11 @@ The person who may act in every lab role — as Coordinator, Analyst (when a Sam
 _Avoid_: Super admin, superuser, root
 
 **Approval**:
-Management's single electronically signed sign-off that a Sample's Results are correct and may be published; there is no separate peer review step. Its signature attests that the Results, their calculation worksheets, the original instrument data and the Sample's audit trail were reviewed, and an Amendment's Approval attests the same for the corrected Results.
+Management's single electronically signed sign-off that a Sample's Results are correct and may be published; there is no separate peer review step. Its signature attests that the Results, their calculation worksheets, the original instrument data, any OOS investigations and the Sample's audit trail were reviewed, and an Amendment's Approval attests the same for the corrected Results.
 _Avoid_: Review, release, sign-off
 
 **Electronic signature**:
-A password-confirmed act that records the signer's name, the date and time, and its meaning (performed by, approved by, amended by).
+A password-confirmed act that records the signer's name, the date and time, and its meaning (performed by, approved by, amended by). An Approval's signature also records, within its Signed content, the review statement of what was reviewed; the Certificate of Analysis prints only the meaning.
 _Avoid_: E-sign, initials
 
 **Signed content**:

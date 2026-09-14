@@ -12,6 +12,7 @@ import {
   methods,
   newCommandId,
   people,
+  approvalReviewStatement,
   signatureMeaning,
   signatureMeanings,
   type Actor,
@@ -538,6 +539,9 @@ export class Laboratory {
                 version: issued.version,
                 sha256: issued.sha256,
               },
+              ...(signing === 'approve' && {
+                reviewStatement: approvalReviewStatement,
+              }),
             },
             context,
             key,

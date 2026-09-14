@@ -7,6 +7,7 @@ import {
 } from '../laboratory/amendments';
 import {
   actsAs,
+  approvalReviewStatement,
   auditsSample,
   currentResult,
   heldStatuses,
@@ -297,6 +298,14 @@ export function SamplePanel({
               busy={busy}
               execute={execute}
             />
+            {canDecide && (
+              // What the Approval signature attests was reviewed sits beside
+              // the Results it approves; nothing forces it open.
+              <details className="approval-audit">
+                <summary>Sample audit trail ({history.length} entries)</summary>
+                <AuditTable entries={history} data={data} />
+              </details>
+            )}
             <Signatures
               signatures={data.signatures.filter((x) => x.sampleId === s.id)}
             />
@@ -534,6 +543,9 @@ export function Signatures({ signatures }: { signatures: Signature[] }) {
               {!x.valid && <InvalidSignatureTag />}
             </span>
             <time dateTime={x.signedAt}>{signatureStamp(x.signedAt)}</time>
+            {x.reviewStatement && (
+              <span className="sig-review-statement">{x.reviewStatement}</span>
+            )}
           </li>
         ))}
       </ul>
@@ -594,7 +606,7 @@ export function SignDialog({
       >
         <p className="sign-statement">
           {approving
-            ? `I give Approval to the Results of Sample ${s.id}.`
+            ? `I give Approval to the ${inAmendment ? 'corrected ' : ''}Results of Sample ${s.id}. ${approvalReviewStatement}`
             : inAmendment
               ? `I corrected the Results of Sample ${s.id} in its Amendment and submit them for approval.`
               : `I performed the Tests on Sample ${s.id} and submit their Results for approval.`}{' '}

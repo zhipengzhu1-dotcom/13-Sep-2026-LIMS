@@ -6,3 +6,4 @@ GMP labs commonly have a second analyst review the work before management approv
 
 - The prototype's separate Reviewer role and "Review queue" are folded into the Manager's Approval.
 - Adding peer review later means inserting a new signed step before Approval, not changing what Approval means.
+- With no second reviewer, the Approval signature carries the second-person review of §211.194(a)(8): it records that the Results, their calculation worksheets, the original instrument data, any OOS investigations and the Sample's audit trail were reviewed (#31), and the Results tab shows the Sample's audit trail beside the Results for that review.

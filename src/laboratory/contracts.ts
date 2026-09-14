@@ -616,6 +616,11 @@ export function signatureMeaning(
     : signatureMeanings[type];
 }
 
+/** What every Approval signature, including an Amendment's, attests was
+ * reviewed (§211.194(a)(8)). Its meaning stays "approved by". */
+export const approvalReviewStatement =
+  "The Results, their calculation worksheets, the original instrument data, any OOS investigations and the Sample's audit trail were reviewed.";
+
 /** An Electronic signature as recorded. It never holds the password. */
 export type Signature = {
   sampleId: string;
@@ -625,6 +630,9 @@ export type Signature = {
   /** ISO 8601 with offset; the command's own timestamp. */
   signedAt: string;
   meaning: SignatureMeaning;
+  /** What the signer attests was reviewed, as held in the Signed content:
+   * on Approvals only, and absent on those signed before #31. */
+  reviewStatement?: string;
   /** The command that was signed, exactly as applied, without the password. */
   command: {
     commandId: string;
@@ -639,10 +647,14 @@ export type Signature = {
 
 /** Exactly what an Electronic signature attests to, kept as it stood at the
  * moment of signing: the Sample as saved by the signing command (attachments
- * by ID) and, for Approval, the Certificate of Analysis version it issued. */
+ * by ID) and, for Approval, the Certificate of Analysis version it issued and
+ * the review statement it attests to. */
 export type SignedContent = {
   sample: Sample;
   certificate: { version: number; sha256: string } | null;
+  /** Absent on submissions, and on Approvals signed before #31, whose
+   * stored content and hash stay as they were. */
+  reviewStatement?: string;
 };
 
 /** Commands refused on a Sample that has an invalid Electronic signature;
