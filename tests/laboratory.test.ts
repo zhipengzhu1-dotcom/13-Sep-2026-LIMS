@@ -14,6 +14,7 @@ import type { CertificateResult } from '../src/laboratory/certificate.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
+  actsAs,
   auditEntriesWithin,
   currentResult,
   didBenchWork,
@@ -27,7 +28,9 @@ import {
   qualify,
   newCommandId,
   resultsView,
+  samplesWithInvalidSignatures,
   type AuditEntry,
+  type Command,
   type Person,
   signatureMeanings,
   type Sample,
@@ -5198,4 +5201,105 @@ test('wrong signature passwords during an Amendment count toward lockout like an
   );
   assert.equal(own.find('analyst'), null);
   assert.equal(lab.snapshot().samples[0].status, 'Amendment in progress');
+});
+
+test("the Quality lead is refused every command, whatever the Sample's state, and nothing is saved or signed", (t) => {
+  const lab = memory(t);
+  const received = run(lab, receipt, 'coordinator');
+  const awaiting = submitted(lab);
+  const published = run(
+    lab,
+    publish(throughApproval(lab, run(lab, receipt, 'coordinator'))),
+    'coordinator',
+  );
+  // One command of each type, keyed by type so a new command type cannot be
+  // left out.
+  const commands: Record<Command['type'], (s: Sample) => object> = {
+    receiveSubmission: () => receipt,
+    assign: (s) => ({ type: 'assign', ...target(s), assignee: 'analyst' }),
+    enterResult: (s) => result(s, 'NIT-001-v1', 2.5),
+    submitForApproval: (s) => ({ type: 'submitForApproval', ...target(s) }),
+    approve: (s) => ({ type: 'approve', ...target(s) }),
+    return: (s) => ({ type: 'return', ...target(s), comment: 'Check it.' }),
+    openOosInvestigation: (s) => openOos(s),
+    recordLabErrorCheck: (s) => labErrorCheck(s, 'OOS-26-0001'),
+    concludeOosInvestigation: (s) => conclude(s, 'OOS-26-0001', 'Confirmed'),
+    recordReceiptDeviation: (s) => ({
+      type: 'recordReceiptDeviation',
+      ...target(s),
+      ...deviation,
+    }),
+    recordClientInstruction: (s) => instruction(s, 'proceed'),
+    recordClientOosNotification: (s) => notifyClient(s, 'OOS-26-0001'),
+    publish: (s) => publish(s),
+    startAmendment: (s) => startAmendment(s),
+    appendAcceptableIntake: () => ({
+      type: 'appendAcceptableIntake',
+      analyteId: 'impurity-a',
+      value: 18,
+      potencyCategory: 'not categorised',
+      limitType: 'compound-specific',
+      sourceTitle: 'CDER Nitrosamine Impurity Acceptable Intake Limits',
+      sourceUrl: 'https://www.fda.gov/example-revision',
+      sourceRevisionDate: '2026-09-01',
+      effectiveFrom: '2026-09-01',
+    }),
+  };
+  const before = lab.snapshot();
+  for (const s of [received, awaiting, published])
+    for (const [type, command] of Object.entries(commands))
+      assert.throws(
+        () => run(lab, command(s), 'quality-lead'),
+        (error: Error) =>
+          error.message ===
+          'The Quality lead reviews the laboratory record and runs no command.',
+        `${type} on a Sample ${s.status}`,
+      );
+  assert.throws(
+    () =>
+      lab.storeAttachment(
+        {
+          filename: 'worksheet.csv',
+          contentType: 'text/csv',
+          content: Buffer.from('reading,result\n1.25,2.5\n'),
+        },
+        'quality-lead',
+      ),
+    /The Quality lead reviews the laboratory record and runs no command/,
+  );
+  assert.deepEqual(lab.snapshot(), before);
+});
+
+test('an Admin never acts as the Quality lead, and the Quality lead acts in no other role', () => {
+  const qualityLead = people.find((p) => p.role === 'quality lead');
+  const admin = people.find((p) => p.role === 'admin');
+  assert.ok(qualityLead && admin);
+  assert.equal(actsAs(admin, 'quality lead'), false);
+  assert.equal(actsAs(qualityLead, 'quality lead'), true);
+  for (const role of ['coordinator', 'analyst', 'manager', 'admin'] as const)
+    assert.equal(actsAs(qualityLead, role), false, role);
+});
+
+test('every Sample with an invalid signature is listed lab-wide, whatever its state, and a Sample whose signatures all verify is not', (t) => {
+  const { lab, file } = onFile(t);
+  const unsigned = run(lab, receipt, 'coordinator');
+  const verified = submitted(lab);
+  const altered = submitted(lab);
+  const published = run(
+    lab,
+    publish(throughApproval(lab, run(lab, receipt, 'coordinator'))),
+    'coordinator',
+  );
+  tamper(
+    file,
+    `UPDATE signatures SET signedContent=replace(signedContent, '"value":2.5', '"value":1.5') WHERE sampleId IN (?, ?)`,
+    altered.id,
+    published.id,
+  );
+  const { samples, signatures } = lab.snapshot();
+  const listed = samplesWithInvalidSignatures(samples, signatures).map(
+    (s) => s.id,
+  );
+  assert.deepEqual([...listed].sort(), [altered.id, published.id].sort());
+  assert.ok(!listed.includes(verified.id) && !listed.includes(unsigned.id));
 });

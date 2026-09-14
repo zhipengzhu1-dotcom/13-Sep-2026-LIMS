@@ -107,7 +107,7 @@ test('production refuses a database that holds the demo accounts, whose password
     {
       outcome: 'refused',
       reason:
-        'The database holds the demo accounts coordinator, analyst, analyst-2, manager, admin, whose passwords are published, so it is a demo database and cannot be used in production. Nothing was changed.',
+        'The database holds the demo accounts coordinator, analyst, analyst-2, manager, admin, quality-lead, whose passwords are published, so it is a demo database and cannot be used in production. Nothing was changed.',
     },
   );
   assert.equal(fileHash(database), before);
@@ -157,7 +157,7 @@ test('demo seeds its records and demo accounts at the database path it was given
   assert.ok(lab.snapshot().submissions.length > 0);
   assert.deepEqual(
     accounts.people().map((p) => p.id),
-    ['coordinator', 'analyst', 'analyst-2', 'manager', 'admin'],
+    ['coordinator', 'analyst', 'analyst-2', 'manager', 'admin', 'quality-lead'],
   );
 });
 

@@ -1,5 +1,10 @@
 import React, { useEffect, useRef } from 'react';
-import { publishQueue, type Sample } from '../laboratory/contracts';
+import {
+  publishQueue,
+  samplesWithInvalidSignatures,
+  type Sample,
+  type Signature,
+} from '../laboratory/contracts';
 import { closed, type InstanceMode, type View } from './shared';
 
 /** Each role's own queue is a permission, not a preference: a Coordinator
@@ -8,12 +13,16 @@ import { closed, type InstanceMode, type View } from './shared';
  * only ever acts on Samples awaiting approval. No one can act outside their
  * queue (the server enforces this — see `requireRole` and
  * `requireAssignedAnalyst` in handlers.ts), so there is no reason to show
- * them a queue they cannot use. An Admin acts in every role (ADR-0004), so
- * sees every view, and the Accounts screen in the demo only (ADR-0011). */
+ * them a queue they cannot use. An Admin acts in every lab role (ADR-0004), so
+ * sees every view but the Quality lead's, and the Accounts screen in the demo
+ * only (ADR-0011). The Quality lead acts on nothing: they review the whole
+ * register, the Samples with an invalid signature and the audit trail (#67). */
 export function viewsForRole(
   role: string | undefined,
   mode: InstanceMode,
 ): View[] {
+  if (role === 'quality lead')
+    return ['Samples', 'Invalid signatures', 'Methods', 'Audit trail'];
   if (role === 'admin')
     return [
       'Receiving',
@@ -47,7 +56,14 @@ export function defaultViewForRole(role: string | undefined): View {
 /** The rows a queue view starts from, before any filter or search. Counts in
  * the filter bar are taken from this set, so a role never sees totals for
  * samples outside its own queue. */
-export function baseSet(view: View, samples: Sample[], actor: string) {
+export function baseSet(
+  view: View,
+  samples: Sample[],
+  actor: string,
+  signatures: readonly Signature[],
+) {
+  if (view === 'Invalid signatures')
+    return samplesWithInvalidSignatures(samples, signatures);
   if (view === 'Receiving')
     return samples.filter((s) => s.status === 'Received');
   if (view === 'Holds') return samples.filter((s) => s.status === 'On hold');

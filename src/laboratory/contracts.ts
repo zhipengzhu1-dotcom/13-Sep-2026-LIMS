@@ -24,16 +24,27 @@ import type { OosInvestigation } from './results.ts';
 
 /** Lab users as the workspace shows them. Sign-in accounts (with password
  * hashes, server side only) are seeded from this list in src/accounts. */
-export const roles = ['coordinator', 'analyst', 'manager', 'admin'] as const;
+export const roles = [
+  'coordinator',
+  'analyst',
+  'manager',
+  'admin',
+  'quality lead',
+] as const;
 export type Role = (typeof roles)[number];
 /**
- * The one place a role grants permission. An Admin acts in every role
+ * The one place a role grants permission. An Admin acts in every lab role
  * (ADR-0004), still as themselves: their own account on the audit trail,
  * their own password and name on a signature, and bound by separation of
- * duties like anyone else. The core and the workspace both ask this.
+ * duties like anyone else. An Admin never acts as the Quality lead, whose
+ * review covers the Admin's own work (#67). The core and the workspace both
+ * ask this.
  */
 export function actsAs(person: { role: string } | undefined, role: Role) {
-  return person?.role === role || person?.role === 'admin';
+  return (
+    person?.role === role ||
+    (person?.role === 'admin' && role !== 'quality lead')
+  );
 }
 /** A lab user as the core and the workspace know them. */
 export type Person = {
@@ -50,6 +61,12 @@ export const people = [
   { id: 'analyst-2', name: 'Sam Rivera', role: 'analyst', active: true },
   { id: 'manager', name: 'Taylor Brooks', role: 'manager', active: true },
   { id: 'admin', name: 'Jordan Park', role: 'admin', active: true },
+  {
+    id: 'quality-lead',
+    name: 'Casey Morgan',
+    role: 'quality lead',
+    active: true,
+  },
 ] as const satisfies readonly Person[];
 export type Actor = Person;
 
@@ -741,6 +758,19 @@ export function invalidSignatureRefusal(
   return signatures.some((x) => x.sampleId === sampleId && !x.valid)
     ? `An Electronic signature on Sample ${sampleId} is invalid. Contact the Quality lead.`
     : null;
+}
+
+/** Every Sample with an invalid Electronic signature, in whatever state, so an
+ * altered signature reaches the Quality lead without waiting for a refusal to
+ * be reported (#67, ADR-0008). */
+export function samplesWithInvalidSignatures<S extends Pick<Sample, 'id'>>(
+  samples: readonly S[],
+  signatures: readonly Signature[],
+): S[] {
+  const invalid = new Set(
+    signatures.filter((x) => !x.valid).map((x) => x.sampleId),
+  );
+  return samples.filter((s) => invalid.has(s.id));
 }
 
 export type Snapshot = {

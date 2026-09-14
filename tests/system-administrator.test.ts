@@ -766,3 +766,32 @@ test('a One-time password unused for 72 hours no longer signs in, and the System
     },
   );
 });
+
+test('the System administrator issues a Quality lead account like any other, and the Quality lead then runs no command', async (t) => {
+  const database = join(folder(t), 'production.sqlite');
+  const output = await command(
+    database,
+    'issue-account',
+    'casey',
+    '--name',
+    'Casey Morgan',
+    '--role',
+    'quality lead',
+    '--change-record',
+    'CR-2026-021',
+  );
+  assert.ok(oneTimePasswordIn(output).length >= 12);
+
+  const { accounts, lab } = open(t, database);
+  assert.deepEqual(accounts.people(), [
+    { id: 'casey', name: 'Casey Morgan', role: 'quality lead', active: true },
+  ]);
+  assert.throws(
+    () =>
+      lab.execute(
+        { type: 'appendAcceptableIntake', commandId: crypto.randomUUID() },
+        'casey',
+      ),
+    /The Quality lead reviews the laboratory record and runs no command/,
+  );
+});

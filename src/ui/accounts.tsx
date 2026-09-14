@@ -12,6 +12,7 @@ const ROLE_LABELS: Record<Role, string> = {
   analyst: 'Analyst',
   manager: 'Manager',
   admin: 'Admin',
+  'quality lead': 'Quality lead',
 };
 
 /** Sends one account change; resolves to every account, or rejects with the

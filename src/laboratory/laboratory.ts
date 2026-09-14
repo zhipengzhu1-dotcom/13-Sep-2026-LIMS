@@ -36,7 +36,11 @@ import {
   AttachmentStore,
   type Upload,
 } from './attachments.ts';
-import { WorkflowError, requireRole } from './workflow-error.ts';
+import {
+  WorkflowError,
+  refuseQualityLead,
+  requireRole,
+} from './workflow-error.ts';
 import { AcceptableIntakeStore } from './reference-data.ts';
 import { CertificateStore } from './certificate-store.ts';
 import { SignatureStore } from './signature-store.ts';
@@ -206,6 +210,7 @@ export class Laboratory {
     if (!actor) throw new WorkflowError('Unknown user.', 403);
     if (!actor.active)
       throw new WorkflowError('This account is deactivated.', 403);
+    refuseQualityLead(actor);
     requireRole(actor, 'analyst');
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -468,6 +473,9 @@ export class Laboratory {
     if (!actor) throw new WorkflowError('Unknown user.', 403);
     if (!actor.active)
       throw new WorkflowError('This account is deactivated.', 403);
+    // Before the command is read or a password verified, so the Quality lead
+    // neither changes nor signs anything, in any state of the record.
+    refuseQualityLead(actor);
     const parsed = commandSchema.safeParse(input);
     if (!parsed.success)
       throw new WorkflowError(

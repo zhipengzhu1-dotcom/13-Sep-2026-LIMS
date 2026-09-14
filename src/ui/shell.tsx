@@ -54,6 +54,7 @@ import {
   Due,
   Icon,
   initials,
+  InvalidSignatureTag,
   Modal,
   QUEUES,
   stamp,
@@ -273,7 +274,7 @@ export function App() {
   const roleViews = viewsForRole(person?.role, mode);
   const isQueue = QUEUES.includes(view);
   const base = useMemo(
-    () => (data ? baseSet(view, data.samples, actor) : []),
+    () => (data ? baseSet(view, data.samples, actor, data.signatures) : []),
     [data, view, actor],
   );
   const visible = useMemo(() => {
@@ -311,14 +312,16 @@ export function App() {
             (r) => r.investigation?.status !== 'Closed',
           ).length
         : v !== 'Samples' && QUEUES.includes(v)
-          ? baseSet(v, data.samples, actor).length
+          ? baseSet(v, data.samples, actor, data.signatures).length
           : 0;
 
   function navigate(next: View) {
     setView(next);
     // The Publish queue is worked in Due date order.
     if (next === 'Publish queue') setSort({ key: 'due', asc: true });
-    setFilter('Active');
+    // An invalid signature matters on a Published Sample as much as on one
+    // still in work, so that list starts from every state.
+    setFilter(next === 'Invalid signatures' ? 'All' : 'Active');
     setRefine(NO_REFINE);
     setSearch('');
     setSelected(null);
@@ -719,6 +722,11 @@ export function App() {
                                 OOS
                               </span>
                             )}
+                            {/* Every Sample in the Quality lead's list has one; the Sample
+                                panel shows which signature to everyone (ADR-0008). */}
+                            {view === 'Invalid signatures' && (
+                              <InvalidSignatureTag />
+                            )}
                           </td>
                           <td>
                             <Status sample={s} />
@@ -775,17 +783,19 @@ export function App() {
                   <div className="blank">
                     {base.length
                       ? 'No samples match these filters. Choose All, clear the filters or clear the search.'
-                      : view === 'My work'
-                        ? 'Nothing assigned to you needs work right now.'
-                        : view === 'Approval queue'
-                          ? 'No Samples are awaiting approval.'
-                          : view === 'Receiving'
-                            ? 'Every received Sample is assigned. Receive a Submission to add more.'
-                            : view === 'Holds'
-                              ? 'No Samples are on hold for a Receipt deviation.'
-                              : view === 'Publish queue'
-                                ? 'No approved Samples are waiting to be Published.'
-                                : 'No Samples yet. Receive a Submission to start.'}
+                      : view === 'Invalid signatures'
+                        ? 'Every Electronic signature verifies against its Signed content.'
+                        : view === 'My work'
+                          ? 'Nothing assigned to you needs work right now.'
+                          : view === 'Approval queue'
+                            ? 'No Samples are awaiting approval.'
+                            : view === 'Receiving'
+                              ? 'Every received Sample is assigned. Receive a Submission to add more.'
+                              : view === 'Holds'
+                                ? 'No Samples are on hold for a Receipt deviation.'
+                                : view === 'Publish queue'
+                                  ? 'No approved Samples are waiting to be Published.'
+                                  : 'No Samples yet. Receive a Submission to start.'}
                   </div>
                 )}
               </div>
@@ -1290,7 +1300,8 @@ export function SignIn({
           <p className="sign-in-note">
             Prototype demo accounts (password is the username followed by{' '}
             <code>-demo</code>): <code>coordinator</code>, <code>analyst</code>,{' '}
-            <code>analyst-2</code>, <code>manager</code>, <code>admin</code>.
+            <code>analyst-2</code>, <code>manager</code>, <code>admin</code>,{' '}
+            <code>quality-lead</code>.
           </p>
         )}
       </form>

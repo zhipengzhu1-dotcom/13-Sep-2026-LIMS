@@ -12,3 +12,5 @@ This removes the conflict from the Admin role. It remains for the System adminis
 - the System administrator deploys to production only after the Quality lead approves the release record.
 
 We rejected making the Admin a maintenance-only role with no lab work, because the lab still needs a backup who can stand in for any role.
+
+"Every role" means every lab role: Coordinator, Analyst and Manager. The Admin never stands in for the Quality lead (#67), a read-only role that sees every Sample, the lab-wide audit trail and every Sample with an invalid Electronic signature, and runs no command. The Quality lead's periodic review covers the Admin's own bench work and Access events, so the Admin standing in would review their own work; the SOP names a deputy, who holds a Quality lead account of their own, instead.

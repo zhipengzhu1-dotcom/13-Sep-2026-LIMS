@@ -3,11 +3,13 @@ Benchline LIMS - roles, permissions and duties
 
 Source of truth: every rule below is enforced in the Laboratory core
 (src/laboratory/handlers.ts), not just hidden in the UI. Role checks go
-through requireRole / actsAs; the Admin passes every role check.
+through requireRole / actsAs; the Admin passes every role check except the
+Quality lead's, and the Quality lead is refused every command.
 
-Roles: Coordinator, Analyst, Manager, Admin.
+Roles: Coordinator, Analyst, Manager, Admin, Quality lead.
 Background decisions: docs/adr/0001 (Part 11 / ISO 17025), 0003 (single
-Manager Approval, no peer review), 0004 (Admin within separation of duties).
+Manager Approval, no peer review), 0004 (Admin within separation of duties),
+0007 (the Admin never stands in for the Quality lead).
 
 
 EVERY SIGNED-IN USER
@@ -99,11 +101,13 @@ ADMIN
 -----
 Duty: covers any job in a small lab, so one person can stand in for any role.
 
-Views: every view (Receiving, Holds, Samples, Publish queue, My work,
-Approval queue, OOS investigations, Methods, Audit trail).
+Views: every view but the Quality lead's Invalid signatures (Receiving, Holds,
+Samples, Publish queue, My work, Approval queue, OOS investigations, Methods,
+Audit trail).
 
 Can: everything the Coordinator, Analyst and Manager can do, including being
-assigned Samples and entering Results on them.
+assigned Samples and entering Results on them. Never acts as the Quality
+lead, whose review covers the Admin's own work.
 
 Still bound by:
 - Own password for every Electronic signature, recorded under the Admin's own
@@ -116,6 +120,26 @@ Still bound by:
   Locked account. Every change is an Access event in the audit trail; no
   password is shown or recorded. Usernames are never reused, and Benchline
   always keeps at least one active Admin.
+
+
+QUALITY LEAD
+------------
+Duty: reviews the laboratory record for the quality system: the lab-wide
+audit trail (Acceptable intakes, attachments, Access events) and every
+Sample with an invalid Electronic signature, which is investigated as
+nonconforming work under the SOP.
+
+Views: Samples, Invalid signatures, Methods, Audit trail.
+
+Can: see every Sample, its Results, history, signatures and Certificates;
+the lab-wide audit trail; and the Invalid signatures list, every Sample with
+a signature that no longer matches its Signed content, each marked
+"Signature invalid", in any state.
+
+Cannot: run any command, in any state of the record: no receipt, assignment,
+Result, worksheet upload, Electronic signature, OOS work, publication,
+Amendment or Acceptable intake entry. The Admin never stands in for the
+Quality lead; the SOP names a deputy with a Quality lead account instead.
 
 
 LOCKED STATES (apply to everyone, including the Admin)

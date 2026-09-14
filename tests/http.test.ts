@@ -670,7 +670,7 @@ test('only the Admin manages accounts over HTTP, and a deactivated user is signe
   const listing = await (await accountsOf(admin)).text();
   assert.deepEqual(
     JSON.parse(listing).accounts.map((a: { id: string }) => a.id),
-    ['coordinator', 'analyst', 'analyst-2', 'manager', 'admin'],
+    ['coordinator', 'analyst', 'analyst-2', 'manager', 'admin', 'quality-lead'],
   );
   assert.ok(!listing.includes('scrypt'), 'no password hash is listed');
 
@@ -1210,4 +1210,46 @@ test('an Admin signs in and acts in every role over HTTP, as themselves and with
   assert.ok(
     workspace.audit.every((e: { actor: string }) => e.actor === 'admin'),
   );
+});
+
+test('a Quality lead signs in and reads every Sample and the lab-wide audit trail, and every write is refused', async (t) => {
+  const { url, post, signIn, upload } = await serve(t);
+  const coordinator = await signIn('coordinator', 'coordinator-demo');
+  assert.equal(
+    (await post('/api/commands', receipt(), coordinator)).status,
+    200,
+  );
+  const qualityLead = await signIn('quality-lead', 'quality-lead-demo');
+
+  const workspace = await fetch(`${url}/api/workspace`, {
+    headers: qualityLead,
+  });
+  assert.equal(workspace.status, 200);
+  const snapshot = await workspace.json();
+  assert.equal(snapshot.samples.length, 1);
+  assert.ok(
+    snapshot.audit.some(
+      (e: { commandType: string; recordId: string }) =>
+        e.commandType === 'signIn' && e.recordId === 'quality-lead',
+    ),
+    'the lab-wide audit trail, Access events included',
+  );
+
+  const refusal = {
+    error:
+      'The Quality lead reviews the laboratory record and runs no command.',
+  };
+  const received = await post('/api/commands', receipt(), qualityLead);
+  assert.equal(received.status, 403);
+  assert.deepEqual(await received.json(), refusal);
+  const uploaded = await upload(
+    'worksheet.csv',
+    'text/csv',
+    Buffer.from('reading,result\n1.25,2.5\n'),
+    qualityLead,
+  );
+  assert.equal(uploaded.status, 403);
+  assert.deepEqual(await uploaded.json(), refusal);
+  const accounts = await fetch(`${url}/api/accounts`, { headers: qualityLead });
+  assert.equal(accounts.status, 403);
 });

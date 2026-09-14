@@ -22,7 +22,8 @@ export type View =
   | 'OOS investigations'
   | 'Methods'
   | 'Audit trail'
-  | 'Accounts';
+  | 'Accounts'
+  | 'Invalid signatures';
 
 export const QUEUES: View[] = [
   'Receiving',
@@ -31,6 +32,7 @@ export const QUEUES: View[] = [
   'Samples',
   'My work',
   'Approval queue',
+  'Invalid signatures',
 ];
 
 /** A command as a screen writes it. The key is minted by `execute`, not by the
@@ -148,6 +150,12 @@ export function Icon({ name }: { name: string }) {
       <>
         <path d="M3 12a9 9 0 1 0 3-7L3 8m0-5v5h5" />
         <path d="M12 7v5l3 2" />
+      </>
+    ),
+    'Invalid signatures': (
+      <>
+        <path d="M4 17c2-1 3-5 5-5s1 4 3 4 2-3 3-3 1 2 2 2" />
+        <path d="M4 21h16M19 3l-4 4m0-4 4 4" />
       </>
     ),
     Accounts: (
