@@ -155,9 +155,14 @@ const demoLockoutNotice: AccountsOptions['lockoutNotice'] = {
  * Opens the instance's database as its mode requires. Demo discards a
  * database from before versioned migrations and seeds demo records and demo
  * accounts. Production never discards, seeds or adds an account, and it
- * emails lockout notices through the lab's mail server.
+ * emails lockout notices through the lab's mail server. Only in demo do the
+ * demo accounts' passwords never expire. `clock` is the server time the
+ * accounts age passwords by.
  */
-export function openInstance(settings: Settings): InstanceOutcome {
+export function openInstance(
+  settings: Settings,
+  clock?: () => string,
+): InstanceOutcome {
   const { database } = settings;
   mkdirSync(dirname(database), { recursive: true });
   // Both run before either store opens the file: a discarded demo file takes
@@ -176,6 +181,9 @@ export function openInstance(settings: Settings): InstanceOutcome {
   if (migration.outcome === 'refused')
     return { outcome: 'refused', reason: migration.reason };
   const accounts = new Accounts(database, {
+    clock,
+    agingExempt:
+      settings.mode === 'demo' ? demoAccounts.map((account) => account.id) : [],
     lockoutNotice:
       settings.mode === 'demo'
         ? demoLockoutNotice

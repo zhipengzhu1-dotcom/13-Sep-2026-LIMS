@@ -101,6 +101,17 @@ export const migrations: readonly Migration[] = [
         );
     },
   },
+  {
+    version: 24,
+    change: 'Accounts record when their password was set',
+    // A password set before has no time on record, so it counts as expired
+    // and its user sets a new one at the next sign-in. Added only when
+    // absent, as version 23 is.
+    apply: (db) => {
+      if (!columnNames(db, 'users').includes('passwordSetAt'))
+        db.exec('ALTER TABLE users ADD COLUMN passwordSetAt TEXT');
+    },
+  },
 ];
 
 function latestVersion(pending: readonly Migration[]) {

@@ -42,13 +42,15 @@ const receipt = () => ({
 /** A real server on an ephemeral port over an in-memory core, with a clock
  * the test can move to exercise session inactivity. */
 async function serve(t: TestContext, mode: Mode = 'demo') {
-  const accounts = new Accounts(':memory:');
+  const clock = { now: Date.parse('2026-09-13T09:00:00Z') };
+  const accounts = new Accounts(':memory:', {
+    clock: () => new Date(clock.now).toISOString(),
+  });
   accounts.seed(demoAccounts);
   const lab = new Laboratory(':memory:', {
     credentials: accounts,
     people: () => accounts.people(),
   });
-  const clock = { now: Date.parse('2026-09-13T09:00:00Z') };
   const server = createServer(
     api(lab, { accounts, sessions: new Sessions(() => clock.now), mode }),
   );
@@ -166,6 +168,129 @@ test('a One-time password starts no session; setting a new password signs the us
     headers: { Cookie: cookie.split(';')[0] },
   });
   assert.equal((await session.json()).user.id, 'robin');
+});
+
+test('an expired password starts no session and only sets a new one, and an expired One-time password is refused', async (t) => {
+  const { lab, accounts, url, clock, post } = await serve(t);
+  const oneTimePassword = accounts.issueAccount(
+    { username: 'robin', name: 'Robin Hale', role: 'analyst' },
+    'System administrator (lab-server-user)',
+    'Change record CR-2026-014',
+    lab,
+  );
+  clock.now += 90 * 24 * 3_600_000;
+
+  const signIn = await post('/api/sign-in', {
+    username: 'manager',
+    password: 'manager-demo',
+  });
+  assert.equal(signIn.status, 403);
+  assert.equal(signIn.headers.get('set-cookie'), null);
+  assert.deepEqual(await signIn.json(), {
+    error: 'Your password has expired. Set a new password to continue.',
+    code: 'passwordExpired',
+  });
+  const set = await post('/api/password', {
+    username: 'manager',
+    password: 'manager-demo',
+    newPassword: 'taylor-new-password',
+  });
+  assert.equal(set.status, 200);
+  const session = await fetch(url + '/api/session', {
+    headers: { Cookie: set.headers.get('set-cookie')!.split(';')[0] },
+  });
+  assert.equal((await session.json()).user.id, 'manager');
+
+  const stale = await post('/api/sign-in', {
+    username: 'robin',
+    password: oneTimePassword,
+  });
+  assert.equal(stale.status, 403);
+  assert.deepEqual(await stale.json(), {
+    error:
+      'This One-time password has expired. Ask the System administrator for a new one.',
+    code: 'oneTimePasswordExpired',
+  });
+});
+
+test('a signed-in user changes their own password with the current one, which ends their other sessions but not this one', async (t) => {
+  const { url, post, signIn } = await serve(t);
+  const here = await signIn('analyst', 'analyst-demo');
+  const elsewhere = await signIn('analyst', 'analyst-demo');
+  const manager = await signIn('manager', 'manager-demo');
+  const status = async (headers: Record<string, string>) =>
+    (await fetch(url + '/api/session', { headers })).status;
+  const change = (body: object, headers: Record<string, string> = here) =>
+    post('/api/own-password', body, headers);
+
+  assert.equal(
+    (
+      await change(
+        { password: 'analyst-demo', newPassword: 'alex-chosen-password' },
+        {},
+      )
+    ).status,
+    401,
+  );
+  const wrong = await change({
+    password: 'not-mine',
+    newPassword: 'alex-chosen-password',
+  });
+  assert.equal(wrong.status, 403);
+  assert.deepEqual(await wrong.json(), {
+    error: 'The current password is incorrect. Nothing was changed.',
+  });
+  const short = await change({ password: 'analyst-demo', newPassword: 'x' });
+  assert.equal(short.status, 400);
+  assert.deepEqual(await short.json(), {
+    error: 'A password needs at least 12 characters.',
+  });
+  assert.equal(await status(elsewhere), 200);
+
+  // A username in the request names nobody: only the signed-in user changes.
+  const changed = await change({
+    username: 'manager',
+    password: 'analyst-demo',
+    newPassword: 'alex-chosen-password',
+  });
+  assert.equal(changed.status, 200);
+  assert.deepEqual(await changed.json(), { changed: true });
+  assert.equal(await status(here), 200);
+  assert.equal(await status(elsewhere), 401);
+  assert.equal(await status(manager), 200);
+  assert.equal(
+    (
+      await post('/api/sign-in', {
+        username: 'manager',
+        password: 'manager-demo',
+      })
+    ).status,
+    200,
+  );
+  await signIn('analyst', 'alex-chosen-password');
+
+  // Guessing the current password from a live session locks the account.
+  for (let i = 1; i < 5; i++)
+    assert.equal(
+      (
+        await change({
+          password: `guess-${i}`,
+          newPassword: 'another-password',
+        })
+      ).status,
+      403,
+    );
+  const locked = await change({
+    password: 'guess-5',
+    newPassword: 'another-password',
+  });
+  assert.equal(locked.status, 401);
+  assert.deepEqual(await locked.json(), {
+    error: 'This account is locked. Contact the System administrator.',
+    code: 'accountLocked',
+  });
+  assert.match(locked.headers.get('set-cookie')!, /Max-Age=0/);
+  assert.equal(await status(here), 401);
 });
 
 test('wrong credentials are rejected with a clear message', async (t) => {

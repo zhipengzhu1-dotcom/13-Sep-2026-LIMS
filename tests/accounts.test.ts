@@ -1,7 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
-import { Accounts } from '../src/accounts/accounts.ts';
+import { Accounts, type AccountsOptions } from '../src/accounts/accounts.ts';
 import { unlockFromServer } from '../server/unlock.ts';
 import { migrate } from '../server/migrations.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -12,13 +12,18 @@ import { newCommandId, type AuditEntry } from '../src/laboratory/contracts.ts';
 
 const NOW = '2026-09-14T09:00:00.000Z';
 
-/** Fresh demo accounts, and a laboratory that records their Access events
- * and takes its users from them. */
-function lab(t: TestContext) {
-  const accounts = new Accounts(':memory:');
+/** Fresh demo accounts, their passwords set at NOW, and a laboratory that
+ * records their Access events and takes its users from them, on a server
+ * clock the test can move. */
+function lab(t: TestContext, options: AccountsOptions = {}) {
+  const clock = { now: NOW };
+  const accounts = new Accounts(':memory:', {
+    ...options,
+    clock: () => clock.now,
+  });
   accounts.seed(demoAccounts);
   const laboratory = new Laboratory(':memory:', {
-    clock: () => NOW,
+    clock: () => clock.now,
     credentials: accounts,
     people: () => accounts.people(),
   });
@@ -26,8 +31,233 @@ function lab(t: TestContext) {
     laboratory.close();
     accounts.close();
   });
-  return { accounts, lab: laboratory };
+  return { accounts, lab: laboratory, clock };
 }
+
+/** Access events oldest first, as act, account, actor, field, new value and
+ * reason. */
+const accessReasons = (lab: Laboratory) =>
+  lab
+    .auditTrail()
+    .filter((e: AuditEntry) => e.recordType === 'Account')
+    .reverse()
+    .map((e) => [
+      e.commandType,
+      e.recordId,
+      e.actor,
+      e.field,
+      e.newValue,
+      e.reason,
+    ]);
+
+test('a password is good for 90 days; after that sign-in forces a change, and the account is not locked', async (t) => {
+  const { accounts, lab: laboratory, clock } = lab(t);
+  clock.now = '2026-12-13T08:59:59.000Z';
+  assert.equal(
+    (await accounts.signIn('manager', 'manager-demo', laboratory)).outcome,
+    'signedIn',
+  );
+
+  // Ninety days to the second after it was set.
+  clock.now = '2026-12-13T09:00:00.000Z';
+  assert.deepEqual(
+    await accounts.signIn('manager', 'manager-demo', laboratory),
+    { outcome: 'expired' },
+  );
+  // Only the right password learns that it expired.
+  assert.deepEqual(await accounts.signIn('manager', 'a-guess', laboratory), {
+    outcome: 'incorrect',
+  });
+  // No session resumes and nothing is signed with it, and none of that is a
+  // Failed attempt.
+  assert.equal(accounts.find('manager'), null);
+  assert.equal(
+    accounts.verifySigner('manager', 'manager-demo', laboratory, 'test'),
+    'expired',
+  );
+
+  await assert.rejects(
+    () =>
+      accounts.replaceExpiredPassword(
+        'manager',
+        'manager-demo',
+        'manager-demo',
+        laboratory,
+      ),
+    { message: 'Choose a new password, different from the current one.' },
+  );
+  await assert.rejects(
+    () =>
+      accounts.replaceExpiredPassword(
+        'manager',
+        'manager-demo',
+        'too-short',
+        laboratory,
+      ),
+    { message: 'A password needs at least 12 characters.' },
+  );
+  assert.deepEqual(
+    await accounts.replaceExpiredPassword(
+      'manager',
+      'manager-demo',
+      'taylor-new-password',
+      laboratory,
+    ),
+    {
+      outcome: 'signedIn',
+      user: { id: 'manager', name: 'Taylor Brooks', role: 'manager' },
+    },
+  );
+  assert.deepEqual(
+    await accounts.signIn('manager', 'manager-demo', laboratory),
+    { outcome: 'incorrect' },
+  );
+  // The new password's 90 days start now.
+  clock.now = '2027-03-13T08:59:59.000Z';
+  assert.equal(
+    (await accounts.signIn('manager', 'taylor-new-password', laboratory))
+      .outcome,
+    'signedIn',
+  );
+
+  assert.deepEqual(
+    accessReasons(laboratory).filter(([act]) => act !== 'signIn'),
+    [
+      [
+        'failedAttempt',
+        'manager',
+        'manager',
+        'consecutiveFailedAttempts',
+        1,
+        'Wrong password at sign-in',
+      ],
+      [
+        'passwordSet',
+        'manager',
+        'manager',
+        'password',
+        'changed',
+        'Replaced an expired password',
+      ],
+      [
+        'failedAttempt',
+        'manager',
+        'manager',
+        'consecutiveFailedAttempts',
+        1,
+        'Wrong password at sign-in',
+      ],
+    ],
+  );
+  assert.ok(
+    !JSON.stringify(laboratory.auditTrail()).includes('taylor-new-password'),
+  );
+});
+
+test('a user changes their own password with the current one, and a wrong current password is a Failed attempt that can lock the account', async (t) => {
+  const { accounts, lab: laboratory } = lab(t);
+  const change = (current: string, next: string) =>
+    accounts.changePassword('analyst', current, next, laboratory);
+  await assert.rejects(() => change('analyst-demo', 'analyst-demo'), {
+    message: 'Choose a new password, different from the current one.',
+  });
+  await assert.rejects(() => change('analyst-demo', 'eleven-char'), {
+    message: 'A password needs at least 12 characters.',
+  });
+  assert.equal(await change('analyst-demo', 'alex-chosen-password'), 'changed');
+  assert.deepEqual(
+    await accounts.signIn('analyst', 'analyst-demo', laboratory),
+    { outcome: 'incorrect' },
+  );
+  assert.equal(
+    (await accounts.signIn('analyst', 'alex-chosen-password', laboratory))
+      .outcome,
+    'signedIn',
+  );
+
+  for (let i = 1; i < 5; i++)
+    assert.equal(await change(`guess-${i}`, 'another-password'), 'incorrect');
+  assert.equal(await change('guess-5', 'another-password'), 'locked');
+  assert.equal(accounts.find('analyst'), null);
+  // Even the right current password changes nothing on a Locked account.
+  assert.equal(
+    await change('alex-chosen-password', 'another-password'),
+    'locked',
+  );
+
+  const events = accessReasons(laboratory).filter(
+    ([act]) => act !== 'signIn' && act !== 'lockoutNotice',
+  );
+  assert.deepEqual(events.slice(0, 2), [
+    [
+      'passwordSet',
+      'analyst',
+      'analyst',
+      'password',
+      'changed',
+      'Changed by the user',
+    ],
+    [
+      'failedAttempt',
+      'analyst',
+      'analyst',
+      'consecutiveFailedAttempts',
+      1,
+      'Wrong password at sign-in',
+    ],
+  ]);
+  assert.deepEqual(
+    events.slice(2).map(([act, , , , value, reason]) => [act, value, reason]),
+    [
+      ...[1, 2, 3, 4, 5].map((n) => [
+        'failedAttempt',
+        n,
+        'Wrong current password when changing the password',
+      ]),
+      ['lockout', true, '5 consecutive Failed attempts'],
+    ],
+  );
+  assert.ok(
+    !JSON.stringify(laboratory.auditTrail()).includes('alex-chosen-password'),
+  );
+});
+
+test('accounts exempt from aging, as the demo seed is in demo, never expire while every other account does, and lockout still applies to them', async (t) => {
+  const {
+    accounts,
+    lab: laboratory,
+    clock,
+  } = lab(t, {
+    agingExempt: demoAccounts.map((a) => a.id),
+  });
+  accounts.administer(
+    {
+      type: 'addAccount',
+      username: 'analyst-3',
+      name: 'Robin Diaz',
+      role: 'analyst',
+      password: 'robin-password',
+    },
+    'admin',
+    laboratory,
+  );
+  clock.now = '2036-09-14T09:00:00.000Z';
+  assert.equal(
+    (await accounts.signIn('coordinator', 'coordinator-demo', laboratory))
+      .outcome,
+    'signedIn',
+  );
+  assert.deepEqual(
+    await accounts.signIn('analyst-3', 'robin-password', laboratory),
+    { outcome: 'expired' },
+  );
+  for (let i = 0; i < 5; i++)
+    await accounts.signIn('coordinator', `guess-${i}`, laboratory);
+  assert.deepEqual(
+    await accounts.signIn('coordinator', 'coordinator-demo', laboratory),
+    { outcome: 'locked' },
+  );
+});
 
 /** Access events oldest first, as act, account, actor, field, old and new. */
 const accessEvents = (lab: Laboratory) =>

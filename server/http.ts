@@ -96,6 +96,17 @@ export function api(
               'This is a One-time password. Set a password of your own to continue.',
             code: 'oneTimePassword',
           });
+        if (attempt.outcome === 'oneTimePasswordExpired')
+          return send(403, {
+            error:
+              'This One-time password has expired. Ask the System administrator for a new one.',
+            code: 'oneTimePasswordExpired',
+          });
+        if (attempt.outcome === 'expired')
+          return send(403, {
+            error: 'Your password has expired. Set a new password to continue.',
+            code: 'passwordExpired',
+          });
         sessions.end(token);
         return send(
           200,
@@ -150,6 +161,7 @@ export function api(
         ![
           'POST /api/sign-in',
           'POST /api/password',
+          'POST /api/own-password',
           'POST /api/sign-out',
           'POST /api/commands',
           'POST /api/accounts',
@@ -193,7 +205,7 @@ export function api(
           return send(401, { error: 'Incorrect username or password.' });
         const typed = username.trim();
         return signedIn(
-          await accounts.replaceOneTimePassword(
+          await accounts.replaceExpiredPassword(
             typed,
             password,
             newPassword,
@@ -214,6 +226,42 @@ export function api(
         );
       }
       const user = currentUser();
+      // The signed-in user's own password, never an account the browser
+      // names; the change ends their other sessions (§11.300(c)).
+      if (route === 'POST /api/own-password') {
+        const { password, newPassword } = (input ?? {}) as Record<
+          string,
+          unknown
+        >;
+        if (typeof password !== 'string' || typeof newPassword !== 'string')
+          return send(400, {
+            error: 'Enter your current password and a new password.',
+          });
+        const outcome = await accounts.changePassword(
+          user.id,
+          password,
+          newPassword,
+          lab,
+        );
+        if (outcome === 'locked') {
+          sessions.endAll(user.id);
+          return send(
+            401,
+            {
+              error:
+                'This account is locked. Contact the System administrator.',
+              code: 'accountLocked',
+            },
+            { 'Set-Cookie': clearedSessionCookie(secure) },
+          );
+        }
+        if (outcome === 'incorrect')
+          return send(403, {
+            error: 'The current password is incorrect. Nothing was changed.',
+          });
+        sessions.endOthers(user.id, token);
+        return send(200, { changed: true });
+      }
       if (route === 'POST /api/accounts') {
         const listed = accounts.administer(input, user.id, lab);
         // A deactivated user is signed out everywhere at once.

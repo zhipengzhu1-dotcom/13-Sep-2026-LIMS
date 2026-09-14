@@ -46,6 +46,14 @@ export class Sessions {
       if (session.userId === userId) this.sessions.delete(key);
   }
 
+  /** Ends every session of one user except the one `keep` holds, as a change
+   * of their own password does. */
+  endOthers(userId: string, keep: string | undefined) {
+    const kept = keep && digest(keep);
+    for (const [key, session] of this.sessions)
+      if (session.userId === userId && key !== kept) this.sessions.delete(key);
+  }
+
   /** Ends every idle session and returns who each belonged to and when it
    * was last used. */
   expire(): Session[] {

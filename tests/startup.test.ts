@@ -19,8 +19,8 @@ function folder(t: test.TestContext) {
 }
 
 /** Opens the instance as the server does, closing it when the test ends. */
-function opened(t: test.TestContext, settings: Settings) {
-  const instance = openInstance(settings);
+function opened(t: test.TestContext, settings: Settings, clock?: () => string) {
+  const instance = openInstance(settings, clock);
   assert.equal(instance.outcome, 'opened');
   t.after(() => instance.close());
   return instance;
@@ -111,6 +111,43 @@ test('production refuses a database that holds the demo accounts, whose password
     },
   );
   assert.equal(fileHash(database), before);
+});
+
+test('in demo the seeded accounts never expire; in production no account is exempt, a demo username included', async (t) => {
+  const tenYearsOn = () => '2036-09-14T09:00:00.000Z';
+  const demo = opened(
+    t,
+    { mode: 'demo', database: join(folder(t), 'demo.sqlite'), port: 5173 },
+    tenYearsOn,
+  );
+  assert.equal(
+    (await demo.accounts.signIn('admin', 'admin-demo', demo.lab)).outcome,
+    'signedIn',
+  );
+
+  const database = join(folder(t), 'production.sqlite');
+  const settings = {
+    mode: 'production',
+    database,
+    port: 5173,
+    lockoutNotice,
+  } as const;
+  const first = openInstance(settings);
+  assert.equal(first.outcome, 'opened');
+  first.accounts.seed([
+    {
+      id: 'admin',
+      name: 'Jordan Park',
+      role: 'admin',
+      password: 'jordan-own-password',
+    },
+  ]);
+  first.close();
+  const later = opened(t, settings, tenYearsOn);
+  assert.deepEqual(
+    await later.accounts.signIn('admin', 'jordan-own-password', later.lab),
+    { outcome: 'expired' },
+  );
 });
 
 test('demo seeds its records and demo accounts at the database path it was given', (t) => {

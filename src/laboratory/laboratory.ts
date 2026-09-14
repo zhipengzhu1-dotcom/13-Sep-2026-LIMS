@@ -65,7 +65,7 @@ export interface SignerCredentials {
     password: string,
     log: AccessEventLog,
     attempt: string,
-  ): 'verified' | 'incorrect' | 'locked';
+  ): 'verified' | 'incorrect' | 'locked' | 'expired';
 }
 
 /** The actor on Access events Benchline itself brings about. */
@@ -297,7 +297,7 @@ export class Laboratory {
           break;
         case 'passwordSet':
           // The fact of the change only; never the password.
-          audit.change(account, 'password', null, 'changed');
+          audit.change(account, 'password', null, 'changed', event.reason);
           break;
         case 'unlock':
           audit.change(account, 'locked', true, false, event.reference);
@@ -656,6 +656,11 @@ export class Laboratory {
     if (verified === 'incorrect')
       throw new WorkflowError(
         'The password is incorrect. Nothing was signed or saved.',
+        403,
+      );
+    if (verified === 'expired')
+      throw new WorkflowError(
+        'Your password has expired, so nothing was signed or saved. Sign out and sign in again to set a new password.',
         403,
       );
     return type as SigningCommandType;

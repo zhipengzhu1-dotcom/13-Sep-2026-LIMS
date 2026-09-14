@@ -445,6 +445,12 @@ export type AuditRecordType =
   | 'Account'
   /** A backup of the database, by the file it was taken to or restored from. */
   | 'Backup';
+/** Why a user set a password of their own, as its Access event records it, so
+ * the periodic access review tells the three apart. */
+export type PasswordSetReason =
+  | 'Replaced a One-time password'
+  | 'Replaced an expired password'
+  | 'Changed by the user';
 /** An Access event: an audit entry about an account rather than a record
  * (ADR-0010), as the accounts store and sessions report it. Never a
  * password. */
@@ -467,7 +473,13 @@ export type AccessEvent =
       reason: string;
     }
   | { type: 'lockout'; username: string; consecutive: number }
-  | { type: 'passwordSet'; by: string; username: string }
+  | {
+      type: 'passwordSet';
+      by: string;
+      username: string;
+      /** Why the user set it; absent for the Admin's before Go-live. */
+      reason?: PasswordSetReason;
+    }
   | {
       type: 'unlock';
       by: string;

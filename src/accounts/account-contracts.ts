@@ -17,9 +17,28 @@ const name = z
   .min(1, 'Enter the printed name.')
   .max(80, 'A printed name is at most 80 characters.');
 const role = z.enum(roles, { error: 'Select a role.' });
+/** The shortest password a user or the Admin may choose, as the lab's
+ * policy decided (SOP-Management#19); changing it is a release under change
+ * control. */
+export const PASSWORD_MINIMUM_LENGTH = 12;
+
+/** How long a password of the user's own is good for, from when it was set
+ * (21 CFR 11.300(b)), as the lab's policy decided (SOP-Management#19);
+ * changing it is a release under change control. */
+export const PASSWORD_AGING_DAYS = 90;
+
+/** How long a One-time password stays usable after the System administrator
+ * issues it, so one never used, or known to whoever issued it, stops working
+ * (§11.300(b), (d)), as the lab decided on 2026-09-14; changing it is a
+ * release under change control. */
+export const ONE_TIME_PASSWORD_HOURS = 72;
+
 const password = z
   .string()
-  .min(12, 'A password needs at least 12 characters.')
+  .min(
+    PASSWORD_MINIMUM_LENGTH,
+    `A password needs at least ${PASSWORD_MINIMUM_LENGTH} characters.`,
+  )
   .max(200, 'A password is at most 200 characters.');
 
 /** A password a user or the Admin chooses (SOP-Management#19). */

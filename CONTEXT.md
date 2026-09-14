@@ -171,7 +171,7 @@ Benchline's developer acting as an external provider with no laboratory role aft
 _Avoid_: Admin, super admin, IT
 
 **Failed attempt**:
-A sign-in or an Electronic signature refused because the password was wrong, recorded in the audit trail with the username that was typed, whether or not that account exists.
+A sign-in, an Electronic signature or a password change refused because the password was wrong, recorded in the audit trail with the username that was typed, whether or not that account exists.
 _Avoid_: Bad login, invalid attempt
 
 **Locked account**:
@@ -179,7 +179,7 @@ An account refused both sign-in and Electronic signatures after the lab's set nu
 _Avoid_: Disabled account, suspended account, blocked user
 
 **One-time password**:
-A password the System administrator sets for an account, given to its user in person after checking who they are, which the user must replace with their own at their next sign-in; it is how every new or unlocked account starts.
+A password the System administrator sets for an account, given to its user in person after checking who they are, which the user must replace with their own at their next sign-in; it is how every new or unlocked account starts. It stops working 72 hours after it is issued, and the System administrator issues a new one for an account whose One-time password expired or whose password was lost. A password of the user's own expires 90 days after it was set, and the next sign-in only sets a new one; a user may also change their own password at any time, which is not an account change.
 _Avoid_: Temporary password, default password, reset password
 
 **Access event**:

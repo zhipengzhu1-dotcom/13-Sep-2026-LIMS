@@ -44,6 +44,7 @@ function reported(
 const USAGE = `Usage: npm run system-administrator -- <act> ...
   issue-account <username> --name <printed name> --role <role> --change-record <reference>
   unlock <username> --form <reference>
+  issue-one-time-password <username> --form <reference>
   access-events --from <YYYY-MM-DD> --to <YYYY-MM-DD>
   unsent-notices
   backup <new backup file>
@@ -118,6 +119,26 @@ export async function administerFromServer({
         );
         return [
           `${username} is unlocked under Form ${reference}.`,
+          `One-time password: ${oneTimePassword}`,
+          'Give it to its user in person after checking who they are. It is not shown again, and it must be replaced at the next sign-in.',
+        ].join('\n');
+      });
+    }
+    case 'issue-one-time-password': {
+      const { values, positionals } = parse(rest, {
+        form: { type: 'string' },
+      });
+      const reference = cited(values.form, 'Form');
+      const username = positionals[0] ?? '';
+      return opened(database, ({ accounts, lab }) => {
+        const oneTimePassword = accounts.issueOneTimePassword(
+          username,
+          by,
+          `Form ${reference}`,
+          lab,
+        );
+        return [
+          `A new One-time password is issued for ${username} under Form ${reference}.`,
           `One-time password: ${oneTimePassword}`,
           'Give it to its user in person after checking who they are. It is not shown again, and it must be replaced at the next sign-in.',
         ].join('\n');

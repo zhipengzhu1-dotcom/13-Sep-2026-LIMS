@@ -19,6 +19,10 @@ import {
   type Test,
 } from '../laboratory/contracts';
 import { oosRows, resultsView } from '../laboratory/results';
+import {
+  PASSWORD_AGING_DAYS,
+  PASSWORD_MINIMUM_LENGTH,
+} from '../accounts/account-contracts';
 import { LabAuditTrail } from './audit-trail';
 import { AccountsScreen } from './accounts';
 import { OosTable } from './oos';
@@ -83,6 +87,7 @@ export function App() {
   });
   const [selected, setSelected] = useState<string | null>(null);
   const [intake, setIntake] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -129,6 +134,7 @@ export function App() {
     setData(null);
     setSelected(null);
     setIntake(false);
+    setChangingPassword(false);
     setError('');
     setNotice('');
     setSignInMessage(message);
@@ -517,6 +523,13 @@ export function App() {
                 <b>{user.name}</b>
                 <small>{user.role}</small>
               </span>
+              <button
+                className="btn sm"
+                disabled={busy}
+                onClick={() => setChangingPassword(true)}
+              >
+                Change password
+              </button>
               <button
                 className="btn sm"
                 disabled={busy}
@@ -920,7 +933,159 @@ export function App() {
           />
         </Modal>
       )}
+      {changingPassword && (
+        <ChangePassword
+          userName={user.name}
+          onClose={() => setChangingPassword(false)}
+          onChanged={() => {
+            setChangingPassword(false);
+            setError('');
+            setNotice(
+              'Your password is changed. Your other sessions have ended.',
+            );
+          }}
+          onSessionEnded={sessionEnded}
+        />
+      )}
     </div>
+  );
+}
+
+/** A signed-in user's change of their own password, with the current one; it
+ * ends their other sessions. A refusal is shown word for word. */
+function ChangePassword({
+  userName,
+  onClose,
+  onChanged,
+  onSessionEnded,
+}: {
+  userName: string;
+  onClose: () => void;
+  onChanged: () => void;
+  /** The session ended, or the account locked on a wrong current password. */
+  onSessionEnded: (message: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const current = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    // After the dialog opens, which otherwise focuses its close button.
+    const frame = requestAnimationFrame(() => current.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  return (
+    <Modal
+      title="Change your password"
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+    >
+      <form
+        className="form"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const f = new FormData(e.currentTarget);
+          const newPassword = String(f.get('newPassword'));
+          setError('');
+          if (newPassword !== String(f.get('confirmPassword'))) {
+            setError('The two new passwords do not match.');
+            return;
+          }
+          setBusy(true);
+          try {
+            const response = await fetch('/api/own-password', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                password: String(f.get('password')),
+                newPassword,
+              }),
+            });
+            const result: { error?: string; code?: string } = await response
+              .json()
+              .catch(() => ({}));
+            if (response.status === 401)
+              return onSessionEnded(
+                result.code === 'accountLocked' && result.error
+                  ? result.error
+                  : 'Your session has ended, so the password was not changed. Sign in to continue.',
+              );
+            if (!response.ok) throw new Error(result.error);
+            onChanged();
+          } catch (err) {
+            setError(
+              err instanceof Error && err.message
+                ? err.message
+                : 'Unable to change the password. Please try again.',
+            );
+            setBusy(false);
+            current.current?.select();
+          }
+        }}
+      >
+        <p className="dim">
+          A new password is at least {PASSWORD_MINIMUM_LENGTH} characters,
+          different from the current one, and good for {PASSWORD_AGING_DAYS}{' '}
+          days. Changing it signs you out of Benchline everywhere else.
+        </p>
+        {error && (
+          <p role="alert" className="flash inline error">
+            {error}
+          </p>
+        )}
+        <label>
+          Current password for {userName}
+          <input
+            ref={current}
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            required
+            maxLength={200}
+          />
+        </label>
+        <label>
+          New password
+          <input
+            name="newPassword"
+            type="password"
+            autoComplete="new-password"
+            required
+            minLength={PASSWORD_MINIMUM_LENGTH}
+            maxLength={200}
+          />
+        </label>
+        <label>
+          Confirm new password
+          <input
+            name="confirmPassword"
+            type="password"
+            autoComplete="new-password"
+            required
+            minLength={PASSWORD_MINIMUM_LENGTH}
+            maxLength={200}
+          />
+        </label>
+        <div className="form-foot">
+          <span className="dim">
+            Benchline keeps only a hash of a password.
+          </span>
+          <div className="sign-actions">
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+            <button className="btn primary" disabled={busy}>
+              {busy ? 'Changing password…' : 'Change password'}
+            </button>
+          </div>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -938,11 +1103,12 @@ export function SignIn({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  /** Set once the server refuses a One-time password: the only way on is
-   * setting a password of one's own. */
+  /** Set once the server refuses a One-time password or an expired password:
+   * the only way on is setting a new password of one's own. */
   const [oneTime, setOneTime] = useState<{
     username: string;
     password: string;
+    code: 'oneTimePassword' | 'passwordExpired';
   } | null>(null);
   if (oneTime)
     return (
@@ -967,7 +1133,11 @@ export function SignIn({
               const response = await fetch('/api/password', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ...oneTime, newPassword }),
+                body: JSON.stringify({
+                  username: oneTime.username,
+                  password: oneTime.password,
+                  newPassword,
+                }),
               });
               const result = await response.json();
               if (!response.ok) throw new Error(result.error);
@@ -989,8 +1159,9 @@ export function SignIn({
             <h1 id="new-password-title">Set a new password</h1>
           </div>
           <p className="sign-in-note">
-            The password for {oneTime.username} is a One-time password. Choose a
-            password of your own, at least 12 characters, to sign in.
+            {oneTime.code === 'passwordExpired'
+              ? `The password for ${oneTime.username} has expired: a password is good for ${PASSWORD_AGING_DAYS} days. Choose a new password, at least ${PASSWORD_MINIMUM_LENGTH} characters and different from the current one, to sign in.`
+              : `The password for ${oneTime.username} is a One-time password. Choose a password of your own, at least ${PASSWORD_MINIMUM_LENGTH} characters, to sign in.`}
           </p>
           {error && (
             <p role="alert" className="flash inline error">
@@ -1005,7 +1176,7 @@ export function SignIn({
               autoComplete="new-password"
               required
               autoFocus
-              minLength={12}
+              minLength={PASSWORD_MINIMUM_LENGTH}
               maxLength={200}
             />
           </label>
@@ -1016,7 +1187,7 @@ export function SignIn({
               type="password"
               autoComplete="new-password"
               required
-              minLength={12}
+              minLength={PASSWORD_MINIMUM_LENGTH}
               maxLength={200}
             />
           </label>
@@ -1058,8 +1229,11 @@ export function SignIn({
               body: JSON.stringify(credentials),
             });
             const result = await response.json();
-            if (result.code === 'oneTimePassword') {
-              setOneTime(credentials);
+            if (
+              result.code === 'oneTimePassword' ||
+              result.code === 'passwordExpired'
+            ) {
+              setOneTime({ ...credentials, code: result.code });
               setBusy(false);
               return;
             }

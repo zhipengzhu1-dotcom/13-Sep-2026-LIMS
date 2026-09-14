@@ -3,7 +3,11 @@ import type {
   AccessEventLog,
   SignerCredentials,
 } from '../laboratory/laboratory.ts';
-import type { Person, Role } from '../laboratory/contracts.ts';
+import type {
+  PasswordSetReason,
+  Person,
+  Role,
+} from '../laboratory/contracts.ts';
 import { WorkflowError } from '../laboratory/workflow-error.ts';
 import {
   accountCommandSchema,
@@ -11,6 +15,8 @@ import {
   leavesNoActiveAdmin,
   ownPasswordSchema,
   NO_ACTIVE_ADMIN_LEFT,
+  ONE_TIME_PASSWORD_HOURS,
+  PASSWORD_AGING_DAYS,
   type AccountCommand,
   type AccountSummary,
 } from './account-contracts.ts';
@@ -32,6 +38,8 @@ export type SeedAccount = User & { password: string };
  * changing it is a release under change control. */
 export const LOCKOUT_LIMIT = 5;
 
+const HOUR_MS = 60 * 60 * 1000;
+
 /** Compared against when the username is unknown, so a miss costs the same
  * scrypt work as a wrong password and does not reveal which accounts exist. */
 const DECOY_HASH = hashPassword('decoy-password-never-matches');
@@ -49,7 +57,16 @@ type Credentials = {
   active: number;
   passwordHash: string;
   oneTimePassword: number;
+  /** Server time the password was set; null for one set before this was
+   * recorded, which counts as expired. */
+  passwordSetAt: string | null;
 };
+
+/** Whether a right password may be used: a password of the user's own that
+ * is still good, one past its aging period, a One-time password, which only
+ * sets a new one, or a One-time password past its time, which does nothing. */
+type PasswordState =
+  'good' | 'expired' | 'oneTimePassword' | 'oneTimePasswordExpired';
 
 /** One outbound email. */
 export type Mail = { to: readonly string[]; subject: string; text: string };
@@ -65,6 +82,11 @@ export type AccountsOptions = {
     qualityLead: string;
     transport: MailTransport;
   };
+  /** The server time, as an ISO string. */
+  clock?: () => string;
+  /** Usernames whose passwords never expire: the demo seed's, in `demo` mode
+   * only. Production passes none. */
+  agingExempt?: readonly string[];
 };
 
 /**
@@ -76,10 +98,14 @@ export type AccountsOptions = {
 export class Accounts implements SignerCredentials {
   private db: DatabaseSync;
   private lockoutNotice: AccountsOptions['lockoutNotice'];
+  private clock: () => string;
+  private agingExempt: ReadonlySet<string>;
   /** Lockout notices still being sent. */
   private notices = new Set<Promise<void>>();
   constructor(path: string, options: AccountsOptions = {}) {
     this.lockoutNotice = options.lockoutNotice;
+    this.clock = options.clock ?? (() => new Date().toISOString());
+    this.agingExempt = new Set(options.agingExempt);
     this.db = new DatabaseSync(path);
     this.db.exec(`CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -87,7 +113,8 @@ export class Accounts implements SignerCredentials {
       role TEXT NOT NULL,
       active INTEGER NOT NULL DEFAULT 1,
       passwordHash TEXT NOT NULL,
-      oneTimePassword INTEGER NOT NULL DEFAULT 0);
+      oneTimePassword INTEGER NOT NULL DEFAULT 0,
+      passwordSetAt TEXT);
       CREATE TABLE IF NOT EXISTS accessState (
       username TEXT PRIMARY KEY,
       failedAttempts INTEGER NOT NULL DEFAULT 0,
@@ -107,11 +134,17 @@ export class Accounts implements SignerCredentials {
   /** Adds accounts that do not exist yet; existing accounts are left alone. */
   seed(accounts: readonly SeedAccount[]) {
     const insert = this.db.prepare(
-      'INSERT OR IGNORE INTO users (id, name, role, active, passwordHash) VALUES (?, ?, ?, 1, ?)',
+      'INSERT OR IGNORE INTO users (id, name, role, active, passwordHash, passwordSetAt) VALUES (?, ?, ?, 1, ?, ?)',
     );
     for (const a of accounts)
       if (!this.credentials(a.id))
-        insert.run(a.id, a.name, a.role, hashPassword(a.password));
+        insert.run(
+          a.id,
+          a.name,
+          a.role,
+          hashPassword(a.password),
+          this.clock(),
+        );
   }
 
   /** Every user, in the order they were added, deactivated ones included so
@@ -217,8 +250,10 @@ export class Accounts implements SignerCredentials {
   ) {
     this.account(username);
     this.db
-      .prepare('UPDATE users SET passwordHash = ? WHERE id = ?')
-      .run(hashPassword(password), username);
+      .prepare(
+        'UPDATE users SET passwordHash = ?, passwordSetAt = ? WHERE id = ?',
+      )
+      .run(hashPassword(password), this.clock(), username);
     log.recordAccessEvent({ type: 'passwordSet', by, username });
   }
 
@@ -279,7 +314,7 @@ export class Accounts implements SignerCredentials {
         `${account.name} is not locked. Nothing was changed.`,
         409,
       );
-    const oneTimePassword = generateOneTimePassword();
+    let oneTimePassword: string;
     // Both at once, so an unlocked account never keeps its old password.
     // The Access events are written after, through the audit trail's own
     // connection, which would wait on this transaction's lock.
@@ -290,11 +325,7 @@ export class Accounts implements SignerCredentials {
           'UPDATE accessState SET locked = 0, failedAttempts = 0 WHERE username = ?',
         )
         .run(username);
-      this.db
-        .prepare(
-          'UPDATE users SET passwordHash = ?, oneTimePassword = 1 WHERE id = ?',
-        )
-        .run(hashPassword(oneTimePassword), username);
+      oneTimePassword = this.replaceWithOneTimePassword(username);
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -373,7 +404,7 @@ export class Accounts implements SignerCredentials {
       );
     this.db
       .prepare(
-        'INSERT INTO users (id, name, role, active, passwordHash, oneTimePassword) VALUES (?, ?, ?, 1, ?, ?)',
+        'INSERT INTO users (id, name, role, active, passwordHash, oneTimePassword, passwordSetAt) VALUES (?, ?, ?, 1, ?, ?, ?)',
       )
       .run(
         username,
@@ -381,6 +412,7 @@ export class Accounts implements SignerCredentials {
         role,
         hashPassword(password),
         oneTimePassword ? 1 : 0,
+        this.clock(),
       );
     // Failed attempts typed under this username before it was an account
     // stay in the audit trail; the new account starts unlocked.
@@ -413,17 +445,34 @@ export class Accounts implements SignerCredentials {
     log.recordAccessEvent({ type: 'accountChanged', by, username, changes });
   }
 
-  /** An active user by ID who is not locked and has a password of their own,
-   * or null. Every session of a Locked account is refused on its next
-   * request. */
+  /** An active user by ID who is not locked and has a password of their own
+   * that has not expired, or null. Every session of a Locked account, or of
+   * one whose password expired, is refused on its next request. */
   find(id: string): User | null {
     const row = this.db
       .prepare(
         `SELECT id, name, role FROM users WHERE id = ? AND active = 1
-         AND oneTimePassword = 0 AND NOT EXISTS (SELECT 1 FROM accessState WHERE username = id AND locked = 1)`,
+         AND NOT EXISTS (SELECT 1 FROM accessState WHERE username = id AND locked = 1)`,
       )
       .get(id) as User | undefined;
-    return row ? { id: row.id, name: row.name, role: row.role } : null;
+    const credentials = this.credentials(id);
+    if (!row || !credentials || this.passwordState(credentials) !== 'good')
+      return null;
+    return { id: row.id, name: row.name, role: row.role };
+  }
+
+  /** What a right password may be used for, at the server's time now. */
+  private passwordState(row: Credentials): PasswordState {
+    const age =
+      row.passwordSetAt === null
+        ? Infinity
+        : Date.parse(this.clock()) - Date.parse(row.passwordSetAt);
+    if (row.oneTimePassword)
+      return age < ONE_TIME_PASSWORD_HOURS * HOUR_MS
+        ? 'oneTimePassword'
+        : 'oneTimePasswordExpired';
+    if (this.agingExempt.has(row.id)) return 'good';
+    return age < PASSWORD_AGING_DAYS * 24 * HOUR_MS ? 'good' : 'expired';
   }
 
   /**
@@ -442,6 +491,12 @@ export class Accounts implements SignerCredentials {
     | { outcome: 'locked' }
     /** The password is right but one-time: it only sets a new one. */
     | { outcome: 'oneTimePassword' }
+    /** The password is right but past its aging period: it only sets a new
+     * one. The account is not locked. */
+    | { outcome: 'expired' }
+    /** The One-time password is right but past its time: only a new one from
+     * the System administrator lets the user in. */
+    | { outcome: 'oneTimePasswordExpired' }
   > {
     const row = await this.passwordOf(
       username,
@@ -450,7 +505,8 @@ export class Accounts implements SignerCredentials {
       log,
     );
     if ('outcome' in row) return row;
-    if (row.oneTimePassword) return { outcome: 'oneTimePassword' };
+    const state = this.passwordState(row);
+    if (state !== 'good') return { outcome: state };
     return this.signedIn(row.id, log);
   }
 
@@ -479,49 +535,146 @@ export class Accounts implements SignerCredentials {
   }
 
   /**
-   * Replaces a One-time password with the user's own, which then signs them
-   * in (ADR-0009). The new password is checked before the One-time password,
-   * so a refusal never tells whether it was right; a wrong One-time password
-   * is a Failed attempt.
+   * Replaces a One-time password, or a password past its aging period, with
+   * a new password of the user's own, which then signs them in (ADR-0009).
+   * The new password is checked before the current one, so a refusal never
+   * tells whether it was right; a wrong current password is a Failed attempt.
    */
-  async replaceOneTimePassword(
+  async replaceExpiredPassword(
     username: string,
-    oneTimePassword: string,
+    current: string,
     newPassword: string,
     log: AccessEventLog,
   ): ReturnType<Accounts['signIn']> {
+    this.checkNewPassword(current, newPassword);
+    const row = await this.passwordOf(
+      username,
+      current,
+      'Wrong current password when setting a new password',
+      log,
+    );
+    if ('outcome' in row) return row;
+    const state = this.passwordState(row);
+    if (state === 'oneTimePasswordExpired') return { outcome: state };
+    if (state === 'good')
+      throw new WorkflowError(
+        `The password of ${this.find(row.id)?.name ?? row.id} has not expired, so there is nothing to replace. Sign in and change it there.`,
+        409,
+      );
+    this.setOwnPassword(
+      row.id,
+      newPassword,
+      state === 'oneTimePassword'
+        ? 'Replaced a One-time password'
+        : 'Replaced an expired password',
+      log,
+    );
+    return this.signedIn(row.id, log);
+  }
+
+  /**
+   * A signed-in user's change of their own password, at any time, with the
+   * current one (§11.300(c)). It is not an account change (ADR-0007). A wrong
+   * current password is a Failed attempt, so a taken-over session cannot
+   * guess on past the lockout (ADR-0009).
+   */
+  async changePassword(
+    userId: string,
+    current: string,
+    newPassword: string,
+    log: AccessEventLog,
+  ): Promise<'changed' | 'incorrect' | 'locked'> {
+    this.checkNewPassword(current, newPassword);
+    const row = await this.passwordOf(
+      userId,
+      current,
+      'Wrong current password when changing the password',
+      log,
+    );
+    if ('outcome' in row) return row.outcome;
+    this.resetFailedAttempts(row.id);
+    this.setOwnPassword(row.id, newPassword, 'Changed by the user', log);
+    return 'changed';
+  }
+
+  /**
+   * A new One-time password the System administrator issues under its
+   * approved Form for an active account that is not locked: its One-time
+   * password expired, or its password was lost or compromised
+   * (§11.300(c)). Returns it, the only time it exists outside its hash.
+   */
+  issueOneTimePassword(
+    username: string,
+    by: string,
+    reference: string,
+    log: AccessEventLog,
+  ): string {
+    const account = this.account(username);
+    if (account.locked)
+      throw new WorkflowError(
+        `${account.name} is locked. Unlock it under its Form, which issues a One-time password. Nothing was changed.`,
+        409,
+      );
+    if (!account.active)
+      throw new WorkflowError(
+        `${account.name} is deactivated. Nothing was changed.`,
+        409,
+      );
+    const oneTimePassword = this.replaceWithOneTimePassword(username);
+    log.recordAccessEvent({
+      type: 'oneTimePasswordIssued',
+      by,
+      username,
+      reference,
+    });
+    return oneTimePassword;
+  }
+
+  /** Replaces an account's password with a new One-time password, usable for
+   * its hours from now, and returns it. */
+  private replaceWithOneTimePassword(username: string): string {
+    const oneTimePassword = generateOneTimePassword();
+    this.db
+      .prepare(
+        'UPDATE users SET passwordHash = ?, oneTimePassword = 1, passwordSetAt = ? WHERE id = ?',
+      )
+      .run(hashPassword(oneTimePassword), this.clock(), username);
+    return oneTimePassword;
+  }
+
+  /** Refuses a new password that breaks the lab's rules (SOP-Management#19):
+   * too short, or the same as the current one. */
+  private checkNewPassword(current: string, newPassword: string) {
     const rule = ownPasswordSchema.safeParse(newPassword);
     if (!rule.success)
       throw new WorkflowError(
         rule.error.issues.map((issue) => issue.message).join(' '),
       );
-    if (newPassword === oneTimePassword)
+    if (newPassword === current)
       throw new WorkflowError(
-        'Choose a new password, not the One-time password.',
+        'Choose a new password, different from the current one.',
       );
-    const row = await this.passwordOf(
-      username,
-      oneTimePassword,
-      'Wrong One-time password when setting a new password',
-      log,
-    );
-    if ('outcome' in row) return row;
-    if (!row.oneTimePassword)
-      throw new WorkflowError(
-        `${this.find(row.id)?.name ?? row.id} has no One-time password to replace.`,
-        409,
-      );
+  }
+
+  /** A password the user chose, good for the aging period from now, recorded
+   * with why it was set. */
+  private setOwnPassword(
+    username: string,
+    password: string,
+    reason: PasswordSetReason,
+    log: AccessEventLog,
+  ) {
     this.db
       .prepare(
-        'UPDATE users SET passwordHash = ?, oneTimePassword = 0 WHERE id = ?',
+        'UPDATE users SET passwordHash = ?, oneTimePassword = 0, passwordSetAt = ? WHERE id = ?',
       )
-      .run(hashPassword(newPassword), row.id);
+      .run(hashPassword(password), this.clock(), username);
     log.recordAccessEvent({
       type: 'passwordSet',
-      by: row.id,
-      username: row.id,
+      by: username,
+      username,
+      reason,
     });
-    return this.signedIn(row.id, log);
   }
 
   /** A successful sign-in, which clears the consecutive Failed attempts. */
@@ -540,13 +693,14 @@ export class Accounts implements SignerCredentials {
   /** Whether this is the active user's own password, for an Electronic
    * signature; anything else, a One-time password included, is a Failed
    * attempt, recorded through `log`. An unknown or inactive user costs the
-   * same work and never matches. */
+   * same work and never matches. A right password past its aging period
+   * signs nothing, but is no Failed attempt. */
   verifySigner(
     userId: string,
     password: string,
     log: AccessEventLog,
     attempt: string,
-  ): 'verified' | 'incorrect' | 'locked' {
+  ): 'verified' | 'incorrect' | 'locked' | 'expired' {
     const row = this.credentials(userId);
     const matches = verifyPasswordSync(
       password,
@@ -557,6 +711,7 @@ export class Accounts implements SignerCredentials {
         ? 'locked'
         : 'incorrect';
     if (this.isLocked(userId)) return 'locked';
+    if (this.passwordState(row) === 'expired') return 'expired';
     this.resetFailedAttempts(userId);
     return 'verified';
   }
@@ -565,7 +720,7 @@ export class Accounts implements SignerCredentials {
     return (
       (this.db
         .prepare(
-          'SELECT id, active, passwordHash, oneTimePassword FROM users WHERE id = ?',
+          'SELECT id, active, passwordHash, oneTimePassword, passwordSetAt FROM users WHERE id = ?',
         )
         .get(id) as Credentials | undefined) ?? null
     );

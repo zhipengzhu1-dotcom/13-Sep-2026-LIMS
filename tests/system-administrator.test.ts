@@ -143,7 +143,7 @@ test('unlocking a Locked account needs its approved Form, issues a One-time pass
   {
     const accounts = new Accounts(database);
     const lab = new Laboratory(database, { people: () => accounts.people() });
-    await accounts.replaceOneTimePassword(
+    await accounts.replaceExpiredPassword(
       'robin',
       first,
       'robin-own-password',
@@ -181,7 +181,7 @@ test('unlocking a Locked account needs its approved Form, issues a One-time pass
   });
   assert.equal(
     (
-      await accounts.replaceOneTimePassword(
+      await accounts.replaceExpiredPassword(
         'robin',
         oneTimePassword,
         'robin-second-password',
@@ -597,12 +597,12 @@ test('a One-time password signs in only to set a new password of at least 12 cha
   );
 
   const replace = (current: string, next: string) =>
-    accounts.replaceOneTimePassword('robin', current, next, lab);
+    accounts.replaceExpiredPassword('robin', current, next, lab);
   await assert.rejects(() => replace(oneTimePassword, 'too-short'), {
     message: 'A password needs at least 12 characters.',
   });
   await assert.rejects(() => replace(oneTimePassword, oneTimePassword), {
-    message: 'Choose a new password, not the One-time password.',
+    message: 'Choose a new password, different from the current one.',
   });
   assert.deepEqual(await replace('not-the-one-time', 'robin-own-password'), {
     outcome: 'incorrect',
@@ -623,7 +623,8 @@ test('a One-time password signs in only to set a new password of at least 12 cha
   await assert.rejects(
     () => replace('robin-own-password', 'another-password'),
     {
-      message: 'Robin Hale has no One-time password to replace.',
+      message:
+        'The password of Robin Hale has not expired, so there is nothing to replace. Sign in and change it there.',
     },
   );
 
@@ -642,4 +643,126 @@ test('a One-time password signs in only to set a new password of at least 12 cha
     ],
   );
   assert.ok(!JSON.stringify(lab.auditTrail()).includes('robin-own-password'));
+});
+
+test('a One-time password unused for 72 hours no longer signs in, and the System administrator issues a new one under its Form', async (t) => {
+  const database = join(folder(t), 'production.sqlite');
+  const stale = await issued(database);
+  /** The stores on the file with the server clock this many hours on from
+   * when the One-time password was issued. */
+  async function hoursLater<T>(
+    hours: number,
+    use: (stores: { accounts: Accounts; lab: Laboratory }) => Promise<T>,
+  ) {
+    const accounts = new Accounts(database, {
+      clock: () => new Date(Date.now() + hours * 3_600_000).toISOString(),
+    });
+    const lab = new Laboratory(database, { people: () => accounts.people() });
+    try {
+      return await use({ accounts, lab });
+    } finally {
+      lab.close();
+      accounts.close();
+    }
+  }
+  await hoursLater(71, async ({ accounts, lab }) =>
+    assert.deepEqual(await accounts.signIn('robin', stale, lab), {
+      outcome: 'oneTimePassword',
+    }),
+  );
+  await hoursLater(72, async ({ accounts, lab }) => {
+    assert.deepEqual(await accounts.signIn('robin', stale, lab), {
+      outcome: 'oneTimePasswordExpired',
+    });
+    assert.deepEqual(
+      await accounts.replaceExpiredPassword(
+        'robin',
+        stale,
+        'robin-own-password',
+        lab,
+      ),
+      { outcome: 'oneTimePasswordExpired' },
+    );
+    // Still only the right password learns that it expired.
+    assert.deepEqual(await accounts.signIn('robin', 'a-guess', lab), {
+      outcome: 'incorrect',
+    });
+  });
+
+  await assert.rejects(
+    () => command(database, 'issue-one-time-password', 'robin'),
+    {
+      message:
+        'Cite the approved Form this is done under. Nothing was changed.',
+    },
+  );
+  const output = await command(
+    database,
+    'issue-one-time-password',
+    'robin',
+    '--form',
+    'F-ACC-2026-040',
+  );
+  assert.match(
+    output,
+    /^A new One-time password is issued for robin under Form F-ACC-2026-040\./,
+  );
+  const fresh = oneTimePasswordIn(output);
+  assert.notEqual(fresh, stale);
+
+  const { accounts, lab } = open(t, database);
+  assert.deepEqual(await accounts.signIn('robin', stale, lab), {
+    outcome: 'incorrect',
+  });
+  assert.equal(
+    (
+      await accounts.replaceExpiredPassword(
+        'robin',
+        fresh,
+        'robin-own-password',
+        lab,
+      )
+    ).outcome,
+    'signedIn',
+  );
+  assert.deepEqual(
+    accessEvents(lab)
+      .filter(([act]) => act !== 'accountAdded' && act !== 'signIn')
+      .map(([act, , actor, , value, reason]) => [act, actor, value, reason]),
+    [
+      [
+        'oneTimePasswordIssued',
+        SYSTEM_ADMINISTRATOR,
+        'One-time password issued',
+        'Change record CR-2026-014',
+      ],
+      ['failedAttempt', 'robin', 1, 'Wrong password at sign-in'],
+      [
+        'oneTimePasswordIssued',
+        SYSTEM_ADMINISTRATOR,
+        'One-time password issued',
+        'Form F-ACC-2026-040',
+      ],
+      // Reissuing clears no Failed attempts; only a success does.
+      ['failedAttempt', 'robin', 2, 'Wrong password at sign-in'],
+      ['passwordSet', 'robin', 'changed', 'Replaced a One-time password'],
+    ],
+  );
+
+  // A Locked account is unlocked instead, which issues its One-time password.
+  for (let i = 0; i < 5; i++) await accounts.signIn('robin', 'guess', lab);
+  await assert.rejects(
+    () =>
+      command(
+        database,
+        'issue-one-time-password',
+        'robin',
+        '--form',
+        'F-ACC-2026-041',
+      ),
+    {
+      message:
+        'Robin Hale is locked. Unlock it under its Form, which issues a One-time password. Nothing was changed.',
+    },
+  );
 });

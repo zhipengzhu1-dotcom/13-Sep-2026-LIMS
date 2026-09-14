@@ -427,7 +427,7 @@ test('migrating to version 20 keeps every applied command and command replay, an
   assert.equal(migration.outcome, 'migrated');
   if (migration.outcome === 'migrated') {
     assert.equal(migration.from, 19);
-    assert.equal(migration.to, 23);
+    assert.equal(migration.to, 24);
   }
   assert.deepEqual(records(file), before);
   assert.deepEqual(commandRecords(file), commands);
@@ -468,11 +468,12 @@ test('migrating to version 21 keeps every protected record, and the database the
   assert.deepEqual(migrate(file), {
     outcome: 'migrated',
     from: 20,
-    to: 23,
+    to: 24,
     applied: [
       'Signatures, audit entries, attachments, Certificates, publications and Acceptable intake entries cannot be replaced',
       'Acceptable intake entries record their Potency category and Limit type',
       'Accounts record whether their password is a One-time password',
+      'Accounts record when their password was set',
     ],
   });
   assert.deepEqual(records(file), before);
@@ -544,10 +545,11 @@ test('migrating to version 22 keeps every Acceptable intake entry, marked with n
   assert.deepEqual(migrate(file), {
     outcome: 'migrated',
     from: 21,
-    to: 23,
+    to: 24,
     applied: [
       'Acceptable intake entries record their Potency category and Limit type',
       'Accounts record whether their password is a One-time password',
+      'Accounts record when their password was set',
     ],
   });
   assert.deepEqual(records(file), before);
@@ -673,8 +675,11 @@ test('migrating to version 23 keeps every account signing in with its own passwo
   assert.deepEqual(migrate(file), {
     outcome: 'migrated',
     from: 22,
-    to: 23,
-    applied: ['Accounts record whether their password is a One-time password'],
+    to: 24,
+    applied: [
+      'Accounts record whether their password is a One-time password',
+      'Accounts record when their password was set',
+    ],
   });
   const accounts = new Accounts(file);
   const lab = new Laboratory(file, { people: () => accounts.people() });
@@ -686,6 +691,55 @@ test('migrating to version 23 keeps every account signing in with its own passwo
     outcome: 'signedIn',
     user: { id: 'robin', name: 'Robin Hale', role: 'analyst' },
   });
+});
+
+test('migrating to version 24 makes every password whose set time was never recorded count as expired, so its user sets a new one', async (t) => {
+  const file = join(folder(t), 'benchline.sqlite');
+  assert.equal(migrate(file).outcome, 'created');
+  {
+    const accounts = new Accounts(file);
+    accounts.seed([
+      {
+        id: 'robin',
+        name: 'Robin Hale',
+        role: 'analyst',
+        password: 'robin-own-password',
+      },
+    ]);
+    accounts.close();
+    // As a version 23 database had it: no password set time.
+    const db = new DatabaseSync(file);
+    db.exec(`ALTER TABLE users DROP COLUMN passwordSetAt;
+      PRAGMA user_version=23;`);
+    db.close();
+  }
+
+  assert.deepEqual(migrate(file), {
+    outcome: 'migrated',
+    from: 23,
+    to: 24,
+    applied: ['Accounts record when their password was set'],
+  });
+  const accounts = new Accounts(file);
+  const lab = new Laboratory(file, { people: () => accounts.people() });
+  t.after(() => {
+    lab.close();
+    accounts.close();
+  });
+  assert.deepEqual(await accounts.signIn('robin', 'robin-own-password', lab), {
+    outcome: 'expired',
+  });
+  assert.equal(
+    (
+      await accounts.replaceExpiredPassword(
+        'robin',
+        'robin-own-password',
+        'robin-second-password',
+        lab,
+      )
+    ).outcome,
+    'signedIn',
+  );
 });
 
 test('a rehearsal of the Benchline migrations on a version 19 database passes', (t) => {
