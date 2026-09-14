@@ -12,10 +12,15 @@ import {
 } from './sessions.ts';
 import { HttpError } from './http-error.ts';
 import { handleAttachments } from './attachments.ts';
+import type { Mode } from './startup.ts';
 
 const MAX_BODY_BYTES = 32768;
 
-export type Authentication = { accounts: Accounts; sessions: Sessions };
+export type Authentication = {
+  accounts: Accounts;
+  sessions: Sessions;
+  mode: Mode;
+};
 
 /** Ends idle sessions, recording each expiry as an Access event. */
 export function expireSessions(lab: Laboratory, sessions: Sessions) {
@@ -28,7 +33,11 @@ export function expireSessions(lab: Laboratory, sessions: Sessions) {
     });
 }
 
-export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
+export function api(
+  lab: Laboratory,
+  { accounts, sessions, mode }: Authentication,
+) {
+  const secure = mode === 'production';
   return async (req: IncomingMessage, res: ServerResponse) => {
     const send = (
       status: number,
@@ -67,9 +76,21 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
         return user;
       };
 
+      // Public, so the sign-in screen lists demo accounts only in the demo.
+      if (route === 'GET /api/instance') return send(200, { mode });
       if (route === 'GET /api/session')
         return send(200, { user: currentUser() });
-      // The Admin's account screen, before Go-live only (ADR-0011).
+      // The Admin's account screen, before Go-live only (ADR-0011); in
+      // production the System administrator's server command manages
+      // accounts (#66).
+      if (
+        mode === 'production' &&
+        (path === '/api/accounts' || path.startsWith('/api/accounts/'))
+      )
+        return send(403, {
+          error:
+            'Accounts are not managed in the workspace in production. The System administrator manages them on the lab server.',
+        });
       if (route === 'GET /api/accounts')
         return send(200, { accounts: accounts.accountsFor(currentUser().id) });
       if (route === 'GET /api/workspace') {
@@ -103,9 +124,12 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
         return send(404, { error: 'Not found' });
 
       // Every write, sign-in included, must come from this origin as JSON.
+      // Production is reached through the TLS reverse proxy, which passes
+      // the Host on.
       if (
         req.headers.origin &&
-        req.headers.origin !== `http://${req.headers.host}`
+        req.headers.origin !==
+          `${secure ? 'https' : 'http'}://${req.headers.host}`
       )
         return send(403, { error: 'Cross-origin writes are not allowed.' });
       if (!req.headers['content-type']?.startsWith('application/json'))
@@ -132,7 +156,12 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
         return send(
           200,
           { user: attempt.user },
-          { 'Set-Cookie': sessionCookie(sessions.start(attempt.user.id)) },
+          {
+            'Set-Cookie': sessionCookie(
+              sessions.start(attempt.user.id),
+              secure,
+            ),
+          },
         );
       }
       if (route === 'POST /api/sign-out') {
@@ -143,7 +172,7 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
         return send(
           200,
           { signedOut: true },
-          { 'Set-Cookie': clearedSessionCookie() },
+          { 'Set-Cookie': clearedSessionCookie(secure) },
         );
       }
       const user = currentUser();
@@ -169,7 +198,7 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
         return send(
           error.status,
           { error: error.message, code: error.code },
-          { 'Set-Cookie': clearedSessionCookie() },
+          { 'Set-Cookie': clearedSessionCookie(secure) },
         );
       if (error instanceof HttpError || error instanceof WorkflowError)
         return send(error.status, { error: error.message });

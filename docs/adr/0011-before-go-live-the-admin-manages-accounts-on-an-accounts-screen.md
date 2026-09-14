@@ -4,7 +4,7 @@ Benchline is still a demo: paper is the official record and Benchline's develope
 
 We decided that, until Go-live, the Admin manages accounts on an Accounts screen in the workspace: add a user with a username, printed name, role and password; change a printed name or role; deactivate or reactivate; set a new password; and unlock a Locked account, clearing its consecutive Failed attempts. The Admin may change their own account, but never leave Benchline without an active Admin. Laboratory users come from the accounts store, so a user added on the screen can act and sign at once. Every change is an Access event in the audit trail (ADR-0010), naming the Admin and never the password. A username is never reused, and a deactivated user stays in the user list so the record keeps naming them.
 
-If the only Admin locks themselves out, a demo server command on the lab server (`npm run unlock -- <username>`) unlocks the account, recorded as an unlock Access event naming the operating-system user who ran it. It refuses to run in production, where the System administrator's server command (#66) unlocks with a One-time password and the approved Form.
+If the only Admin locks themselves out, a demo server command on the lab server (`BENCHLINE_MODE=demo npm run unlock -- <username>`) unlocks the account, recorded as an unlock Access event naming the operating-system user who ran it. It refuses to run in production, where the System administrator's server command (#66) unlocks with a One-time password and the approved Form.
 
 ## Considered Options
 

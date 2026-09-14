@@ -1,67 +1,42 @@
 import { createServer } from 'node:http';
-import { mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { resolve, extname, sep } from 'node:path';
-import { Laboratory } from '../src/laboratory/laboratory.ts';
-import { Accounts } from '../src/accounts/accounts.ts';
-import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import { api, expireSessions } from './http.ts';
-import { discardOutdatedDemoDatabase, seed } from './seed.ts';
-import { migrate } from './migrations.ts';
 import { Sessions } from './sessions.ts';
+import { describeSettings, openInstance, readSettings } from './startup.ts';
 
-const development = process.env.NODE_ENV !== 'production';
-mkdirSync('data', { recursive: true });
-const database = resolve('data/prototype.sqlite');
-// Both run before either store opens the file: a discarded demo file takes
-// its old accounts with it, and a migration's new tables are not pre-empted
-// by the stores' own CREATE statements.
-if (development) discardOutdatedDemoDatabase(database);
-const migration = migrate(database);
-if (migration.outcome === 'refused') {
-  console.error(`Benchline did not start: ${migration.reason}`);
+/** A refused start is written to standard error, which the service manager
+ * on the lab server keeps in its log. */
+function refuse(reason: string): never {
+  console.error(`Benchline did not start: ${reason}`);
   process.exit(1);
 }
+
+const read = readSettings(process.env);
+if (read.outcome === 'refused') refuse(read.reasons.join(' '));
+const { settings } = read;
+const instance = openInstance(settings);
+if (instance.outcome === 'refused') refuse(instance.reason);
+const { lab, accounts, migration, close } = instance;
+console.log(describeSettings(settings));
+if (migration.outcome === 'created')
+  console.log(`Created a new, empty database at ${settings.database}`);
 if (migration.outcome === 'migrated')
   console.log(
     `Database migrated from schema version ${migration.from} to ${migration.to}: ${migration.applied.join('; ')}`,
   );
-const accounts = new Accounts(database, {
-  // Outbound mail settings come with production mode (#30). Until then a
-  // lockout notice is printed here and, since nobody was emailed, recorded as
-  // not sent.
-  lockoutNotice: {
-    systemAdministrator: 'system-administrator@benchline.invalid',
-    qualityLead: 'quality-lead@benchline.invalid',
-    transport: {
-      send: async (mail) => {
-        console.warn(
-          `Lockout notice to ${mail.to.join(', ')}: ${mail.subject}\n${mail.text}`,
-        );
-        throw new Error(
-          'outbound mail is not configured until production mode (#30); the notice was printed on the server console',
-        );
-      },
-    },
-  },
-});
-accounts.seed(demoAccounts);
-// The core verifies Electronic signatures against these accounts' hashes and
-// takes its users from them, so a user the Admin adds can act at once.
-const lab = new Laboratory(database, {
-  credentials: accounts,
-  people: () => accounts.people(),
-});
-seed(lab);
 const sessions = new Sessions();
-const handleApi = api(lab, { accounts, sessions });
+const handleApi = api(lab, { accounts, sessions, mode: settings.mode });
 // An abandoned session is recorded as expired soon after it expires, not only
 // when the next request arrives.
 const sweep = setInterval(() => expireSessions(lab, sessions), 60_000);
-const vite = development
-  ? await (
-      await import('vite')
-    ).createServer({ server: { middlewareMode: true }, appType: 'spa' })
-  : null;
+// The demo serves the workspace from source; production serves the build.
+const vite =
+  settings.mode === 'demo'
+    ? await (
+        await import('vite')
+      ).createServer({ server: { middlewareMode: true }, appType: 'spa' })
+    : null;
 const root = resolve('dist');
 const mime: Record<string, string> = {
   '.js': 'text/javascript',
@@ -100,16 +75,15 @@ const server = createServer((req, res) => {
     res.end('Not found');
   }
 });
-server.listen(Number(process.env.PORT ?? 5173), '127.0.0.1', () =>
-  console.log('Benchline: http://127.0.0.1:' + (process.env.PORT ?? 5173)),
+server.listen(settings.port, '127.0.0.1', () =>
+  console.log('Benchline: http://127.0.0.1:' + settings.port),
 );
 async function shutdown() {
   clearInterval(sweep);
   await vite?.close();
   await accounts.noticesSettled();
   server.close(() => {
-    lab.close();
-    accounts.close();
+    close();
     process.exit(0);
   });
 }

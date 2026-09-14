@@ -6,6 +6,7 @@ import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import { api } from '../server/http.ts';
+import type { Mode } from '../server/startup.ts';
 import { IDLE_TIMEOUT_MS, Sessions } from '../server/sessions.ts';
 import { createHash } from 'node:crypto';
 import { newCommandId } from '../src/laboratory/contracts.ts';
@@ -34,7 +35,7 @@ const receipt = () => ({
 
 /** A real server on an ephemeral port over an in-memory core, with a clock
  * the test can move to exercise session inactivity. */
-async function serve(t: TestContext) {
+async function serve(t: TestContext, mode: Mode = 'demo') {
   const accounts = new Accounts(':memory:');
   accounts.seed(demoAccounts);
   const lab = new Laboratory(':memory:', {
@@ -43,7 +44,7 @@ async function serve(t: TestContext) {
   });
   const clock = { now: Date.parse('2026-09-13T09:00:00Z') };
   const server = createServer(
-    api(lab, { accounts, sessions: new Sessions(() => clock.now) }),
+    api(lab, { accounts, sessions: new Sessions(() => clock.now), mode }),
   );
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
@@ -386,6 +387,65 @@ test('a lock from Failed attempts at sign-in ends the sessions already open', as
       .filter((act) => act !== 'failedAttempt'),
     ['signIn', 'lockout', 'lockoutNotice'],
   );
+});
+
+test('in production the Accounts screen is refused, even to the Admin, and the session cookie is Secure', async (t) => {
+  // Accounts are seeded here only to have an Admin to sign in as; production
+  // itself never adds them.
+  const { url, post, signIn } = await serve(t, 'production');
+  assert.deepEqual(await (await fetch(url + '/api/instance')).json(), {
+    mode: 'production',
+  });
+  const signedIn = await post('/api/sign-in', {
+    username: 'admin',
+    password: 'admin-demo',
+  });
+  assert.match(signedIn.headers.get('set-cookie')!, /; Secure/);
+  const admin = await signIn('admin', 'admin-demo');
+
+  const listing = await fetch(url + '/api/accounts', { headers: admin });
+  const change = await post(
+    '/api/accounts',
+    { type: 'unlockAccount', username: 'manager' },
+    admin,
+  );
+  const nested = await fetch(url + '/api/accounts/admin', { headers: admin });
+  for (const refused of [listing, change, nested]) {
+    assert.equal(refused.status, 403);
+    assert.deepEqual(await refused.json(), {
+      error:
+        'Accounts are not managed in the workspace in production. The System administrator manages them on the lab server.',
+    });
+  }
+  const signedOut = await post('/api/sign-out', {}, admin);
+  assert.match(signedOut.headers.get('set-cookie')!, /; Secure/);
+
+  // The browser reaches production through the TLS reverse proxy, so its own
+  // origin is https; plain http from the browser is not this origin.
+  const host = new URL(url).host;
+  const credentials = { username: 'admin', password: 'admin-demo' };
+  assert.equal(
+    (await post('/api/sign-in', credentials, { Origin: `https://${host}` }))
+      .status,
+    200,
+  );
+  assert.equal(
+    (await post('/api/sign-in', credentials, { Origin: `http://${host}` }))
+      .status,
+    403,
+  );
+});
+
+test('the demo reports its mode and keeps a session cookie without Secure', async (t) => {
+  const { url, post } = await serve(t);
+  assert.deepEqual(await (await fetch(url + '/api/instance')).json(), {
+    mode: 'demo',
+  });
+  const signedIn = await post('/api/sign-in', {
+    username: 'admin',
+    password: 'admin-demo',
+  });
+  assert.doesNotMatch(signedIn.headers.get('set-cookie')!, /Secure/);
 });
 
 test('only the Admin manages accounts over HTTP, and a deactivated user is signed out', async (t) => {

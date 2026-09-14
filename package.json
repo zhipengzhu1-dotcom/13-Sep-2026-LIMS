@@ -7,9 +7,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "tsx server/main.ts",
+    "dev": "BENCHLINE_MODE=demo tsx server/main.ts",
     "build": "tsc --noEmit && vite build",
-    "start": "NODE_ENV=production tsx server/main.ts",
+    "start": "tsx server/main.ts",
     "unlock": "tsx server/unlock.ts",
     "rehearse-migration": "tsx server/rehearse-migration.ts",
     "test": "tsx --test tests/*.test.ts",
@@ -18,12 +18,14 @@
     "format:check": "prettier --check src server tests docs *.md *.json *.ts index.html"
   },
   "dependencies": {
+    "nodemailer": "^10.0.9",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "zod": "^4.1.5"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "@types/nodemailer": "^8.0.1",
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.2",

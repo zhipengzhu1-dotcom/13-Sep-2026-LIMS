@@ -399,22 +399,30 @@ test('a lone Admin who locked themselves out is unlocked by the demo server comm
   laboratory.close();
   accounts.close();
 
+  // Production is refused before any other setting is asked for.
   assert.throws(
     () =>
       unlockFromServer({
-        database,
+        env: { BENCHLINE_MODE: 'production', BENCHLINE_DATABASE: database },
         username: 'admin',
         operator: 'lab-server-user',
-        production: true,
       }),
     /The unlock command is for the demo only/,
   );
+  assert.throws(
+    () =>
+      unlockFromServer({
+        env: { BENCHLINE_DATABASE: database },
+        username: 'admin',
+        operator: 'lab-server-user',
+      }),
+    /Set BENCHLINE_MODE to demo or production/,
+  );
   assert.equal(
     unlockFromServer({
-      database,
+      env: { BENCHLINE_MODE: 'demo', BENCHLINE_DATABASE: database },
       username: 'admin',
       operator: 'lab-server-user',
-      production: false,
     }),
     'admin is unlocked.',
   );

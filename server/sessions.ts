@@ -75,10 +75,12 @@ export function readSessionCookie(header: string | undefined) {
   return undefined;
 }
 
-export function sessionCookie(token: string) {
-  return `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/`;
+/** `secure` in production, where the reverse proxy on the lab server serves
+ * Benchline over TLS; the demo is served over plain HTTP. */
+export function sessionCookie(token: string, secure: boolean) {
+  return `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/${secure ? '; Secure' : ''}`;
 }
 
-export function clearedSessionCookie() {
-  return `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
+export function clearedSessionCookie(secure: boolean) {
+  return `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure ? '; Secure' : ''}`;
 }

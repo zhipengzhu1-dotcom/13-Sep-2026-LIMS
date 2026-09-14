@@ -54,6 +54,7 @@ import {
   stamp,
   Status,
   statusClass,
+  type InstanceMode,
   type View,
 } from './shared';
 
@@ -62,6 +63,14 @@ export function App() {
   // undefined while the session is being checked; null when signed out.
   const [user, setUser] = useState<SessionUser | null | undefined>(undefined);
   const [signInMessage, setSignInMessage] = useState('');
+  const [mode, setMode] = useState<InstanceMode>(null);
+  useEffect(() => {
+    fetch('/api/instance')
+      .then(async (response) => {
+        if (response.ok) setMode((await response.json()).mode);
+      })
+      .catch(() => {});
+  }, []);
   const actor = user?.id ?? '';
   const [view, setView] = useState<View>('Receiving');
   const [search, setSearch] = useState('');
@@ -148,7 +157,7 @@ export function App() {
         if (!response.ok) return;
         const next: SessionUser = (await response.json()).user;
         setUser(next);
-        if (!viewsForRole(next.role).includes(view))
+        if (!viewsForRole(next.role, mode).includes(view))
           navigate(defaultViewForRole(next.role));
       })
       .catch(() => {});
@@ -254,7 +263,7 @@ export function App() {
   }
 
   const person = user ?? undefined;
-  const roleViews = viewsForRole(person?.role);
+  const roleViews = viewsForRole(person?.role, mode);
   const isQueue = QUEUES.includes(view);
   const base = useMemo(
     () => (data ? baseSet(view, data.samples, actor) : []),
@@ -396,7 +405,13 @@ export function App() {
 
   if (user === undefined) return <p className="blank">Loading…</p>;
   if (user === null)
-    return <SignIn message={signInMessage} onSignedIn={signedIn} />;
+    return (
+      <SignIn
+        message={signInMessage}
+        onSignedIn={signedIn}
+        demo={mode === 'demo'}
+      />
+    );
 
   return (
     <div className="app">
@@ -839,10 +854,14 @@ export function App() {
           <LabAuditTrail data={data} />
         )}
         <footer className="statusbar">
-          <span className="demo">Demo</span>
-          <span>
-            Fictional data. Not validated for regulated laboratory records.
-          </span>
+          {mode === 'demo' && (
+            <>
+              <span className="demo">Demo</span>
+              <span>
+                Fictional data. Not validated for regulated laboratory records.
+              </span>
+            </>
+          )}
           <span className="spacer" />
           {isQueue && data && (
             <span className="hints">
@@ -904,9 +923,12 @@ export type SessionUser = { id: string; name: string; role: string };
 export function SignIn({
   message,
   onSignedIn,
+  demo,
 }: {
   message: string;
   onSignedIn: (user: SessionUser) => void;
+  /** The demo accounts are listed in the demo only, never in production. */
+  demo: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -979,11 +1001,13 @@ export function SignIn({
         <button className="btn primary" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
-        <p className="sign-in-note">
-          Prototype demo accounts (password is the username followed by{' '}
-          <code>-demo</code>): <code>coordinator</code>, <code>analyst</code>,{' '}
-          <code>analyst-2</code>, <code>manager</code>, <code>admin</code>.
-        </p>
+        {demo && (
+          <p className="sign-in-note">
+            Prototype demo accounts (password is the username followed by{' '}
+            <code>-demo</code>): <code>coordinator</code>, <code>analyst</code>,{' '}
+            <code>analyst-2</code>, <code>manager</code>, <code>admin</code>.
+          </p>
+        )}
       </form>
     </main>
   );

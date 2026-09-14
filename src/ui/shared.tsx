@@ -8,6 +8,10 @@ import {
   type Sample,
 } from '../laboratory/contracts';
 
+/** The server's mode, from `GET /api/instance`; null until it is known, when
+ * nothing demo-only is shown. */
+export type InstanceMode = 'demo' | 'production' | null;
+
 export type View =
   | 'Receiving'
   | 'Holds'

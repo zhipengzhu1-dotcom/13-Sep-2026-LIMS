@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { publishQueue, type Sample } from '../laboratory/contracts';
-import { closed, type View } from './shared';
+import { closed, type InstanceMode, type View } from './shared';
 
 /** Each role's own queue is a permission, not a preference: a Coordinator
  * receives Submissions, assigns them from Receiving and oversees the whole
@@ -9,8 +9,11 @@ import { closed, type View } from './shared';
  * queue (the server enforces this — see `requireRole` and
  * `requireAssignedAnalyst` in handlers.ts), so there is no reason to show
  * them a queue they cannot use. An Admin acts in every role (ADR-0004), so
- * sees every view. */
-export function viewsForRole(role: string | undefined): View[] {
+ * sees every view, and the Accounts screen in the demo only (ADR-0011). */
+export function viewsForRole(
+  role: string | undefined,
+  mode: InstanceMode,
+): View[] {
   if (role === 'admin')
     return [
       'Receiving',
@@ -22,8 +25,7 @@ export function viewsForRole(role: string | undefined): View[] {
       'OOS investigations',
       'Methods',
       'Audit trail',
-      // Before Go-live only (ADR-0011).
-      'Accounts',
+      ...(mode === 'demo' ? (['Accounts'] as const) : []),
     ];
   if (role === 'analyst') return ['My work', 'Methods', 'Audit trail'];
   if (role === 'manager')
@@ -39,7 +41,7 @@ export function viewsForRole(role: string | undefined): View[] {
 }
 
 export function defaultViewForRole(role: string | undefined): View {
-  return viewsForRole(role)[0];
+  return viewsForRole(role, null)[0];
 }
 
 /** The rows a queue view starts from, before any filter or search. Counts in
