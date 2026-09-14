@@ -335,7 +335,7 @@ export function SamplePanel({
               }}
             >
               {approvalRefusal && (
-                <div role="status">
+                <div>
                   <RefusalNote id={approvalNoteId} refusal={approvalRefusal} />
                 </div>
               )}

@@ -16,7 +16,14 @@ import {
 } from '../laboratory/results';
 import { localDateTime } from './receiving';
 import { ResultValue } from './results';
-import { closed, type Execute, personName, stamp, Status } from './shared';
+import {
+  closed,
+  type Execute,
+  personName,
+  RequiredMark,
+  stamp,
+  Status,
+} from './shared';
 
 /** Where an out-of-specification Result stands in its investigation. */
 export function investigationLabel(
@@ -322,16 +329,22 @@ export function Investigations({
                             });
                           }}
                         >
-                          <input
-                            name="contact"
-                            aria-label="Client contact who was informed"
-                            required
-                            maxLength={200}
-                            placeholder="Name and role at the Client"
-                          />
                           <label className="field">
-                            What data and Laboratory error check findings were
-                            sent to the Client
+                            <span>
+                              Client contact who was informed <RequiredMark />
+                            </span>
+                            <input
+                              name="contact"
+                              required
+                              maxLength={200}
+                              placeholder="Name and role at the Client"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>
+                              What data and Laboratory error check findings were
+                              sent to the Client <RequiredMark />
+                            </span>
                             <textarea
                               name="sent"
                               required
@@ -343,14 +356,18 @@ export function Investigations({
                               }
                             />
                           </label>
-                          <input
-                            type="datetime-local"
-                            name="notifiedAt"
-                            aria-label="When the Client was informed"
-                            required
-                            max={localDateTime(new Date())}
-                            defaultValue={localDateTime(new Date())}
-                          />
+                          <label className="field">
+                            <span>
+                              When the Client was informed <RequiredMark />
+                            </span>
+                            <input
+                              type="datetime-local"
+                              name="notifiedAt"
+                              required
+                              max={localDateTime(new Date())}
+                              defaultValue={localDateTime(new Date())}
+                            />
+                          </label>
                           <button className="btn sm primary" disabled={busy}>
                             Record Client informed
                           </button>
@@ -399,6 +416,9 @@ export function ConcludeForm({
   const [outcome, setOutcome] = useState<'Invalidated' | 'Confirmed' | null>(
     null,
   );
+  // Set when a blocked outcome is chosen: the refusal is announced then, and
+  // the choice is not taken.
+  const [refused, setRefused] = useState(false);
   const reasonId = `conclude-invalidated-${investigation.id}`;
   return (
     <form
@@ -417,7 +437,9 @@ export function ConcludeForm({
       }}
     >
       <fieldset className="priority">
-        <legend>Outcome</legend>
+        <legend>
+          Outcome <RequiredMark />
+        </legend>
         {(['Invalidated', 'Confirmed'] as const).map((o) => {
           const blocked = o === 'Invalidated' && !!invalidatedBlocker;
           return (
@@ -428,10 +450,11 @@ export function ConcludeForm({
                 value={o}
                 required
                 checked={outcome === o}
-                // Blocked but focusable, so its reason is reachable.
-                aria-disabled={blocked || undefined}
+                // Blocked but focusable: its reason is its description, and
+                // choosing it is refused with that reason announced.
                 aria-describedby={blocked ? reasonId : undefined}
                 onChange={() => {
+                  setRefused(blocked);
                   if (!blocked) setOutcome(o);
                 }}
               />
@@ -442,22 +465,32 @@ export function ConcludeForm({
         {invalidatedBlocker && (
           <RefusalNote id={reasonId} refusal={invalidatedBlocker} />
         )}
+        <span className="visually-hidden" role="status">
+          {refused && invalidatedBlocker
+            ? `Invalidated cannot be chosen. ${invalidatedBlocker.reason}`
+            : ''}
+        </span>
       </fieldset>
       {outcome === 'Invalidated' && (
         <>
           <label className="check">
             <input type="checkbox" name="causationConfirmed" required />I
-            confirm the laboratory error the check identified caused this value
+            confirm the laboratory error the check identified caused this value{' '}
+            <RequiredMark />
           </label>
-          <textarea
-            name="assignableCause"
-            aria-label="Assignable cause"
-            required
-            minLength={3}
-            maxLength={2000}
-            rows={2}
-            placeholder="Required: the assignable laboratory cause"
-          />
+          <label className="field">
+            <span>
+              Assignable cause <RequiredMark />
+            </span>
+            <textarea
+              name="assignableCause"
+              required
+              minLength={3}
+              maxLength={2000}
+              rows={2}
+              placeholder="The laboratory error that caused the value"
+            />
+          </label>
         </>
       )}
       <button className="btn sm primary" disabled={busy}>

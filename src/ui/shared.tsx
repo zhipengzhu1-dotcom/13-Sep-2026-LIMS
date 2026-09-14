@@ -163,6 +163,14 @@ export function Icon({ name }: { name: string }) {
   );
 }
 
+/** The visible mark of a required field, beside its label text. The control
+ * itself carries `required`, so assistive technology is told once. */
+export const RequiredMark = () => (
+  <span className="required-mark" aria-hidden="true">
+    required
+  </span>
+);
+
 export function Status({ sample }: { sample: Sample }) {
   return (
     <span className={'status ' + statusClass(sample)}>{sample.status}</span>
