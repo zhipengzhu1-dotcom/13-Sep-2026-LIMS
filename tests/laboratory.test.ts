@@ -2197,24 +2197,72 @@ const verification = (lab: Laboratory) =>
 const invalidSignature =
   /Electronic signature .* is invalid\. Contact the Quality lead/;
 
-test('the database refuses changing or deleting a recorded Electronic signature', (t) => {
+test('the database refuses changing or deleting signatures, audit entries, attachments, Certificates, publications and Acceptable intake entries', (t) => {
   const { lab, file } = onFile(t);
-  submitted(lab);
-  const recorded = lab.snapshot().signatures;
+  const published = run(
+    lab,
+    publish(throughApproval(lab, run(lab, receipt, 'coordinator'))),
+    'coordinator',
+  );
+  const readRecords = () => ({
+    snapshot: lab.snapshot(),
+    auditTrail: lab.auditTrail(),
+    certificate: lab.certificate(published.id, 1),
+    worksheet: lab.readAttachment(worksheet(lab)),
+  });
+  const before = readRecords();
   const db = new DatabaseSync(file);
   t.after(() => db.close());
-  assert.throws(
-    () =>
-      db.exec(
-        "UPDATE signatures SET printedName='Someone Else', meaning='approved by'",
-      ),
-    /Electronic signatures cannot be changed/,
-  );
-  assert.throws(
-    () => db.exec('DELETE FROM signatures'),
-    /Electronic signatures cannot be deleted/,
-  );
-  assert.deepEqual(lab.snapshot().signatures, recorded);
+  const protectedTables = [
+    {
+      table: 'signatures',
+      change: "signedContent='{}', printedName='Someone Else'",
+      refusal: /Electronic signatures cannot be (changed|deleted)/,
+    },
+    {
+      table: 'audit',
+      change: "newValue='\"Withdrawn\"', actor='manager'",
+      refusal: /Audit entries cannot be (changed|deleted)/,
+    },
+    {
+      table: 'attachments',
+      change: "content=X'00', sha256='00'",
+      refusal: /Attachments cannot be (changed|deleted)/,
+    },
+    {
+      table: 'certificates',
+      change: "content='{}', sha256='00'",
+      refusal: /Certificates of Analysis are locked/,
+    },
+    {
+      table: 'publications',
+      change: "recipients='[]', publishedBy='manager'",
+      refusal: /Publications are append-only/,
+    },
+    {
+      table: 'acceptableIntakes',
+      change: 'value=1000000',
+      refusal: /Acceptable intake entries are append-only/,
+    },
+  ];
+  for (const { table, change, refusal } of protectedTables) {
+    // A trigger fires per row, so an empty table would refuse nothing.
+    const { count } = db
+      .prepare(`SELECT count(*) AS count FROM ${table}`)
+      .get() as { count: number };
+    assert.ok(count > 0, `${table} holds records`);
+    assert.throws(
+      () => db.exec(`UPDATE ${table} SET ${change}`),
+      refusal,
+      `UPDATE ${table}`,
+    );
+    assert.throws(
+      () => db.exec(`DELETE FROM ${table}`),
+      refusal,
+      `DELETE FROM ${table}`,
+    );
+  }
+  assert.deepEqual(readRecords(), before);
 });
 
 test('each signing stores its Signed content: the Sample as saved and, for Approval, the Certificate issued', (t) => {
@@ -2351,7 +2399,7 @@ test('a Sample with an invalid signature refuses submission, Approval, Publishin
   const breakSignatures = (sample: Sample) =>
     tamper(
       file,
-      "UPDATE signatures SET meaning='performed by ' WHERE sampleId=?",
+      `UPDATE signatures SET signedContent=replace(signedContent, '"value":2.5', '"value":1.5') WHERE sampleId=?`,
       sample.id,
     );
   const refusedWithoutChange = (command: object, actor: string) => {
