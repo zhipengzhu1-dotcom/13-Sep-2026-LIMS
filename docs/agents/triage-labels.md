@@ -14,13 +14,12 @@ When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the 
 
 ## Go-live scope labels
 
-These labels record the dispositions decided in the SOP-Management repo. They are not triage roles.
+This label records a disposition decided in the SOP-Management repo. It is not a triage role.
 
-| Label             | Meaning                                                                                     |
-| ----------------- | ------------------------------------------------------------------------------------------- |
-| `go-live-blocker` | In the frozen Go-live release (zhipengzhu1-dotcom/13-Sep-2026-SOP-Management#12)            |
-| `interim-bridge`  | After Go-live; the release closing it withdraws a paper Interim bridge (with `enhancement`) |
+| Label             | Meaning                                                                          |
+| ----------------- | -------------------------------------------------------------------------------- |
+| `go-live-blocker` | In the frozen Go-live release (zhipengzhu1-dotcom/13-Sep-2026-SOP-Management#12) |
 
-An issue that already cites a disposition (Go-live blocker, Interim bridge or Permanent procedure) is not triaged again: apply the matching label. An issue without `go-live-blocker` is outside the frozen release and is not grilled before Go-live unless the user reopens the scope.
+An issue that already cites a Go-live blocker disposition is not triaged again: apply `go-live-blocker`. An issue without `go-live-blocker` is outside the frozen release and is not grilled before Go-live unless the user reopens the scope.
 
 Edit the right-hand column to match whatever vocabulary you actually use.
