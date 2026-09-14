@@ -10,7 +10,10 @@ import { SignatureStore } from '../src/laboratory/signature-store.ts';
 import { discardOutdatedDemoDatabase, seed } from '../server/seed.ts';
 import { migrate } from '../server/migrations.ts';
 import { renderCertificate } from '../src/laboratory/certificate-renderer.ts';
-import type { CertificateResult } from '../src/laboratory/certificate.ts';
+import type {
+  CertificateContent,
+  CertificateResult,
+} from '../src/laboratory/certificate.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
@@ -3931,6 +3934,16 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
     'Time point †',
     'Storage condition †',
   ]);
+  // ISO/IEC 17025 7.4.3: the Client asked to proceed despite the deviation,
+  // which holds the whole Sample, so every reported Result is named.
+  assert.deepEqual(section('Receipt deviations'), {
+    kind: 'text',
+    heading: 'Receipt deviations',
+    paragraphs: [
+      '1. Broken seal: Tamper seal on bottle 2 broken on arrival. (recorded 2026-09-10 12:00:00 UTC). Client instruction: proceed, given by Dana Wells, QA Northstar on 2026-09-10 10:30:00 UTC.',
+      'Disclaimer: the Client instructed the laboratory to proceed despite this deviation, so these Results may be affected by it: Impurity A (NIT-001 v1), Impurity B (NIT-003 v1).',
+    ],
+  });
   assert.deepEqual(section('Decision rule'), {
     kind: 'text',
     heading: 'Decision rule',
@@ -4206,6 +4219,89 @@ test('a Certificate marks its end', (t) => {
   // ISO/IEC 17025 7.8.2.1 d): a clear identification of the end.
   const document = renderCertificate(lab.certificate(s.id).content);
   assert.equal(document.endStatement, 'End of Certificate of Analysis');
+});
+
+/** The Receipt deviations section of a Certificate as printed, or undefined. */
+const deviationParagraphs = (content: CertificateContent) => {
+  const section = renderCertificate(content).sections.find(
+    (x) => x.heading === 'Receipt deviations',
+  );
+  return section?.kind === 'text' ? section.paragraphs : undefined;
+};
+
+test('a Certificate names every reported Result under each Receipt deviation the Client asked to proceed despite', (t) => {
+  const lab = memory(t);
+  let s = run(
+    lab,
+    {
+      ...receipt,
+      samples: [
+        {
+          ...finishedProduct,
+          deviations: [
+            deviation,
+            {
+              kind: 'temperature excursion',
+              description: 'Logger shows 31 °C for 6 hours in transit.',
+            },
+          ],
+        },
+      ],
+    },
+    'coordinator',
+  );
+  s = run(lab, instruction(s, 'proceed'), 'coordinator');
+  s = throughApproval(lab, s);
+
+  // ISO/IEC 17025 7.4.3: "a disclaimer in the report indicating which
+  // results may be affected by the deviation".
+  const disclaimer =
+    'Disclaimer: the Client instructed the laboratory to proceed despite this deviation, so these Results may be affected by it: Impurity A (NIT-001 v1), Impurity B (NIT-003 v1).';
+  assert.deepEqual(deviationParagraphs(lab.certificate(s.id).content), [
+    '1. Broken seal: Tamper seal on bottle 2 broken on arrival. (recorded 2026-09-10 12:00:00 UTC). Client instruction: proceed, given by Dana Wells, QA Northstar on 2026-09-10 10:30:00 UTC.',
+    disclaimer,
+    '2. Temperature excursion: Logger shows 31 °C for 6 hours in transit. (recorded 2026-09-10 12:00:00 UTC). Client instruction: proceed, given by Dana Wells, QA Northstar on 2026-09-10 10:30:00 UTC.',
+    disclaimer,
+  ]);
+});
+
+test('a Certificate for a Sample received without a Receipt deviation carries no disclaimer', (t) => {
+  const lab = memory(t);
+  const s = throughApproval(lab, run(lab, receipt, 'coordinator'));
+  const { content } = lab.certificate(s.id);
+  assert.equal(deviationParagraphs(content), undefined);
+});
+
+test('a Certificate issued before Receipt deviation disclaimers reads back with its hash and renders as issued', (t) => {
+  const folder = mkdtempSync(join(tmpdir(), 'lims-certificate-disclaimer-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const file = join(folder, 'lab.sqlite');
+  const lab = new Laboratory(file, { clock: () => NOW, credentials: accounts });
+  let s = run(lab, instruction(held(lab), 'proceed'), 'coordinator');
+  s = throughApproval(lab, s);
+  // Stored as the build before disclaimers left it.
+  const earlier = structuredClone(lab.certificate(s.id).content);
+  for (const d of earlier.deviations) delete d.disclaimer;
+  const stored = JSON.stringify({ ...earlier, version: 2 });
+  const sha256 = createHash('sha256').update(stored).digest('hex');
+  lab.close();
+  const db = new DatabaseSync(file);
+  db.prepare(
+    'INSERT INTO certificates (sampleId, version, approvedAt, sha256, content, commandId) VALUES (?, 2, ?, ?, ?, ?)',
+  ).run(s.id, NOW, sha256, stored, new Uint8Array(16));
+  db.close();
+
+  const reopened = new Laboratory(file, {
+    clock: () => NOW,
+    credentials: accounts,
+  });
+  t.after(() => reopened.close());
+  const issued = reopened.certificate(s.id, 2);
+  assert.equal(JSON.stringify(issued.content), stored, 'read back unchanged');
+  assert.equal(issued.sha256, sha256);
+  assert.deepEqual(deviationParagraphs(issued.content), [
+    '1. Broken seal: Tamper seal on bottle 2 broken on arrival. (recorded 2026-09-10 12:00:00 UTC). Client instruction: proceed, given by Dana Wells, QA Northstar on 2026-09-10 10:30:00 UTC.',
+  ]);
 });
 
 test('a Certificate stays as issued through replays, reference data changes and reopening', (t) => {

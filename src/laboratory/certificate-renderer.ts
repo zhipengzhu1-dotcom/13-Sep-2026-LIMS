@@ -222,11 +222,14 @@ export function renderCertificate(
     sections.push({
       kind: 'text',
       heading: 'Receipt deviations',
-      paragraphs: content.deviations.map((d) => {
+      paragraphs: content.deviations.flatMap((d) => {
         const instruction = d.instruction
           ? ` Client instruction: ${d.instruction.decision}, given by ${d.instruction.contact} on ${utcStamp(d.instruction.instructedAt)}.`
           : '';
-        return `${d.sequence}. ${capital(d.kind)}: ${d.description} (recorded ${utcStamp(d.recordedAt)}).${instruction}`;
+        return [
+          `${d.sequence}. ${capital(d.kind)}: ${d.description} (recorded ${utcStamp(d.recordedAt)}).${instruction}`,
+          ...(d.disclaimer ? [d.disclaimer] : []),
+        ];
       }),
     });
   const notes = content.results.flatMap((r) =>

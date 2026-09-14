@@ -57,6 +57,11 @@ const clientSuppliedDisclaimer = (finished: boolean) =>
     ? `${clientSuppliedMark} Supplied by the Client. The laboratory is not responsible for this information; it can affect the validity of the Results, as the Maximum daily dose sets the ng/day Results and their Limit.`
     : `${clientSuppliedMark} Supplied by the Client. The laboratory is not responsible for this information, which can affect the validity of the Results.`;
 
+/** ISO/IEC 17025 7.4.3: when the Client asks the lab to proceed despite a
+ * Receipt deviation, a disclaimer indicating which Results it may affect. */
+const receiptDeviationDisclaimer = (affectedResults: string) =>
+  `Disclaimer: the Client instructed the laboratory to proceed despite this deviation, so these Results may be affected by it: ${affectedResults}.`;
+
 /** Certificate fields whose values the Client supplied (ISO/IEC 17025
  * 7.8.2.2), in the order the Certificate prints them; `stability` covers the
  * study ID, time point and condition. */
@@ -190,6 +195,10 @@ export type CertificateContent = {
       contact: string;
       instructedAt: string;
     } | null;
+    /** ISO/IEC 17025 7.4.3's disclaimer naming the Results the deviation may
+     * affect, for a deviation the Client instructed the lab to proceed
+     * despite; null otherwise, absent on older versions. */
+    disclaimer?: string | null;
   }[];
   results: CertificateResult[];
   decisionRule: string;
@@ -276,6 +285,40 @@ export function certificateContent({
   const clientSupplied = clientSuppliedFields.filter(
     (f) => !unsupplied.includes(f),
   );
+  const results = resultsView(sample).tests.map((view): CertificateResult => {
+    const { test, current: r } = view;
+    if (!r)
+      throw new Error(`Test ${test.id} has no current Result to certify.`);
+    return {
+      testId: test.id,
+      analyte: test.analyteName,
+      methodCode: test.methodCode,
+      methodVersion: test.methodVersion,
+      technique: test.technique,
+      analysedOn: r.analysedOn ?? null,
+      value: r.value,
+      qualifier: r.qualifier,
+      unit: r.unit,
+      lod: test.lod,
+      loq: test.loq,
+      limit: r.limit && {
+        entryId: r.limit.id,
+        value: r.limit.value,
+        unit: 'ng/day',
+        sourceTitle: r.limit.sourceTitle,
+        sourceUrl: r.limit.sourceUrl,
+        sourceRevisionDate: r.limit.sourceRevisionDate,
+        effectiveFrom: r.limit.effectiveFrom,
+        illustrative: r.limit.illustrative,
+      },
+      conformity: r.conformity,
+      investigations: view.certificateInvestigations,
+    };
+  });
+  // A Receipt deviation holds the whole Sample, so it may affect every Result.
+  const affectedResults = results
+    .map((r) => `${r.analyte} (${r.methodCode} v${r.methodVersion})`)
+    .join(', ');
   return {
     sampleId: sample.id,
     version,
@@ -325,37 +368,12 @@ export function certificateContent({
         contact: d.instruction.contact,
         instructedAt: d.instruction.instructedAt,
       },
+      disclaimer:
+        d.instruction?.decision === 'proceed'
+          ? receiptDeviationDisclaimer(affectedResults)
+          : null,
     })),
-    results: resultsView(sample).tests.map((view): CertificateResult => {
-      const { test, current: r } = view;
-      if (!r)
-        throw new Error(`Test ${test.id} has no current Result to certify.`);
-      return {
-        testId: test.id,
-        analyte: test.analyteName,
-        methodCode: test.methodCode,
-        methodVersion: test.methodVersion,
-        technique: test.technique,
-        analysedOn: r.analysedOn ?? null,
-        value: r.value,
-        qualifier: r.qualifier,
-        unit: r.unit,
-        lod: test.lod,
-        loq: test.loq,
-        limit: r.limit && {
-          entryId: r.limit.id,
-          value: r.limit.value,
-          unit: 'ng/day',
-          sourceTitle: r.limit.sourceTitle,
-          sourceUrl: r.limit.sourceUrl,
-          sourceRevisionDate: r.limit.sourceRevisionDate,
-          effectiveFrom: r.limit.effectiveFrom,
-          illustrative: r.limit.illustrative,
-        },
-        conformity: r.conformity,
-        investigations: view.certificateInvestigations,
-      };
-    }),
+    results,
     decisionRule: finished ? decisionRule : rawMaterialDecisionRule,
     uncertaintyStatement: finished ? uncertaintyStatement : null,
     individualJudgement: individualJudgementStatement,

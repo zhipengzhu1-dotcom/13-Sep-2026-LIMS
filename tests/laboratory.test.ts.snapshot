@@ -65,7 +65,8 @@ exports[`Approval freezes Certificate version 1 for a finished product with a Re
         "decision": "proceed",
         "contact": "Dana Wells, QA Northstar",
         "instructedAt": "2026-09-10T10:30:00.000Z"
-      }
+      },
+      "disclaimer": "Disclaimer: the Client instructed the laboratory to proceed despite this deviation, so these Results may be affected by it: Impurity A (NIT-001 v1), Impurity B (NIT-003 v1)."
     }
   ],
   "results": [
