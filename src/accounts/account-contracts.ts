@@ -19,7 +19,7 @@ const name = z
 const role = z.enum(roles, { error: 'Select a role.' });
 const password = z
   .string()
-  .min(8, 'A password needs at least 8 characters.')
+  .min(12, 'A password needs at least 12 characters.')
   .max(200, 'A password is at most 200 characters.');
 
 export const accountCommandSchema = z.discriminatedUnion('type', [
@@ -35,6 +35,23 @@ export const accountCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('unlockAccount'), username: z.string() }),
 ]);
 export type AccountCommand = z.infer<typeof accountCommandSchema>;
+
+/** The refusal for a change that would leave no active Admin. */
+export const NO_ACTIVE_ADMIN_LEFT =
+  'Benchline needs at least one active Admin.';
+
+/** Whether changing one account's role or active flag would leave Benchline
+ * with no active, unlocked Admin to manage accounts. The store refuses such a
+ * change, and the Accounts screen blocks it before it is tried. */
+export function leavesNoActiveAdmin(
+  accounts: readonly AccountSummary[],
+  username: string,
+  after: Partial<Pick<AccountSummary, 'role' | 'active'>>,
+): boolean {
+  return !accounts
+    .map((a) => (a.id === username ? { ...a, ...after } : a))
+    .some((a) => a.role === 'admin' && a.active && !a.locked);
+}
 
 /** An account as the Admin's screen lists it. Never a password hash. */
 export type AccountSummary = {

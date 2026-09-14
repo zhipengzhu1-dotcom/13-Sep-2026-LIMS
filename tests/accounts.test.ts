@@ -2,6 +2,10 @@ import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
+import { unlockFromServer } from '../server/unlock.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import { newCommandId, type AuditEntry } from '../src/laboratory/contracts.ts';
 
@@ -48,7 +52,7 @@ test('a user the Admin adds can act and sign; once deactivated they cannot, and 
         username,
         name,
         role,
-        password: `${username}-pass`,
+        password: `${username}-password`,
       },
       'admin',
       laboratory,
@@ -106,7 +110,7 @@ test('a user the Admin adds can act and sign; once deactivated they cannot, and 
     'analyst-3',
   );
   s = run(
-    { type: 'submitForApproval', ...target(), password: 'analyst-3-pass' },
+    { type: 'submitForApproval', ...target(), password: 'analyst-3-password' },
     'analyst-3',
   );
   assert.deepEqual(
@@ -121,7 +125,11 @@ test('a user the Admin adds can act and sign; once deactivated they cannot, and 
   );
   assert.equal(accounts.find('coordinator-2'), null);
   assert.deepEqual(
-    await accounts.signIn('coordinator-2', 'coordinator-2-pass', laboratory),
+    await accounts.signIn(
+      'coordinator-2',
+      'coordinator-2-password',
+      laboratory,
+    ),
     { outcome: 'incorrect' },
   );
   assert.throws(
@@ -244,7 +252,7 @@ test("account changes are the Admin's alone, never reuse a username and never le
         username: 'analyst-2',
         name: 'Someone Else',
         role: 'analyst',
-        password: 'long-enough',
+        password: 'long-enough-pass',
       },
       'admin',
     ),
@@ -263,12 +271,12 @@ test("account changes are the Admin's alone, never reuse a username and never le
     ),
     [
       400,
-      'A username is 2 to 40 lowercase letters, digits or hyphens, starting with a letter or digit. A password needs at least 8 characters.',
+      'A username is 2 to 40 lowercase letters, digits or hyphens, starting with a letter or digit. A password needs at least 12 characters.',
     ],
   );
   assert.deepEqual(
     refusal(
-      { type: 'setPassword', username: 'nobody', password: 'long-enough' },
+      { type: 'setPassword', username: 'nobody', password: 'long-enough-pass' },
       'admin',
     ),
     [404, 'There is no account nobody.'],
@@ -289,10 +297,7 @@ test("account changes are the Admin's alone, never reuse a username and never le
     ),
     [400, 'Nothing to change.'],
   );
-  const noAdmin = [
-    409,
-    'Benchline needs at least one active Admin, so this change was not saved.',
-  ];
+  const noAdmin = [409, 'Benchline needs at least one active Admin.'];
   assert.deepEqual(
     refusal(
       { type: 'updateAccount', username: 'admin', role: 'manager' },
@@ -370,5 +375,75 @@ test('the Admin adds a user, who can then sign in, and the addition is on record
   ]);
   assert.ok(
     !JSON.stringify(laboratory.auditTrail()).includes('robin-password'),
+  );
+});
+
+test('a lone Admin who locked themselves out is unlocked by the demo server command, which names who ran it', async (t) => {
+  const folder = mkdtempSync(join(tmpdir(), 'lims-unlock-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const database = join(folder, 'benchline.sqlite');
+  const open = () => {
+    const accounts = new Accounts(database);
+    accounts.seed(demoAccounts);
+    const laboratory = new Laboratory(database, {
+      credentials: accounts,
+      people: () => accounts.people(),
+    });
+    return { accounts, laboratory };
+  };
+  let { accounts, laboratory } = open();
+  for (let i = 0; i < 5; i++) await accounts.signIn('admin', 'x', laboratory);
+  laboratory.close();
+  accounts.close();
+
+  assert.throws(
+    () =>
+      unlockFromServer({
+        database,
+        username: 'admin',
+        operator: 'lab-server-user',
+        production: true,
+      }),
+    /The unlock command is for the demo only/,
+  );
+  assert.equal(
+    unlockFromServer({
+      database,
+      username: 'admin',
+      operator: 'lab-server-user',
+      production: false,
+    }),
+    'admin is unlocked.',
+  );
+
+  ({ accounts, laboratory } = open());
+  t.after(() => {
+    laboratory.close();
+    accounts.close();
+  });
+  assert.equal(
+    (await accounts.signIn('admin', 'admin-demo', laboratory)).outcome,
+    'signedIn',
+  );
+  assert.deepEqual(
+    accessEvents(laboratory).filter(([act]) => act === 'unlock'),
+    [
+      [
+        'unlock',
+        'admin',
+        'System administrator (lab-server-user)',
+        'locked',
+        true,
+        false,
+      ],
+      [
+        'unlock',
+        'admin',
+        'System administrator (lab-server-user)',
+        'consecutiveFailedAttempts',
+        5,
+        0,
+      ],
+    ],
   );
 });

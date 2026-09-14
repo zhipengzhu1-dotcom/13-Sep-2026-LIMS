@@ -468,3 +468,18 @@ test('the lab-wide audit trail can show Access events alone, or hide them', asyn
     ['assign', 'enterResult', 'receiveSubmission', 'storeAttachment'],
   );
 });
+
+test('a very long typed username is recorded cut to 100 characters, and counted under that', async (t) => {
+  const { accounts, lab: laboratory } = lab(t);
+  const typed = 'x'.repeat(5000);
+  for (let i = 0; i < 2; i++)
+    await accounts.signIn(typed, 'wrong-password', laboratory);
+  const cut = `${'x'.repeat(100)}…`;
+  assert.deepEqual(
+    accessEvents(laboratory).map((e) => [e.recordId, e.actor, e.newValue]),
+    [
+      [cut, cut, 1],
+      [cut, cut, 2],
+    ],
+  );
+});

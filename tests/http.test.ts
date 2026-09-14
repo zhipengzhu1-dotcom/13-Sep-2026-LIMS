@@ -453,7 +453,7 @@ test('only the Admin manages accounts over HTTP, and a deactivated user is signe
       username: 'analyst-3',
       name: 'Someone Else',
       role: 'analyst',
-      password: 'another-pass',
+      password: 'another-password',
     },
     admin,
   );

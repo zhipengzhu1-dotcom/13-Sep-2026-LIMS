@@ -1,8 +1,10 @@
 import { useEffect, useId, useState } from 'react';
 import { roles, type Role } from '../laboratory/contracts';
-import type {
-  AccountCommand,
-  AccountSummary,
+import {
+  leavesNoActiveAdmin,
+  NO_ACTIVE_ADMIN_LEFT,
+  type AccountCommand,
+  type AccountSummary,
 } from '../accounts/account-contracts';
 
 const ROLE_LABELS: Record<Role, string> = {
@@ -125,6 +127,9 @@ export function AccountsScreen({ onChanged }: { onChanged: () => void }) {
                 <AccountRow
                   key={account.id}
                   account={account}
+                  lastAdmin={leavesNoActiveAdmin(accounts, account.id, {
+                    active: false,
+                  })}
                   form={form}
                   onOpen={(next) => {
                     setOpen(next && { id: account.id, form: next });
@@ -144,11 +149,14 @@ export function AccountsScreen({ onChanged }: { onChanged: () => void }) {
 
 function AccountRow({
   account,
+  lastAdmin,
   form,
   onOpen,
   apply,
 }: {
   account: AccountSummary;
+  /** The only active Admin, who can't be deactivated or change role. */
+  lastAdmin: boolean;
   form: 'edit' | 'password' | 'deactivate' | null;
   onOpen: (form: 'edit' | 'password' | 'deactivate' | null) => void;
   apply: Apply;
@@ -200,7 +208,16 @@ function AccountRow({
             >
               Set password
             </button>
-            {account.active ? (
+            {account.active && lastAdmin ? (
+              <button
+                className="btn sm"
+                aria-disabled="true"
+                aria-describedby={`${account.id}-last-admin`}
+                onClick={(e) => e.preventDefault()}
+              >
+                Deactivate
+              </button>
+            ) : account.active ? (
               <button
                 className="btn sm"
                 aria-expanded={form === 'deactivate'}
@@ -229,6 +246,11 @@ function AccountRow({
               </button>
             )}
           </span>
+          {lastAdmin && (
+            <p id={`${account.id}-last-admin`} className="flash inline neutral">
+              {NO_ACTIVE_ADMIN_LEFT}
+            </p>
+          )}
           {error && (
             <p role="alert" className="flash inline error">
               {error}
@@ -242,6 +264,7 @@ function AccountRow({
             {form === 'edit' && (
               <EditUserForm
                 account={account}
+                lastAdmin={lastAdmin}
                 apply={apply}
                 onCancel={() => onOpen(null)}
               />
@@ -302,7 +325,7 @@ function PasswordInput({ label = 'Password' }: { label?: string }) {
           type={shown ? 'text' : 'password'}
           autoComplete="new-password"
           required
-          minLength={8}
+          minLength={12}
           maxLength={200}
         />
         <button
@@ -318,20 +341,42 @@ function PasswordInput({ label = 'Password' }: { label?: string }) {
   );
 }
 
-function RoleSelect({ defaultValue }: { defaultValue?: Role }) {
+/** The role picker. For the only active Admin, `onlyAdmin` is the id of the
+ * visible reason every other role is blocked. */
+function RoleSelect({
+  defaultValue,
+  onlyAdmin,
+}: {
+  defaultValue?: Role;
+  onlyAdmin?: string;
+}) {
   return (
     <label>
       Role
-      <select name="role" required defaultValue={defaultValue ?? ''}>
+      <select
+        name="role"
+        required
+        defaultValue={defaultValue ?? ''}
+        aria-describedby={onlyAdmin}
+      >
         <option value="" disabled>
           Select a role
         </option>
         {roles.map((role) => (
-          <option key={role} value={role}>
+          <option
+            key={role}
+            value={role}
+            disabled={Boolean(onlyAdmin) && role !== 'admin'}
+          >
             {ROLE_LABELS[role]}
           </option>
         ))}
       </select>
+      {onlyAdmin && (
+        <small id={onlyAdmin} className="flash inline neutral">
+          {NO_ACTIVE_ADMIN_LEFT}
+        </small>
+      )}
     </label>
   );
 }
@@ -415,10 +460,12 @@ function AddUserForm({
 
 function EditUserForm({
   account,
+  lastAdmin,
   apply,
   onCancel,
 }: {
   account: AccountSummary;
+  lastAdmin: boolean;
   apply: Apply;
   onCancel: () => void;
 }) {
@@ -454,7 +501,10 @@ function EditUserForm({
             maxLength={80}
           />
         </label>
-        <RoleSelect defaultValue={account.role} />
+        <RoleSelect
+          defaultValue={account.role}
+          onlyAdmin={lastAdmin ? `${account.id}-role-last-admin` : undefined}
+        />
       </div>
       <div className="form-foot">
         <button type="button" className="btn" onClick={onCancel}>

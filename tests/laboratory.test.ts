@@ -4515,3 +4515,30 @@ test('an Admin is not a role anyone else acquires: the other roles are still ref
     /assigned analyst/,
   );
 });
+
+test('wrong signature passwords during an Amendment count toward lockout like any other signing', (t) => {
+  // Its own accounts, so locking the Analyst here leaves the shared ones alone.
+  const own = new Accounts(':memory:');
+  own.seed(demoAccounts);
+  const lab = new Laboratory(':memory:', {
+    clock: () => NOW,
+    credentials: own,
+  });
+  t.after(() => {
+    lab.close();
+    own.close();
+  });
+  let s = throughApproval(lab, run(lab, receipt, 'coordinator'));
+  s = run(lab, publish(s), 'coordinator');
+  s = run(lab, startAmendment(s), 'coordinator');
+  assert.equal(s.status, 'Amendment in progress');
+  const submit = { type: 'submitForApproval', ...target(s), password: 'wrong' };
+  for (let i = 0; i < 4; i++)
+    assert.throws(() => run(lab, submit, 'analyst'), /password is incorrect/);
+  assert.throws(
+    () => run(lab, submit, 'analyst'),
+    /This account is locked, so nothing was signed or saved/,
+  );
+  assert.equal(own.find('analyst'), null);
+  assert.equal(lab.snapshot().samples[0].status, 'Amendment in progress');
+});

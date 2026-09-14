@@ -7,6 +7,8 @@ import type { Person, Role } from '../laboratory/contracts.ts';
 import { WorkflowError } from '../laboratory/workflow-error.ts';
 import {
   accountCommandSchema,
+  leavesNoActiveAdmin,
+  NO_ACTIVE_ADMIN_LEFT,
   type AccountCommand,
   type AccountSummary,
 } from './account-contracts.ts';
@@ -23,13 +25,21 @@ export type User = { id: string; name: string; role: string };
 export type SeedAccount = User & { password: string };
 
 /** Consecutive Failed attempts, at sign-in and signing together, that lock an
- * account (ADR-0009). Set by the lab's policy (SOP-Management#19, to be
- * confirmed before Go-live); changing it is a release under change control. */
+ * account (ADR-0009), as the lab's policy decided (SOP-Management#19);
+ * changing it is a release under change control. */
 export const LOCKOUT_LIMIT = 5;
 
 /** Compared against when the username is unknown, so a miss costs the same
  * scrypt work as a wrong password and does not reveal which accounts exist. */
 const DECOY_HASH = hashPassword('decoy-password-never-matches');
+
+/** The longest typed username recorded as typed; a longer one is recorded
+ * cut to this length and marked, so scripted guessing can't bloat the trail. */
+const TYPED_USERNAME_LIMIT = 100;
+const recordable = (typed: string) =>
+  typed.length > TYPED_USERNAME_LIMIT
+    ? `${typed.slice(0, TYPED_USERNAME_LIMIT)}…`
+    : typed;
 
 type Credentials = { id: string; active: number; passwordHash: string };
 
@@ -203,6 +213,12 @@ export class Accounts implements SignerCredentials {
     log.recordAccessEvent({ type: 'passwordSet', by, username });
   }
 
+  /** The demo server command's unlock, for a lone Admin locked out, named as
+   * the System administrator who ran it (ADR-0011). */
+  unlockByServerCommand(username: string, by: string, log: AccessEventLog) {
+    this.unlockAccount({ type: 'unlockAccount', username }, by, log);
+  }
+
   /** Lets a Locked account back in. Its Failed attempts and lockout stay in
    * the audit trail; only the count is cleared. */
   private unlockAccount(
@@ -271,14 +287,8 @@ export class Accounts implements SignerCredentials {
       .filter((field) => after[field] !== current[field])
       .map((field) => ({ field, from: current[field], to: after[field] }));
     if (!changes.length) throw new WorkflowError('Nothing to change.');
-    const admins = accounts
-      .map((a) => (a.id === username ? { ...a, ...after } : a))
-      .filter((a) => a.role === 'admin' && a.active && !a.locked);
-    if (!admins.length)
-      throw new WorkflowError(
-        'Benchline needs at least one active Admin, so this change was not saved.',
-        409,
-      );
+    if (leavesNoActiveAdmin(accounts, username, after))
+      throw new WorkflowError(NO_ACTIVE_ADMIN_LEFT, 409);
     this.db
       .prepare('UPDATE users SET name = ?, role = ?, active = ? WHERE id = ?')
       .run(after.name, after.role, after.active ? 1 : 0, username);
@@ -388,10 +398,11 @@ export class Accounts implements SignerCredentials {
   /** Counts and records a Failed attempt, locking the username when it
    * reaches the limit. Returns whether the username is now locked. */
   private recordFailedAttempt(
-    username: string,
+    typed: string,
     reason: string,
     log: AccessEventLog,
   ): boolean {
+    const username = recordable(typed);
     const { failedAttempts, locked } = this.db
       .prepare(
         `INSERT INTO accessState (username, failedAttempts) VALUES (?, 1)
