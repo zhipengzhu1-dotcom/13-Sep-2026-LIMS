@@ -1,5 +1,5 @@
 import { decisionRule, type ConformityStatement } from './limits.ts';
-import { resultsView, type OosOutcome } from './results.ts';
+import { resultsView, type CertificateInvestigation } from './results.ts';
 import {
   isFinishedProduct,
   stabilityConditionLabels,
@@ -72,8 +72,9 @@ export type CertificateResult = {
   conformity: ConformityStatement;
   /** Every closed OOS investigation on the Test's Results, oldest first: on
    * the reported Result, on an Invalidated Result it retests, or on a Result
-   * an Amendment corrected. Empty when there was none. */
-  investigations: { id: string; outcome: OosOutcome }[];
+   * an Amendment corrected, each with the value, qualifier and unit of the
+   * Result it decided. Empty when there was none. */
+  investigations: CertificateInvestigation[];
 };
 
 export type CertificateContent = {

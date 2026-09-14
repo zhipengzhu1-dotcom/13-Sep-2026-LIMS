@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { discardOutdatedDemoDatabase, seed } from '../server/seed.ts';
 import { renderCertificate } from '../src/laboratory/certificate-renderer.ts';
+import type { CertificateResult } from '../src/laboratory/certificate.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
@@ -2932,7 +2933,7 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
         'ng/day',
         '26.5 ng/day',
         'Does not comply',
-        'OOS26-0001 (Confirmed)',
+        ['OOS26-0001, Confirmed, for Result 30 ng/day'],
       ],
       [
         'Impurity B',
@@ -2973,6 +2974,43 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
       },
     ],
   });
+
+  // The labels are locked, hashed content: a changed label is a different
+  // Certificate.
+  const relabelled = structuredClone(certificate.content);
+  relabelled.results[0].investigations[0].result.value = 29;
+  assert.notEqual(
+    createHash('sha256').update(JSON.stringify(relabelled)).digest('hex'),
+    certificate.sha256,
+  );
+  // A `< LOQ` or `< LOD` decided Result is labelled as the Certificate reports
+  // Results, with its unit.
+  const labels = (investigations: CertificateResult['investigations']) => {
+    const content = structuredClone(certificate.content);
+    content.results[0].investigations = investigations;
+    const doc = renderCertificate(content).sections.find(
+      (x) => x.kind === 'table',
+    );
+    return doc?.kind === 'table' && doc.rows[0].at(-1);
+  };
+  assert.deepEqual(
+    labels([
+      {
+        id: 'OOS26-0001',
+        outcome: 'Invalidated',
+        result: { value: 2, qualifier: '< LOQ', unit: 'ng/day' },
+      },
+      {
+        id: 'OOS26-0002',
+        outcome: 'Confirmed',
+        result: { value: 0.5, qualifier: '< LOD', unit: 'ppm' },
+      },
+    ]),
+    [
+      'OOS26-0001, Invalidated, for Result < LOQ (3) ng/day',
+      'OOS26-0002, Confirmed, for Result < LOD (1) ppm',
+    ],
+  );
 });
 
 test('a raw material Certificate reports each Result with Report and no Limit', (t) => {
@@ -3335,22 +3373,49 @@ test('Client notification is recorded only for a confirmed OOS', (t) => {
     null,
     'an Invalidated OOS needs no notice',
   );
-  // The Certificate still names the investigation behind the retest.
+  // The Certificate still names the investigation behind the retest, with the
+  // value it invalidated; the row's Conformity statement is the Retest's own.
   const { content } = lab.certificate(s.id);
   assert.deepEqual(
     content.results.map((r) => [r.value, r.conformity, r.investigations]),
     [
-      [2.5, 'Complies', [{ id: 'OOS26-0001', outcome: 'Invalidated' }]],
+      [
+        2.5,
+        'Complies',
+        [
+          {
+            id: 'OOS26-0001',
+            outcome: 'Invalidated',
+            result: { value: 30, qualifier: 'quantified', unit: 'ng/day' },
+          },
+        ],
+      ],
       [2.5, 'Complies', []],
     ],
   );
   const table = renderCertificate(content).sections.find(
     (x) => x.kind === 'table',
   );
-  assert.deepEqual(
-    table?.kind === 'table' && table.rows.map((row) => row.at(-1)),
-    ['OOS26-0001 (Invalidated)', '—'],
-  );
+  assert.deepEqual(table?.kind === 'table' && table.rows, [
+    [
+      'Impurity A',
+      'NIT-001 v1 (LC-MS/MS)',
+      '< LOQ (3)',
+      'ng/day',
+      '26.5 ng/day',
+      'Complies',
+      ['OOS26-0001, Invalidated, for Result 30 ng/day'],
+    ],
+    [
+      'Impurity B',
+      'NIT-003 v1 (LC-MS/MS)',
+      '< LOQ (3)',
+      'ng/day',
+      '96 ng/day',
+      'Complies',
+      '—',
+    ],
+  ]);
   assert.equal(run(lab, publish(s), 'coordinator').status, 'Published');
 });
 
@@ -3754,16 +3819,60 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
   const v2 = lab.certificate(s.id);
   assert.equal(v2.version, 2);
   const [corrected] = v2.content.results;
+  // Each investigation is labelled with the Result it decided: the confirmed
+  // OOS with the superseded value, the invalidation with the corrected value.
+  const decided = (value: number) => ({
+    value,
+    qualifier: 'quantified',
+    unit: 'ng/day',
+  });
   assert.deepEqual(
     [corrected.value, corrected.conformity, corrected.investigations],
     [
       2.5,
       'Complies',
       [
-        { id: 'OOS26-0001', outcome: 'Confirmed' },
-        { id: 'OOS26-0002', outcome: 'Invalidated' },
+        { id: 'OOS26-0001', outcome: 'Confirmed', result: decided(30) },
+        { id: 'OOS26-0002', outcome: 'Invalidated', result: decided(28) },
       ],
     ],
+  );
+  assert.equal(
+    v2.sha256,
+    createHash('sha256').update(JSON.stringify(v2.content)).digest('hex'),
+    'the labels are part of the hashed content',
+  );
+  const v1 = lab.certificate(s.id, 1);
+  assert.deepEqual(v1.content.results[0].investigations, [
+    { id: 'OOS26-0001', outcome: 'Confirmed', result: decided(30) },
+  ]);
+  assert.equal(
+    v1.sha256,
+    createHash('sha256').update(JSON.stringify(v1.content)).digest('hex'),
+    'version 1 keeps its labels as issued',
+  );
+  const amended = renderCertificate(v2.content);
+  assert.equal(amended.marker, 'Amended');
+  const rows = amended.sections.find((x) => x.kind === 'table');
+  assert.deepEqual(rows?.kind === 'table' && rows.rows[0], [
+    'Impurity A',
+    'NIT-001 v1 (LC-MS/MS)',
+    '< LOQ (3)',
+    'ng/day',
+    '26.5 ng/day',
+    'Complies',
+    [
+      'OOS26-0001, Confirmed, for Result 30 ng/day',
+      'OOS26-0002, Invalidated, for Result 28 ng/day',
+    ],
+  ]);
+  assert.deepEqual(
+    amended.sections.find((x) => x.heading === 'Decision rule'),
+    {
+      kind: 'text',
+      heading: 'Decision rule',
+      paragraphs: [v2.content.decisionRule, v2.content.individualJudgement],
+    },
   );
   // ISO/IEC 17025 7.8.8.1: the Retest's value change is a change to the
   // report, so the summary names it; its link to OOS26-0002 is on the trail

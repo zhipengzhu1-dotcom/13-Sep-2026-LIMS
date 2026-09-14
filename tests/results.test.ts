@@ -676,7 +676,9 @@ type Stage =
   | 'invalidated again'
   | 'retested again'
   | 'confirmed'
-  | 'notified';
+  | 'notified'
+  | 'confirmed and amended'
+  | 'amended and confirmed again';
 
 /** A one-Test Sample brought to a stage of its OOS investigation through the
  * module's own commands. */
@@ -721,7 +723,17 @@ function staged(stage: Stage): Sample {
     return s;
   }
   conclude(s, 'Confirmed');
-  if (stage === 'notified') notify(s);
+  if (stage === 'confirmed') return s;
+  notify(s);
+  if (stage === 'notified') return s;
+  // An Amendment of the published Certificate corrects the confirmed OOS
+  // (ADR-0006); the corrected value is judged afresh.
+  record(s, { value: 28, reason: 'Recalculated.', hasCertificate: true });
+  if (stage === 'amended and confirmed again') {
+    open(s, 'NIT-001-v1', () => 2);
+    check(s, false, SECOND);
+    conclude(s, 'Confirmed', '', SECOND);
+  }
   return s;
 }
 
@@ -1203,14 +1215,46 @@ for (const [stage, blocker] of publishBlockers)
     assert.equal(oosPublishBlocker(s), blocker?.reason ?? null);
   });
 
-const retests: [Stage, boolean, { id: string; outcome: string }[]][] = [
+/** A Certificate label: the investigation, its outcome and the Result it
+ * decided, never that Result's Conformity statement. */
+const decided = (id: string, outcome: string, value: number) => ({
+  id,
+  outcome,
+  result: { value, qualifier: 'quantified', unit: 'ng/day' },
+});
+
+/** Per stage: whether a Retest is required, and the Certificate row's
+ * investigation labels, each from the Result it decided, oldest first. */
+const retests: [Stage, boolean, ReturnType<typeof decided>[]][] = [
   ['empty', false, []],
   ['complying', false, []],
   ['uninvestigated', false, []],
   ['open', false, []],
-  ['invalidated', true, [{ id: ID, outcome: 'Invalidated' }]],
-  ['retested', false, [{ id: ID, outcome: 'Invalidated' }]],
-  ['confirmed', false, [{ id: ID, outcome: 'Confirmed' }]],
+  ['checked', false, []],
+  ['invalidated', true, [decided(ID, 'Invalidated', 30)]],
+  ['retested', false, [decided(ID, 'Invalidated', 30)]],
+  ['retested over its Limit', false, [decided(ID, 'Invalidated', 30)]],
+  ['retest corrected', false, [decided(ID, 'Invalidated', 30)]],
+  [
+    'invalidated again',
+    true,
+    [decided(ID, 'Invalidated', 30), decided(SECOND, 'Invalidated', 31)],
+  ],
+  [
+    'retested again',
+    false,
+    [decided(ID, 'Invalidated', 30), decided(SECOND, 'Invalidated', 31)],
+  ],
+  ['confirmed', false, [decided(ID, 'Confirmed', 30)]],
+  ['notified', false, [decided(ID, 'Confirmed', 30)]],
+  // The Amendment keeps the confirmed investigation against the superseded
+  // value, not the corrected one.
+  ['confirmed and amended', false, [decided(ID, 'Confirmed', 30)]],
+  [
+    'amended and confirmed again',
+    false,
+    [decided(ID, 'Confirmed', 30), decided(SECOND, 'Confirmed', 28)],
+  ],
 ];
 
 for (const [stage, required, entries] of retests)
@@ -1219,6 +1263,23 @@ for (const [stage, required, entries] of retests)
     assert.equal(t.retestRequired, required);
     assert.deepEqual(t.certificateInvestigations, entries);
   });
+
+test("a Certificate label is copied from the Result its investigation decided, not the Test's current Result", () => {
+  const s = staged('confirmed and amended');
+  const [label] = resultsView(s).test('NIT-001-v1').certificateInvestigations;
+  // Changing the current Result leaves the label alone; changing the decided
+  // Result is what moves it.
+  s.tests[0].results[1].value = 29;
+  assert.deepEqual(
+    resultsView(s).test('NIT-001-v1').certificateInvestigations,
+    [label],
+  );
+  s.tests[0].results[0].value = 31;
+  assert.equal(
+    resultsView(s).test('NIT-001-v1').certificateInvestigations[0].result.value,
+    31,
+  );
+});
 
 test('Bench work lists who entered, corrected or retested each Result, of every status, and who recorded each Laboratory error check', () => {
   const s = sampleOf();

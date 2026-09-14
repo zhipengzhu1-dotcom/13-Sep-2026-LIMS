@@ -107,8 +107,14 @@ export type ResultRecord = {
   retestOf: RetestLineage | undefined;
 };
 
-/** An investigation as a Certificate of Analysis row lists it. */
-export type CertificateInvestigation = { id: string; outcome: OosOutcome };
+/** An investigation as a Certificate of Analysis row lists it: its outcome
+ * and the Result it decided, copied as reported. Never that Result's
+ * Conformity statement, which a row takes from its current Result only. */
+export type CertificateInvestigation = {
+  id: string;
+  outcome: OosOutcome;
+  result: Pick<Result, 'value' | 'qualifier' | 'unit'>;
+};
 
 /** The questions asked of one Test. */
 export type TestResults = {
@@ -123,7 +129,9 @@ export type TestResults = {
    * Invalidated result: the last one Invalidated on the Test. */
   readonly retestDue: RetestLineage | undefined;
   /** The closed investigations a Certificate of Analysis row for this Test
-   * lists. */
+   * lists, each with the Result it decided, oldest Result first: an
+   * Invalidated result a Retest follows, a Result an Amendment superseded,
+   * or the current Result. */
   readonly certificateInvestigations: CertificateInvestigation[];
   /**
    * Why the Test's Result cannot be corrected now, or null (ADR-0006): it does
@@ -300,11 +308,24 @@ export function resultsView(sample: Sample): SampleResults {
         : undefined;
     },
     get certificateInvestigations() {
-      return sample.investigations.flatMap((i) =>
-        i.testId === test.id && i.status === 'Closed' && i.outcome
-          ? [{ id: i.id, outcome: i.outcome }]
-          : [],
-      );
+      // Follow each Result's own link, so a label always names the value its
+      // investigation decided, whatever the Test reports now.
+      return test.results.flatMap((r): CertificateInvestigation[] => {
+        const i = investigationOf(sample, r);
+        return i?.status === 'Closed' && i.outcome
+          ? [
+              {
+                id: i.id,
+                outcome: i.outcome,
+                result: {
+                  value: r.value,
+                  qualifier: r.qualifier,
+                  unit: r.unit,
+                },
+              },
+            ]
+          : [];
+      });
     },
     correctionBlocker({ hasCertificate }) {
       const current = this.current;
