@@ -149,10 +149,11 @@ export type TestResults = {
    */
   correctionBlocker(options: { hasCertificate: boolean }): Refusal | null;
   /**
-   * Why `worksheet` cannot be the calculation worksheet of the Retest due now,
-   * or null: it is the worksheet of the Invalidated result the Retest follows.
-   * A Retest is calculated again, on its own worksheet. Null when no Retest
-   * is due.
+   * Why `worksheet` cannot be the calculation worksheet of a Retest recorded
+   * now, or null: it is the worksheet of the Invalidated result the Retest
+   * follows. A Retest is calculated again, on its own worksheet, and a
+   * correction of it is still that Retest. Null when neither a Retest is due
+   * nor the current Result is a Retest.
    */
   retestBlocker(worksheet: Pick<Attachment, 'id'>): Refusal | null;
 };
@@ -401,7 +402,14 @@ export function resultsView(sample: Sample): SampleResults {
       return null;
     },
     retestBlocker(worksheet) {
-      const due = this.retestDue;
+      // A Result recorded now is a Retest when one is due, and a correction
+      // of a current Retest is still that Retest.
+      const current = this.current;
+      const due =
+        this.retestDue ??
+        (current?.retestAfter
+          ? lineageOf(sample, current.retestAfter)
+          : undefined);
       if (due?.invalidated.attachmentId !== worksheet.id) return null;
       const id = due.investigation.id;
       return {
@@ -674,14 +682,13 @@ export function recordResult(
     throw new WorkflowError(
       'The worksheet attachment was not found. Upload the calculation worksheet again.',
     );
+  // A Retest, and a correction of one, is calculated again, so never on the
+  // Invalidated result's worksheet.
+  const reused = view.retestBlocker(input.worksheet);
+  if (reused) throw new WorkflowError(reused.reason);
   // A Retest follows the investigation that Invalidated the last Result, and
   // needs no reason of its own: that investigation's assignable cause stands.
-  // It is calculated again, so never on the Invalidated result's worksheet.
   const due = previous ? undefined : view.retestDue;
-  if (due) {
-    const reused = view.retestBlocker(input.worksheet);
-    if (reused) throw new WorkflowError(reused.reason);
-  }
   const kind: RecordedKind = previous
     ? 'correction'
     : due
