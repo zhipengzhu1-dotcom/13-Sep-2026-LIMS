@@ -2,8 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { type Certificate, type Publication } from '../laboratory/certificate';
 import { renderCertificate } from '../laboratory/certificate-renderer';
-import { type Snapshot, type Sample } from '../laboratory/contracts';
-import { personName, signatureStamp } from './shared';
+import {
+  type Snapshot,
+  type Sample,
+  type Signature,
+} from '../laboratory/contracts';
+import { InvalidSignatureTag, personName, signatureStamp } from './shared';
 
 /** A publication as the Certificate list shows it. */
 export function publicationLine(data: Snapshot, p: Publication) {
@@ -62,6 +66,7 @@ export function CertificateVersions({
       {open !== null && (
         <CertificateView
           sampleId={s.id}
+          signatures={data.signatures.filter((x) => x.sampleId === s.id)}
           version={open}
           supersededBy={opened?.supersededBy ?? null}
           onClose={() => setOpen(null)}
@@ -78,11 +83,14 @@ export function CertificateVersions({
  */
 export function CertificateView({
   sampleId,
+  signatures,
   version,
   supersededBy,
   onClose,
 }: {
   sampleId: string;
+  /** The Sample's recorded Electronic signatures, as last checked. */
+  signatures: Signature[];
   version: number;
   /** Shown in the toolbar only: the locked document is printed as issued. */
   supersededBy: number | null;
@@ -118,6 +126,17 @@ export function CertificateView({
   const certificate =
     loaded && 'certificate' in loaded ? loaded.certificate : null;
   const doc = certificate && renderCertificate(certificate.content);
+  // Each signature the Certificate prints, in its order, and whether its
+  // record fails its check.
+  const invalid = (certificate?.content.signatures ?? []).map((printed) =>
+    signatures.some(
+      (x) =>
+        !x.valid &&
+        x.meaning === printed.meaning &&
+        x.signerId === printed.signerId &&
+        x.signedAt === printed.signedAt,
+    ),
+  );
   return createPortal(
     <dialog
       ref={ref}
@@ -132,6 +151,9 @@ export function CertificateView({
         <span>
           Certificate of Analysis · <span className="num">{sampleId}</span> ·
           Version {version}
+          {/* Also shown when the altered fields are the ones a printed
+              signature is matched on. */}
+          {signatures.some((x) => !x.valid) && <InvalidSignatureTag />}
           {supersededBy !== null && (
             <span className="cert-tag superseded">
               Superseded by version {supersededBy}
@@ -247,10 +269,13 @@ export function CertificateView({
                       </tr>
                     </thead>
                     <tbody>
-                      {section.signatures.map((x) => (
+                      {section.signatures.map((x, i) => (
                         <tr key={x.meaning + x.signedAt}>
                           <td>{x.meaning}</td>
-                          <td>{x.name}</td>
+                          <td>
+                            {x.name}
+                            {invalid[i] && <InvalidSignatureTag />}
+                          </td>
                           <td>{x.signedAt}</td>
                         </tr>
                       ))}

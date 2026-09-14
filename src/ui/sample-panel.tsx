@@ -6,6 +6,7 @@ import {
   auditsSample,
   currentResult,
   heldStatuses,
+  invalidSignatureRefusal,
   signatureMeaning,
   type Result,
   type Snapshot,
@@ -26,6 +27,7 @@ import {
   longDate,
   Modal,
   personName,
+  InvalidSignatureTag,
   signatureStamp,
   stamp,
   Status,
@@ -53,6 +55,7 @@ export function SamplePanel({
   useEffect(() => setSigning(null), [s.id]);
   const tabIds = useId();
   const approvalNoteId = useId();
+  const signatureNoteId = useId();
   const person = data.people.find((p) => p.id === actor)!;
   const canRecord =
     s.assignee === actor &&
@@ -62,6 +65,14 @@ export function SamplePanel({
   const results = resultsView(s);
   // The first rule refusing this Approval, asked as the core asks it.
   const approvalRefusal = results.approvalRefusal(actor);
+  // An invalid Electronic signature refuses submission, Approval, Publishing
+  // and Amendment, before any other rule, as the core refuses them.
+  const signatureRefusal = invalidSignatureRefusal(data.signatures, s.id);
+  const signatureNote = signatureRefusal && (
+    <span id={signatureNoteId} className="flash warn inline refusal">
+      {signatureRefusal}
+    </span>
+  );
   const canAssign =
     actsAs(person, 'coordinator') &&
     !['Approved', 'Published', 'Awaiting approval', ...heldStatuses].includes(
@@ -289,11 +300,17 @@ export function SamplePanel({
         <footer className="sample-foot">
           {canRecord ? (
             <>
+              {signatureNote}
               <span className="dim">
                 {recorded} of {s.tests.length} results recorded
               </span>
               <button
                 className="btn primary"
+                // Blocked but focusable, its reason the visible note.
+                aria-disabled={signatureRefusal ? true : undefined}
+                aria-describedby={
+                  signatureRefusal ? signatureNoteId : undefined
+                }
                 disabled={
                   busy ||
                   recorded < s.tests.length ||
@@ -304,7 +321,9 @@ export function SamplePanel({
                     ? 'Correct at least one Result before submitting the Amendment.'
                     : undefined
                 }
-                onClick={() => setSigning('submitForApproval')}
+                onClick={() =>
+                  signatureRefusal || setSigning('submitForApproval')
+                }
               >
                 {amendment
                   ? 'Submit Amendment for approval…'
@@ -330,10 +349,17 @@ export function SamplePanel({
                 });
               }}
             >
-              {approvalRefusal && (
-                <div>
-                  <RefusalNote id={approvalNoteId} refusal={approvalRefusal} />
-                </div>
+              {signatureNote ? (
+                <div>{signatureNote}</div>
+              ) : (
+                approvalRefusal && (
+                  <div>
+                    <RefusalNote
+                      id={approvalNoteId}
+                      refusal={approvalRefusal}
+                    />
+                  </div>
+                )
               )}
               <textarea
                 name="comment"
@@ -357,12 +383,18 @@ export function SamplePanel({
                   value="approve"
                   disabled={busy}
                   // Blocked but focusable, its reason the visible note.
-                  aria-disabled={approvalRefusal ? true : undefined}
+                  aria-disabled={
+                    signatureRefusal || approvalRefusal ? true : undefined
+                  }
                   aria-describedby={
-                    approvalRefusal ? approvalNoteId : undefined
+                    signatureRefusal
+                      ? signatureNoteId
+                      : approvalRefusal
+                        ? approvalNoteId
+                        : undefined
                   }
                   onClick={(e) => {
-                    if (approvalRefusal) e.preventDefault();
+                    if (signatureRefusal || approvalRefusal) e.preventDefault();
                   }}
                 >
                   Approve…
@@ -372,7 +404,12 @@ export function SamplePanel({
           ) : canPublish ? (
             <PublishForm sample={s} data={data} busy={busy} execute={execute} />
           ) : canAmend ? (
-            <AmendmentForm sample={s} busy={busy} execute={execute} />
+            <AmendmentForm
+              sample={s}
+              refusal={signatureRefusal}
+              busy={busy}
+              execute={execute}
+            />
           ) : (
             <span className="dim">
               {s.status === 'Published'
@@ -412,19 +449,24 @@ export function SamplePanel({
  * Published as before. */
 export function AmendmentForm({
   sample: s,
+  refusal,
   busy,
   execute,
 }: {
   sample: Sample;
+  /** The core's refusal to start an Amendment, shown as the reason. */
+  refusal: string | null;
   busy: boolean;
   execute: Execute;
 }) {
+  const refusalId = useId();
   return (
     <form
       className="publish-form"
       aria-label="Start an Amendment"
       onSubmit={(e) => {
         e.preventDefault();
+        if (refusal) return;
         const f = new FormData(e.currentTarget);
         void execute({
           type: 'startAmendment',
@@ -438,6 +480,11 @@ export function AmendmentForm({
         Published. This Sample is locked; a correction to its Certificate of
         Analysis is made by an Amendment.
       </span>
+      {refusal && (
+        <p id={refusalId} className="flash warn inline wide" role="status">
+          {refusal}
+        </p>
+      )}
       <label className="wide">
         Reason for the Amendment
         <textarea
@@ -449,7 +496,13 @@ export function AmendmentForm({
           placeholder="Required: the error found and how it came to light"
         />
       </label>
-      <button className="btn primary" disabled={busy}>
+      <button
+        className="btn primary"
+        disabled={busy}
+        // Blocked but focusable, its reason the visible note.
+        aria-disabled={refusal ? true : undefined}
+        aria-describedby={refusal ? refusalId : undefined}
+      >
         Start amendment
       </button>
     </form>
@@ -468,7 +521,10 @@ export function Signatures({ signatures }: { signatures: Signature[] }) {
             <span className="sig-meaning">
               {x.meaning[0].toUpperCase() + x.meaning.slice(1)}
             </span>
-            <strong>{x.printedName}</strong>
+            <span>
+              <strong>{x.printedName}</strong>
+              {!x.valid && <InvalidSignatureTag />}
+            </span>
             <time dateTime={x.signedAt}>{signatureStamp(x.signedAt)}</time>
           </li>
         ))}

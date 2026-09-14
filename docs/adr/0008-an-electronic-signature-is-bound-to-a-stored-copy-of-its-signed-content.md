@@ -12,6 +12,7 @@ A signature that fails its check stays visible and is shown as invalid wherever 
 - **Hash the live Sample without keeping a copy.** Every later command on the Sample would invalidate the signature.
 - **Throw when a check fails.** It would hide the record from inspectors, and one altered row would make the whole workspace unreadable.
 - **A signed Quality override.** It would let a Certificate go out on a signature known to be altered, against §11.70.
+- **Add the Amendment's reason to the "amended by" Signed content.** The reason is given by the Coordinator or Manager who starts the Amendment, not by the Analyst, so the Analyst would be attesting to someone else's statement. Nothing is left unsigned without it: each corrected Result carries its own reason on the Sample, and the Certificate states the Amendment's reason under the re-approval's signature (ISO/IEC 17025 7.8.8.1 asks for it on the report).
 
 ## Consequences
 

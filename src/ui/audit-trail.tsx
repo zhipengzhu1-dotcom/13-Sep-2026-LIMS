@@ -8,7 +8,7 @@ import {
   type Test,
 } from '../laboratory/contracts';
 import { type Filter } from './register';
-import { personName, stamp } from './shared';
+import { InvalidSignatureTag, personName, stamp } from './shared';
 
 export const COMMAND_LABELS: Record<string, string> = {
   receiveSubmission: 'Received',
@@ -133,6 +133,9 @@ export function AuditTable({
                   {COMMAND_LABELS[first.commandType] ?? first.commandType}
                 </span>
                 <span>{personName(data, first.actor) ?? first.actor}</span>
+                {data.signatures.some(
+                  (x) => x.command.commandId === first.commandId && !x.valid,
+                ) && <InvalidSignatureTag />}
                 {showSample && (
                   <span className="num">
                     {[...new Set(group.map((e) => e.sampleId ?? e.recordId))]

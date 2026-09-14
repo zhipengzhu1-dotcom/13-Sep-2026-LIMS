@@ -281,6 +281,17 @@ export const fullStamp = (value: string) =>
  * viewer reads the same stamp wherever they are. */
 export const signatureStamp = utcStamp;
 
+/** Marks a signature that no longer matches its Signed content. */
+export function InvalidSignatureTag() {
+  // The space keeps the words apart for assistive technology.
+  return (
+    <>
+      {' '}
+      <span className="cert-tag invalid">Signature invalid</span>
+    </>
+  );
+}
+
 export function ConformityTag({
   statement,
 }: {
