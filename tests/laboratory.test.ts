@@ -14,16 +14,15 @@ import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
   auditEntriesWithin,
   currentResult,
-  enteredResultOn,
+  didBenchWork,
   investigationOf,
   methods,
-  oosApprovalBlocker,
-  oosPublishBlocker,
   oosRows,
   people,
   publishQueue,
   qualify,
   newCommandId,
+  resultsView,
   type AuditEntry,
   type Person,
   signatureMeanings,
@@ -2522,7 +2521,7 @@ test('Confirmed: Approval is allowed with the Result still Does not comply and l
     ],
     ['Closed', 'Confirmed', null],
   );
-  assert.equal(oosApprovalBlocker(s), null);
+  assert.equal(resultsView(s).approvalBlocker?.reason ?? null, null);
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
   assert.equal(s.status, 'Approved');
   const current = currentResult(s.tests[0])!;
@@ -3318,7 +3317,7 @@ test('a Confirmed OOS blocks Publishing until the Client notification is recorde
   let s = approvedWithConfirmedOos(lab);
   const blocked =
     /OOS investigation OOS26-0001 confirmed an OOS\. Record that the Client was informed before publishing\./;
-  assert.match(oosPublishBlocker(s)!, blocked);
+  assert.match(resultsView(s).publishBlocker!.reason, blocked);
   assert.throws(() => run(lab, publish(s), 'coordinator'), blocked);
   assert.equal(lab.snapshot().samples[0].status, 'Approved');
 
@@ -3386,7 +3385,7 @@ test('a Confirmed OOS blocks Publishing until the Client notification is recorde
     recordedBy: 'coordinator',
     recordedAt: NOW,
   });
-  assert.equal(oosPublishBlocker(s), null);
+  assert.equal(resultsView(s).publishBlocker?.reason ?? null, null);
   assert.throws(
     () => run(lab, notifyClient(s, 'OOS26-0001'), 'coordinator'),
     /already recorded/,
@@ -3432,7 +3431,7 @@ test('Client notification is recorded only for a confirmed OOS', (t) => {
   s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
   assert.equal(
-    oosPublishBlocker(s),
+    resultsView(s).publishBlocker?.reason ?? null,
     null,
     'an Invalidated OOS needs no notice',
   );
@@ -3955,7 +3954,11 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
       .map((e) => [e.commandType, e.actor, e.recordId, e.oldValue, e.newValue]),
     [['enterResult', 'analyst', `${s.id}/NIT-001-v1`, null, 'OOS26-0002']],
   );
-  assert.equal(oosPublishBlocker(s), null, 'the Client was already informed');
+  assert.equal(
+    resultsView(s).publishBlocker?.reason ?? null,
+    null,
+    'the Client was already informed',
+  );
   assert.equal(run(lab, publish(s), 'coordinator').status, 'Published');
 });
 
@@ -4006,7 +4009,7 @@ test('a Manager never approves a Sample on which they entered or corrected a Res
     { type: 'submitForApproval', ...target(amended) },
     'analyst-2',
   );
-  assert.equal(enteredResultOn(amended, 'analyst-2'), true);
+  assert.equal(didBenchWork(amended, 'analyst-2'), true);
   lab.close();
 
   // Sam is then given the Manager role; the record of their work remains.
@@ -4196,9 +4199,9 @@ test('an Admin who recorded the Laboratory error check is refused Approval with 
   s = run(lab, openOos(s), 'manager');
   const id = s.investigations[0].id;
   s = run(lab, { ...labErrorCheck(s, id), errorIdentified: false }, 'admin');
-  assert.equal(enteredResultOn(s, 'admin'), true);
+  assert.equal(didBenchWork(s, 'admin'), true);
   // Separation of duties is checked before the open investigation.
-  assert.notEqual(oosApprovalBlocker(s), null);
+  assert.notEqual(resultsView(s).approvalBlocker?.reason ?? null, null);
   refused(s, 'admin');
   s = run(lab, conclude(s, id, 'Confirmed'), 'manager');
   refused(s, 'admin');

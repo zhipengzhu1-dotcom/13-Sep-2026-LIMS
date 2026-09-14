@@ -19,6 +19,8 @@ import { ResultValue } from './results';
 import {
   closed,
   type Execute,
+  investigationAnchor,
+  InvestigationLinkedText,
   personName,
   RequiredMark,
   stamp,
@@ -26,7 +28,7 @@ import {
 } from './shared';
 
 /** Where an out-of-specification Result stands in its investigation. */
-export function investigationLabel(
+export function investigationStatusText(
   investigation: OosInvestigation | undefined,
 ) {
   if (!investigation) return 'Investigation required';
@@ -46,31 +48,19 @@ export const investigationClass = (
       ? 'open'
       : (investigation.outcome ?? '').toLowerCase());
 
-/** The element id of an investigation in the Sample's OOS investigations. */
-export const investigationAnchor = (id: string) => `investigation-${id}`;
-
 /** A rule's refusal as visible text, word for word the core's, with the
  * investigation it names linking to that investigation. Separation of duties
  * reads neutral ("someone else approves"); every other rule is a warning.
  * Give the blocked control `aria-describedby={id}`. */
 export function RefusalNote({ id, refusal }: { id: string; refusal: Refusal }) {
-  const { reason, investigationId: inv } = refusal;
-  const at = inv ? reason.indexOf(inv) : -1;
   const tone = refusal.code === 'separation of duties' ? 'neutral' : 'warn';
   return (
     // A block-level span, so it can sit beneath inline actions.
     <span id={id} className={`flash ${tone} inline refusal`}>
-      {at < 0 ? (
-        reason
-      ) : (
-        <>
-          {reason.slice(0, at)}
-          <a className="link num" href={`#${investigationAnchor(inv!)}`}>
-            {inv}
-          </a>
-          {reason.slice(at + inv!.length)}
-        </>
-      )}
+      <InvestigationLinkedText
+        text={refusal.reason}
+        id={refusal.investigationId}
+      />
     </span>
   );
 }
@@ -89,7 +79,7 @@ export function OosNote({
   return (
     <span className="sub">
       <span className={investigationClass(investigation)}>
-        {investigationLabel(investigation)}
+        {investigationStatusText(investigation)}
       </span>{' '}
       {investigation && <span className="num">{investigation.id}</span>}
     </span>
@@ -134,7 +124,7 @@ export function Investigations({
             <div className="inv-head">
               <strong className="num">{inv?.id ?? 'Not opened'}</strong>
               <span className={investigationClass(inv)}>
-                {investigationLabel(inv)}
+                {investigationStatusText(inv)}
               </span>
               <span>
                 {t.analyteName} · {t.methodCode} v{t.methodVersion} · Result #
@@ -551,7 +541,7 @@ export function OosTable({
             </td>
             <td>
               <span className={investigationClass(inv)}>
-                {investigationLabel(inv)}
+                {investigationStatusText(inv)}
               </span>
             </td>
             <td className="num">

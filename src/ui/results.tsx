@@ -22,14 +22,11 @@ import {
   retestLabel,
   type RetestLineage,
 } from '../laboratory/results';
-import {
-  investigationAnchor,
-  investigationLabel,
-  OosNote,
-  RefusalNote,
-} from './oos';
+import { investigationStatusText, OosNote, RefusalNote } from './oos';
 import {
   ConformityTag,
+  InvestigationLink,
+  InvestigationLinkedText,
   type Draft,
   type Execute,
   initials,
@@ -356,14 +353,6 @@ export function WorksheetLink({ data, id }: { data: Snapshot; id: string }) {
   );
 }
 
-/** An investigation reference that links to it in the Sample's OOS
- * investigations. */
-const InvestigationLink = ({ id }: { id: string }) => (
-  <a className="link num" href={`#${investigationAnchor(id)}`}>
-    {id}
-  </a>
-);
-
 /** A Retest's lineage in the module's words, with the investigation linked. */
 function RetestLineageText({
   test,
@@ -372,15 +361,11 @@ function RetestLineageText({
   test: Test;
   lineage: RetestLineage;
 }) {
-  const text = retestLabel(test, lineage);
-  const id = lineage.investigation.id;
-  const at = text.indexOf(id);
   return (
-    <>
-      {text.slice(0, at)}
-      <InvestigationLink id={id} />
-      {text.slice(at + id.length)}
-    </>
+    <InvestigationLinkedText
+      text={retestLabel(test, lineage)}
+      id={lineage.investigation.id}
+    />
   );
 }
 
@@ -579,7 +564,7 @@ export function TestSheet({
                           {r.investigationId && (
                             <span className="reason">
                               {r.investigationId} ·{' '}
-                              {investigationLabel(investigation)}
+                              {investigationStatusText(investigation)}
                               {investigation?.assignableCause &&
                                 ` · Assignable cause: ${investigation.assignableCause}`}
                               {investigation?.causationConfirmed &&

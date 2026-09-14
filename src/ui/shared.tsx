@@ -163,6 +163,37 @@ export function Icon({ name }: { name: string }) {
   );
 }
 
+/** The element id of an investigation in the Sample's OOS investigations. */
+export const investigationAnchor = (id: string) => `investigation-${id}`;
+
+/** An investigation reference that links to it in the Sample's OOS
+ * investigations. */
+export const InvestigationLink = ({ id }: { id: string }) => (
+  <a className="link num" href={`#${investigationAnchor(id)}`}>
+    {id}
+  </a>
+);
+
+/** The core's text word for word, with the investigation it names, if any,
+ * linked to that investigation. */
+export function InvestigationLinkedText({
+  text,
+  id,
+}: {
+  text: string;
+  id: string | null;
+}) {
+  const at = id ? text.indexOf(id) : -1;
+  if (at < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, at)}
+      <InvestigationLink id={id!} />
+      {text.slice(at + id!.length)}
+    </>
+  );
+}
+
 /** The visible mark of a required field, beside its label text. The control
  * itself carries `required`, so assistive technology is told once. */
 export const RequiredMark = () => (

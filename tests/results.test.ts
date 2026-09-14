@@ -12,9 +12,7 @@ import {
 import { WorkflowError } from '../src/laboratory/workflow-error.ts';
 import {
   concludeInvestigation,
-  enteredResultOn,
-  oosApprovalBlocker,
-  oosPublishBlocker,
+  didBenchWork,
   oosRows,
   openInvestigation,
   recordClientNotification,
@@ -1321,7 +1319,6 @@ for (const [stage, blocker] of approvalBlockers)
   test(`the Approval blocker for a Sample ${stage}`, () => {
     const s = staged(stage);
     assert.deepEqual(resultsView(s).approvalBlocker, blocker);
-    assert.equal(oosApprovalBlocker(s), blocker?.reason ?? null);
   });
 
 const publishBlockers: [Stage, Refusal | null][] = [
@@ -1345,7 +1342,6 @@ for (const [stage, blocker] of publishBlockers)
   test(`the Publish blocker for a Sample ${stage}`, () => {
     const s = staged(stage);
     assert.deepEqual(resultsView(s).publishBlocker, blocker);
-    assert.equal(oosPublishBlocker(s), blocker?.reason ?? null);
   });
 
 /** A Certificate label: the investigation, its outcome and the Result it
@@ -1458,7 +1454,7 @@ test('Bench work lists who entered, corrected or retested each Result, of every 
     ['manager', false],
     ['coordinator', false],
   ] as const)
-    assert.equal(enteredResultOn(s, person), did, person);
+    assert.equal(didBenchWork(s, person), did, person);
 });
 
 /** Whose Bench work bars Approval, and the message naming the act. */
@@ -1525,6 +1521,24 @@ for (const c of separated)
     const own = resultsView(s).benchWork.find((e) => e.person === c.person);
     assert.deepEqual(own ? separationOfDutiesRefusal(s, own) : null, c.refusal);
   });
+
+test('the Approval refusal asks separation of duties before the OOS gate', () => {
+  const s = staged('open');
+  const view = resultsView(s);
+  // The analyst entered the Result; the Manager only opened the investigation.
+  assert.deepEqual(view.approvalRefusal('analyst'), {
+    code: 'separation of duties',
+    reason:
+      'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
+    investigationId: null,
+  });
+  assert.deepEqual(view.approvalRefusal('manager'), view.approvalBlocker);
+  assert.equal(view.approvalRefusal('manager')?.code, 'investigation open');
+  assert.equal(
+    resultsView(staged('complying')).approvalRefusal('manager'),
+    null,
+  );
+});
 
 test('the separation-of-duties message names a correction, and a person is refused for their first act', () => {
   const s = sampleOf();
@@ -1713,7 +1727,7 @@ test('an Amendment corrects a confirmed OOS with a reason, keeps it on record wi
       resultSequence: 2,
     },
   );
-  assert.equal(enteredResultOn(s, 'admin'), true);
+  assert.equal(didBenchWork(s, 'admin'), true);
 });
 
 // A Retest records the OOS investigation it follows, and through it the

@@ -218,6 +218,12 @@ export type SampleResults = {
    * investigation.
    */
   readonly approvalBlocker: Refusal | null;
+  /**
+   * The first rule refusing `person` Approval, or null, in the order Approval
+   * checks them: separation of duties, naming the person's first Bench work
+   * (ADR-0003, ADR-0005), then the Approval blocker.
+   */
+  approvalRefusal(person: string): Refusal | null;
   /** A Confirmed OOS whose Client notification is not yet recorded. */
   readonly publishBlocker: Refusal | null;
   /** The Sample's lines of the OOS investigations list. */
@@ -291,8 +297,13 @@ export function retestLabel(
   return `Retest after ${investigation.id} · Invalidated result #${r.sequence}, ${reportedValue(test, r)} ${r.unit}`;
 }
 
-/** A Result's value as reported: `< LOD (1)`, `< LOQ (3)` or the number. */
-const reportedValue = (test: Pick<Test, 'lod' | 'loq'>, r: Result) =>
+/** A Result's value as reported, on the Test sheet and the Certificate of
+ * Analysis alike: `< LOD (1)`, `< LOQ (3)` against the Test's LOD and LOQ, or
+ * the number. */
+export const reportedValue = (
+  test: Pick<Test, 'lod' | 'loq'>,
+  r: Pick<Result, 'value' | 'qualifier'>,
+) =>
   r.qualifier === '< LOD'
     ? `< LOD (${test.lod})`
     : r.qualifier === '< LOQ'
@@ -508,6 +519,12 @@ export function resultsView(sample: Sample): SampleResults {
       }
       return null;
     },
+    approvalRefusal(person) {
+      const own = this.benchWork.find((e) => e.person === person);
+      return own
+        ? separationOfDutiesRefusal(sample, own)
+        : this.approvalBlocker;
+    },
     get publishBlocker(): Refusal | null {
       const pending = sample.investigations.find(
         (i) => i.outcome === 'Confirmed' && !i.clientNotification,
@@ -586,19 +603,10 @@ export function oosRows(samples: readonly Sample[]): OosRow[] {
   );
 }
 
-/** The Approval blocker's reason, or null. */
-export const oosApprovalBlocker = (sample: Sample) =>
-  resultsView(sample).approvalBlocker?.reason ?? null;
-
-/** The Publish blocker's reason, or null. */
-export const oosPublishBlocker = (sample: Sample) =>
-  resultsView(sample).publishBlocker?.reason ?? null;
-
 /**
  * The separation-of-duties refusal of Approval, naming the approver's Bench
- * work `entry` (ADR-0003, ADR-0004, ADR-0005). Approval decides whether the
- * approver did Bench work and refuses with this reason, and the Approve
- * control shows the same text; callers pass the approver's first entry.
+ * work `entry` (ADR-0003, ADR-0004, ADR-0005). `approvalRefusal` passes the
+ * approver's first entry.
  */
 export function separationOfDutiesRefusal(
   sample: Sample,
@@ -626,7 +634,7 @@ export function separationOfDutiesRefusal(
 }
 
 /** Whether a person did Bench work on the Sample. */
-export const enteredResultOn = (sample: Sample, person: string) =>
+export const didBenchWork = (sample: Sample, person: string) =>
   resultsView(sample).benchWork.some((e) => e.person === person);
 
 /**
