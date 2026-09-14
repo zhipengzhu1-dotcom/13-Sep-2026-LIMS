@@ -127,6 +127,7 @@ button[aria-disabled='true'] {
 /* The visible mark of a required field, beside its label text. */
 .required-mark {
   margin-left: var(--space-1);
+  white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
   color: var(--alert);
