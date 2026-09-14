@@ -12,6 +12,7 @@ import {
   resultsView,
   type OosInvestigation,
   type OosRow,
+  type Refusal,
 } from '../laboratory/results';
 import { localDateTime } from './receiving';
 import { ResultValue } from './results';
@@ -37,6 +38,33 @@ export const investigationClass = (
     : investigation.status === 'Open'
       ? 'open'
       : (investigation.outcome ?? '').toLowerCase());
+
+/** The element id of an investigation in the Sample's OOS investigations. */
+export const investigationAnchor = (id: string) => `investigation-${id}`;
+
+/** A rule's refusal as visible warning text, word for word the core's, with
+ * the investigation it names linking to that investigation. Give the blocked
+ * control `aria-describedby={id}`. */
+export function RefusalNote({ id, refusal }: { id: string; refusal: Refusal }) {
+  const { reason, investigationId: inv } = refusal;
+  const at = inv ? reason.indexOf(inv) : -1;
+  return (
+    // A block-level span, so it can sit beneath inline actions.
+    <span id={id} className="flash warn inline refusal">
+      {at < 0 ? (
+        reason
+      ) : (
+        <>
+          {reason.slice(0, at)}
+          <a className="link num" href={`#${investigationAnchor(inv!)}`}>
+            {inv}
+          </a>
+          {reason.slice(at + inv!.length)}
+        </>
+      )}
+    </span>
+  );
+}
 
 /** Flags a current Result that is out of specification, with its
  * investigation reference once one is opened. */
@@ -90,7 +118,10 @@ export function Investigations({
       <h3>OOS investigations</h3>
       <ul>
         {rows.map(({ test: t, result: r, investigation: inv }) => (
-          <li key={`${t.id}-${r.sequence}`}>
+          <li
+            key={`${t.id}-${r.sequence}`}
+            id={inv ? investigationAnchor(inv.id) : undefined}
+          >
             <div className="inv-head">
               <strong className="num">{inv?.id ?? 'Not opened'}</strong>
               <span className={investigationClass(inv)}>

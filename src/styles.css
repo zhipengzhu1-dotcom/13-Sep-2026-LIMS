@@ -103,9 +103,15 @@ button {
   border: 0;
   padding: 0;
 }
-button:disabled {
+button:disabled,
+button[aria-disabled='true'] {
   cursor: not-allowed;
   opacity: 0.45;
+}
+/* A control a rule blocks stays focusable (its reason is described), but
+ * never looks actionable on hover. */
+.link[aria-disabled='true']:hover {
+  text-decoration: none;
 }
 :focus-visible {
   outline: 2px solid var(--focus);
@@ -1171,6 +1177,12 @@ body.resizing {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+/* A blocked correction's reason, beneath the Test's actions. */
+.sheet .flash.refusal {
+  flex-basis: 100%;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1) var(--space-2);
+}
 .sheet tbody.editing td {
   background: var(--accent-wash);
   border-bottom-color: transparent;
@@ -1921,6 +1933,10 @@ body.resizing {
   padding: 8px 10px;
   border-bottom: 1px solid var(--rule-soft);
   font-size: 13px;
+}
+/* Where a refusal's investigation link lands. */
+.investigations li:target {
+  background: var(--accent-wash);
 }
 .investigations li:last-child {
   border-bottom: 0;

@@ -5,10 +5,10 @@ Researched 2026-09-13. The standard is paywalled and is not quoted directly. Cla
 ## 1. Sources
 
 - **S1** ISO Online Browsing Platform, ISO/IEC 17025:2017. https://www.iso.org/obp/ui/#iso:std:iso-iec:17025:ed-3:v2:en. Primary. **Not reached** (HTTP 403); nothing below relies on it.
-- **S2** PJLA LF-56, *ISO/IEC 17025:2017 Working Document* (assessor checklist), Rev. 1.1, revised 12/2020. https://www.pjlabs.com/downloads/LF-56-17025-2017.pdf. Primary (accreditation body). Covers every clause, reworded as questions; cited "(paraphrase via PJLA LF-56)".
-- **S3** ILAC-G8:09/2019 *Guidelines on Decision Rules and Statements of Conformity* (bilingual edition hosted by NAH, Hungary). https://nah.gov.hu/admin/staticmedia/Oldalakhoz_csatolt_dokumentumok/NAR_NAD/KL/ILAC_G8_09_2019-HUN-ENG%20(v02).pdf. Primary (ILAC). §2 quotes clauses 3.7, 6.2.6, 7.1.3, 7.8.3.1 and 7.8.6 word for word.
-- **S4** ILAC-G17:01/2021 *Guidelines for Measurement Uncertainty in Testing* (hosted by UKAS). https://www.ukas.com/wp-content/uploads/schedule_uploads/759162/ILAC_G17_01_2021.pdf. Primary (ILAC). Quotes 7.8.3.1 c).
-- **S5** Eurachem/CITAC *Use of Uncertainty Information in Compliance Assessment*, 2nd ed., 2021. https://www.eurachem.org/images/stories/Guides/pdf/MUC2021_P1_EN.pdf. Primary (technical guide).
+- **S2** PJLA LF-56, _ISO/IEC 17025:2017 Working Document_ (assessor checklist), Rev. 1.1, revised 12/2020. https://www.pjlabs.com/downloads/LF-56-17025-2017.pdf. Primary (accreditation body). Covers every clause, reworded as questions; cited "(paraphrase via PJLA LF-56)".
+- **S3** ILAC-G8:09/2019 _Guidelines on Decision Rules and Statements of Conformity_ (bilingual edition hosted by NAH, Hungary). https://nah.gov.hu/admin/staticmedia/Oldalakhoz_csatolt_dokumentumok/NAR_NAD/KL/ILAC_G8_09_2019-HUN-ENG%20(v02).pdf. Primary (ILAC). §2 quotes clauses 3.7, 6.2.6, 7.1.3, 7.8.3.1 and 7.8.6 word for word.
+- **S4** ILAC-G17:01/2021 _Guidelines for Measurement Uncertainty in Testing_ (hosted by UKAS). https://www.ukas.com/wp-content/uploads/schedule_uploads/759162/ILAC_G17_01_2021.pdf. Primary (ILAC). Quotes 7.8.3.1 c).
+- **S5** Eurachem/CITAC _Use of Uncertainty Information in Compliance Assessment_, 2nd ed., 2021. https://www.eurachem.org/images/stories/Guides/pdf/MUC2021_P1_EN.pdf. Primary (technical guide).
 - **S6** European Accreditation FAQ 36.1 (LIMS). https://european-accreditation.org/sp_accordion_faqs/36-1-question-on-laboratory-information-management-system-lims/. Primary, undated.
 - **S7** European Accreditation FAQ 45.2 (report amendments). https://european-accreditation.org/sp_accordion_faqs/45-2-question-on-amendments-to-test-reports-iso-iec-17025-clause-7-8-8-1/. Primary, undated.
 
@@ -17,18 +17,22 @@ Not used: ILAC P14 (calibration only) and ILAC P15 (inspection bodies) do not ap
 ## 2. Requirements by clause
 
 ### 4.1 / 4.2 Impartiality and confidentiality
+
 The lab identifies and reduces risks to impartiality on an ongoing basis. Confidentiality commitments are legally enforceable, and customer information is confidential by default (paraphrase via PJLA LF-56).
 **For Benchline:** Separation of duties (ADR-0003/0004/0005) is an impartiality control. Sign-in exists, but nothing limits which Clients' Samples a user sees (from reading code, not verified). **Partly.**
 
 ### 6.2 Personnel competence and authorization
+
 Procedures and records for competence, training, supervision, authorization and monitoring (6.2.5). Personnel are authorized for specific activities (paraphrase via PJLA LF-56), including "analysis of results, including statements of conformity" (6.2.6, quoted in S3 §2.2).
 **For Benchline:** Authorization is by role only (`actsAs`). There is no per-Method authorization or training record (from reading code, not verified). **Not.**
 
 ### 7.1 Review of requests
+
 Requirements are defined and understood, and methods are suitable (7.1.1, paraphrase via PJLA LF-56). Clause 7.1.3 as quoted in S3 §2.3: "the decision rule shall be clearly defined. Unless inherent in the requested specification or standard, the decision rule selected shall be communicated to, and agreed with, the customer." S3 §4.2.3 expects agreement "before the measurements are taken".
 **For Benchline:** Receipt records Due date, Maximum daily dose and Client reference. It records no agreed Method and no agreed decision rule. **Not.**
 
 ### 7.4 Handling of test items (chain of custody)
+
 - **7.4.1:** A procedure for transportation, receipt, handling, protection, storage, retention and disposal or return of items.
 - **7.4.2:** Unambiguous identification kept for as long as the lab holds the item, accommodating "sub-division" and "transfer of items" where appropriate.
 - **7.4.3:** Receipt deviations recorded; the customer consulted when suitability is doubtful; a report disclaimer when the customer asks to proceed anyway.
@@ -37,23 +41,28 @@ Requirements are defined and understood, and methods are suitable (7.1.1, paraph
 (All paraphrase via PJLA LF-56.)
 
 **For Benchline:**
+
 - Satisfied: identification (Sample ID under a Submission); receipt data (`receivedAt`, `receivedBy`, `temperatureOnArrival`, `packageCondition`, `chainOfCustodyReference`); Receipt deviations with the Client instruction and a hold.
 - Partly: the Certificate lists deviations but has no "results may be affected" disclaimer. `storageLocation`, `storageCondition` and `retentionInstruction` are free text set once at receipt and never updated or monitored (from reading code, not verified).
 - Not covered: transfers, sub-samples, disposal or return.
 
 ### 7.5 Technical records
+
 Records allow the work to be repeated. They name who performed the work and who checked it, with dates. Original observations are recorded when made. Amendments can be traced to previous versions, and original and amended data are both kept, with the date, what changed and who changed it (7.5.1–7.5.2, paraphrase via PJLA LF-56).
 **For Benchline:** Satisfied: the append-only audit trail (who, when, old, new, reason), retained superseded and Invalidated Results, and signed performed-by and approved-by. Partly: the calculation is done off-system and only attached (ADR-0002).
 
 ### 7.6 Measurement uncertainty
+
 A testing lab evaluates uncertainty, or estimates it where rigorous evaluation is impossible (7.6.3, paraphrase via PJLA LF-56). Report it when it "affects conformity to a specification limit", among other cases (7.8.3.1 c, quoted in S4). Evaluation "is still applicable" to results expressed as pass/fail (S4 §3).
 **For Benchline:** No uncertainty is stored or reported. **Not.** Whether the lab keeps it on paper is unknown.
 
 ### 7.7 Ensuring validity of results
+
 A planned monitoring procedure (reference materials, control charts, replicates, blind samples), with trends detectable, plus interlaboratory comparison (paraphrase via PJLA LF-56).
 **For Benchline:** No QC, control-chart or proficiency-testing data. **Not** (possibly out of scope; unknown).
 
 ### 7.8 Reporting
+
 **7.8.2.1** requires, among others: title; laboratory name and address; unique identification and a clear end; customer name and **contact**; method; item identification and condition; date of receipt; **dates of performance**; **date of issue**; a statement that results **relate only to the items tested**; results with units; and who authorized the report. **7.8.2.2:** state that results apply to the sample **as received** where the lab did not sample, and identify customer-supplied data (paraphrase via PJLA LF-56).
 **For Benchline:** The Certificate has most items. It lacks the items in bold above: only `approvedAt` is printed, and `publishedAt` sits outside the locked content. Client-supplied Maximum daily dose is not marked as such (from reading code, not verified). **Partly.**
 
@@ -64,14 +73,17 @@ A planned monitoring procedure (reference materials, control charts, replicates,
 **For Benchline:** An Amendment carries a new version, the `Amended` marker, a reason and a before-to-after change summary, and is re-signed. **Mostly satisfied**; see §4 for the missing "replaces" reference.
 
 ### 7.9 Complaints
+
 A documented, tracked process whose outcomes are reviewed by someone not involved in the work (paraphrase via PJLA LF-56).
 **For Benchline:** No complaint concept. **Not** covered by the system (a paper process is unknown).
 
 ### 7.10 Nonconforming work
+
 When work does not conform to procedures or agreed requirements, the lab defines who is responsible, takes risk-based action (halt work, withhold reports), evaluates significance "including an impact analysis on previous results", decides acceptability, notifies or recalls where necessary, authorizes resumption, keeps records, and takes corrective action if the problem could recur (7.10.1–7.10.3, paraphrase via PJLA LF-56).
 **For Benchline:** The OOS investigation and the Receipt deviation hold are narrow instances. There is no general nonconformity record, impact analysis or recall. **Partly.**
 
 ### 7.11 Control of data and information management
+
 - **7.11.2:** A LIMS is "validated for functionality, including the proper functioning of interfaces … before introduction". Changes, including configuration changes, are authorized, documented and validated before implementation. Note 2: commercial off-the-shelf software in general use can be considered validated.
 - **7.11.3:** Protected from unauthorized access, safeguarded against tampering and loss, and with system failures recorded.
 - **7.11.6:** Calculations and data transfers are checked systematically.
@@ -79,12 +91,14 @@ When work does not conform to procedures or agreed requirements, the lab defines
 (Paraphrase via PJLA LF-56.) S6: "the software of LIMS shall always be documented and validated for its functionality before implementation by the lab".
 
 **For Benchline:**
+
 - Satisfied: access control and signatures.
 - Partly: tamper resistance, via append-only triggers and a SHA-256 hash per Certificate (from reading code, not verified); the Manager's worksheet check (7.11.6).
 - Planned: validation before introduction (ADR-0001).
 - Unknown or not covered: change validation, back-up, failure log.
 
 ### 8.4 Control of records / 8.7 Corrective action
+
 Controls for record storage, protection, back-up, archive, retrieval, retention time and disposal (8.4.2). Record each nonconformity, its causes, the actions taken and their effectiveness (8.7) (paraphrase via PJLA LF-56).
 **For Benchline:** Records are never deleted, but there is no retention period, back-up policy or corrective action record. **Not.**
 
@@ -97,6 +111,7 @@ Controls for record storage, protection, back-up, archive, retrieval, retention 
 - **Custody** (7.4), about a sixth: Submission, Sample identification, receipt data, Receipt deviations. It covers only the moment of **receipt**.
 
 Custody gaps:
+
 - No record of **internal transfers** between people or storage (`storageLocation` is set once).
 - No **sub-sample** identification.
 - **Storage conditions** are a label, not maintained, monitored or recorded (7.4.4).
@@ -123,29 +138,29 @@ Custody gaps:
    - Benchline is custom software, so the Note 2 off-the-shelf exemption does not apply.
 4. **7.10 vs Receipt deviation and OOS investigation.**
    - CONTEXT.md is right to keep Receipt deviation apart from "non-conformance": it is a 7.4.3 matter about the item.
-   - A laboratory error found by an OOS investigation *is* nonconforming work, which calls for an impact analysis on other Samples and Certificates, possible recall, and corrective action (7.10.1 c, e; 8.7).
+   - A laboratory error found by an OOS investigation _is_ nonconforming work, which calls for an impact analysis on other Samples and Certificates, possible recall, and corrective action (7.10.1 c, e; 8.7).
    - Benchline stops at Invalidated plus a Retest.
    - Nonconformities that are not OOS (an instrument fault, a missed storage condition, an error found after Publishing) have nowhere to be recorded.
 
 ## 5. Developer checklist
 
-1. Record the Client's agreed decision rule, with who recorded it and when. Refuse `Complies` or `Does not comply` without one, unless the rule is flagged as prescribed by regulation. *(7.1.3; S3)*
-2. Print the applied decision rule from the locked Certificate content. *(7.8.6.2 c; S3)*
-3. Store measurement uncertainty, or a documented "not evaluated" reason, per Method version, and copy it into each Result. *(7.6.3; S2)*
-4. Print expanded uncertainty with k when the Client requires it or it affects conformity. *(7.8.3.1 c; S4)*
-5. Print on each Amendment version the version it replaces. *(7.8.8.3; S2)*
-6. Allow an Amendment to correct receipt or Sample data, with a reason and re-approval. *(7.8.8.1, 7.5.2; S2)*
-7. Lock the date of issue, the testing dates, the Client contact, "results relate only to the items tested" and "as received" into Certificate content. *(7.8.2.1 e, i, j, l; 7.8.2.2; S2)*
-8. Mark Client-supplied data, such as Maximum daily dose, on the Certificate. *(7.8.2.2; S2)*
-9. When a Sample proceeds despite a Receipt deviation, print a disclaimer naming the affected Results. *(7.4.3; S2)*
-10. Audit-trail every change of storage location or custodian. *(7.4.1, 7.4.2; S2)*
-11. Record disposal or return as a dated, attributed event, and block it before the retention instruction allows. *(7.4.1; S2)*
-12. Give each sub-sample an identifier linked to its parent Sample. *(7.4.2; S2)*
-13. Assign Tests only to Analysts authorized for that Method version. *(6.2.5 e, 6.2.6; S2, S3)*
-14. When an OOS investigation concludes Invalidated, require an impact assessment linking the other Samples and Certificates affected. *(7.10.1 c, e; S2)*
-15. Provide a nonconforming work record, separate from OOS, covering action taken, decision, Client notification and resumption. *(7.10.1–7.10.2; S2)*
-16. Record corrective actions with their cause and an effectiveness review. *(8.7.1, 8.7.3; S2)*
-17. Refuse deployment of any code or configuration change without an authorization and validation evidence. *(7.11.2; S2, S6)*
-18. Log system failures and the actions taken. *(7.11.3 e; S2)*
-19. Enforce retention periods per record type, and test back-up and restore. *(8.4.2; S2)*
-20. Restrict Client data visibility by role, and log access to Certificates. *(4.2.1, 8.4.2; S2)*
+1. Record the Client's agreed decision rule, with who recorded it and when. Refuse `Complies` or `Does not comply` without one, unless the rule is flagged as prescribed by regulation. _(7.1.3; S3)_
+2. Print the applied decision rule from the locked Certificate content. _(7.8.6.2 c; S3)_
+3. Store measurement uncertainty, or a documented "not evaluated" reason, per Method version, and copy it into each Result. _(7.6.3; S2)_
+4. Print expanded uncertainty with k when the Client requires it or it affects conformity. _(7.8.3.1 c; S4)_
+5. Print on each Amendment version the version it replaces. _(7.8.8.3; S2)_
+6. Allow an Amendment to correct receipt or Sample data, with a reason and re-approval. _(7.8.8.1, 7.5.2; S2)_
+7. Lock the date of issue, the testing dates, the Client contact, "results relate only to the items tested" and "as received" into Certificate content. _(7.8.2.1 e, i, j, l; 7.8.2.2; S2)_
+8. Mark Client-supplied data, such as Maximum daily dose, on the Certificate. _(7.8.2.2; S2)_
+9. When a Sample proceeds despite a Receipt deviation, print a disclaimer naming the affected Results. _(7.4.3; S2)_
+10. Audit-trail every change of storage location or custodian. _(7.4.1, 7.4.2; S2)_
+11. Record disposal or return as a dated, attributed event, and block it before the retention instruction allows. _(7.4.1; S2)_
+12. Give each sub-sample an identifier linked to its parent Sample. _(7.4.2; S2)_
+13. Assign Tests only to Analysts authorized for that Method version. _(6.2.5 e, 6.2.6; S2, S3)_
+14. When an OOS investigation concludes Invalidated, require an impact assessment linking the other Samples and Certificates affected. _(7.10.1 c, e; S2)_
+15. Provide a nonconforming work record, separate from OOS, covering action taken, decision, Client notification and resumption. _(7.10.1–7.10.2; S2)_
+16. Record corrective actions with their cause and an effectiveness review. _(8.7.1, 8.7.3; S2)_
+17. Refuse deployment of any code or configuration change without an authorization and validation evidence. _(7.11.2; S2, S6)_
+18. Log system failures and the actions taken. _(7.11.3 e; S2)_
+19. Enforce retention periods per record type, and test back-up and restore. _(8.4.2; S2)_
+20. Restrict Client data visibility by role, and log access to Certificates. _(4.2.1, 8.4.2; S2)_
