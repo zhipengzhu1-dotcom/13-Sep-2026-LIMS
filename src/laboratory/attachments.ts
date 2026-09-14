@@ -47,7 +47,10 @@ export class AttachmentStore {
   constructor(private db: DatabaseSync) {
     db.exec(`CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, filename TEXT NOT NULL, contentType TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, uploadedBy TEXT NOT NULL, uploadedAt TEXT NOT NULL, content BLOB NOT NULL);
       CREATE TRIGGER IF NOT EXISTS attachments_immutable BEFORE UPDATE ON attachments BEGIN SELECT RAISE(ABORT, 'Attachments cannot be changed.'); END;
-      CREATE TRIGGER IF NOT EXISTS attachments_permanent BEFORE DELETE ON attachments BEGIN SELECT RAISE(ABORT, 'Attachments cannot be deleted.'); END;`);
+      CREATE TRIGGER IF NOT EXISTS attachments_permanent BEFORE DELETE ON attachments BEGIN SELECT RAISE(ABORT, 'Attachments cannot be deleted.'); END;
+      CREATE TRIGGER IF NOT EXISTS attachments_no_replace BEFORE INSERT ON attachments
+        WHEN EXISTS (SELECT 1 FROM attachments WHERE id = NEW.id OR rowid = NEW.rowid)
+        BEGIN SELECT RAISE(ABORT, 'Attachments cannot be changed.'); END;`);
   }
 
   /** Validates and stores a file as a new attachment. */

@@ -18,9 +18,15 @@ export class CertificateStore {
     db.exec(`CREATE TABLE IF NOT EXISTS certificates (sampleId TEXT NOT NULL, version INTEGER NOT NULL, approvedAt TEXT NOT NULL, sha256 TEXT NOT NULL, content TEXT NOT NULL, commandId BLOB NOT NULL, PRIMARY KEY (sampleId, version)) WITHOUT ROWID;
       CREATE TRIGGER IF NOT EXISTS certificatesNoUpdate BEFORE UPDATE ON certificates BEGIN SELECT RAISE(ABORT, 'Certificates of Analysis are locked.'); END;
       CREATE TRIGGER IF NOT EXISTS certificatesNoDelete BEFORE DELETE ON certificates BEGIN SELECT RAISE(ABORT, 'Certificates of Analysis are locked.'); END;
+      CREATE TRIGGER IF NOT EXISTS certificatesNoReplace BEFORE INSERT ON certificates
+        WHEN EXISTS (SELECT 1 FROM certificates WHERE sampleId = NEW.sampleId AND version = NEW.version)
+        BEGIN SELECT RAISE(ABORT, 'Certificates of Analysis are locked.'); END;
       CREATE TABLE IF NOT EXISTS publications (sampleId TEXT NOT NULL, version INTEGER NOT NULL, recipients TEXT NOT NULL, channel TEXT NOT NULL, channelDetail TEXT NOT NULL, publishedAt TEXT NOT NULL, publishedBy TEXT NOT NULL, recordedAt TEXT NOT NULL, commandId BLOB NOT NULL, PRIMARY KEY (sampleId, version), FOREIGN KEY (sampleId, version) REFERENCES certificates (sampleId, version)) WITHOUT ROWID;
       CREATE TRIGGER IF NOT EXISTS publicationsNoUpdate BEFORE UPDATE ON publications BEGIN SELECT RAISE(ABORT, 'Publications are append-only.'); END;
-      CREATE TRIGGER IF NOT EXISTS publicationsNoDelete BEFORE DELETE ON publications BEGIN SELECT RAISE(ABORT, 'Publications are append-only.'); END;`);
+      CREATE TRIGGER IF NOT EXISTS publicationsNoDelete BEFORE DELETE ON publications BEGIN SELECT RAISE(ABORT, 'Publications are append-only.'); END;
+      CREATE TRIGGER IF NOT EXISTS publicationsNoReplace BEFORE INSERT ON publications
+        WHEN EXISTS (SELECT 1 FROM publications WHERE sampleId = NEW.sampleId AND version = NEW.version)
+        BEGIN SELECT RAISE(ABORT, 'Publications are append-only.'); END;`);
   }
 
   /** Certificate versions without their content, by Sample then version:

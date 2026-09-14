@@ -73,7 +73,10 @@ export class SignatureStore {
   constructor(private db: DatabaseSync) {
     db.exec(`CREATE TABLE IF NOT EXISTS signatures (id INTEGER PRIMARY KEY, sampleId TEXT NOT NULL, signerId TEXT NOT NULL, printedName TEXT NOT NULL, signedAt TEXT NOT NULL, meaning TEXT NOT NULL, command TEXT NOT NULL, commandId BLOB NOT NULL, signedContent TEXT NOT NULL, sha256 TEXT NOT NULL);
       CREATE TRIGGER IF NOT EXISTS signaturesNoUpdate BEFORE UPDATE ON signatures BEGIN SELECT RAISE(ABORT, 'Electronic signatures cannot be changed.'); END;
-      CREATE TRIGGER IF NOT EXISTS signaturesNoDelete BEFORE DELETE ON signatures BEGIN SELECT RAISE(ABORT, 'Electronic signatures cannot be deleted.'); END;`);
+      CREATE TRIGGER IF NOT EXISTS signaturesNoDelete BEFORE DELETE ON signatures BEGIN SELECT RAISE(ABORT, 'Electronic signatures cannot be deleted.'); END;
+      CREATE TRIGGER IF NOT EXISTS signaturesNoReplace BEFORE INSERT ON signatures
+        WHEN EXISTS (SELECT 1 FROM signatures WHERE id = NEW.id)
+        BEGIN SELECT RAISE(ABORT, 'Electronic signatures cannot be changed.'); END;`);
   }
 
   /** Oldest first: lab-wide or for one Sample, each checked against its

@@ -14,7 +14,10 @@ export class AcceptableIntakeStore {
   constructor(private db: DatabaseSync) {
     db.exec(`CREATE TABLE IF NOT EXISTS acceptableIntakes (id INTEGER PRIMARY KEY, analyteId TEXT NOT NULL, value REAL NOT NULL, sourceTitle TEXT NOT NULL, sourceUrl TEXT NOT NULL, sourceRevisionDate TEXT NOT NULL, effectiveFrom TEXT NOT NULL, illustrative INTEGER NOT NULL);
       CREATE TRIGGER IF NOT EXISTS acceptableIntakesNoUpdate BEFORE UPDATE ON acceptableIntakes BEGIN SELECT RAISE(ABORT, 'Acceptable intake entries are append-only.'); END;
-      CREATE TRIGGER IF NOT EXISTS acceptableIntakesNoDelete BEFORE DELETE ON acceptableIntakes BEGIN SELECT RAISE(ABORT, 'Acceptable intake entries are append-only.'); END;`);
+      CREATE TRIGGER IF NOT EXISTS acceptableIntakesNoDelete BEFORE DELETE ON acceptableIntakes BEGIN SELECT RAISE(ABORT, 'Acceptable intake entries are append-only.'); END;
+      CREATE TRIGGER IF NOT EXISTS acceptableIntakesNoReplace BEFORE INSERT ON acceptableIntakes
+        WHEN EXISTS (SELECT 1 FROM acceptableIntakes WHERE id = NEW.id)
+        BEGIN SELECT RAISE(ABORT, 'Acceptable intake entries are append-only.'); END;`);
     const { entries } = db
       .prepare('SELECT COUNT(*) AS entries FROM acceptableIntakes')
       .get() as { entries: number };

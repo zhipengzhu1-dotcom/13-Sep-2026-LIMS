@@ -32,7 +32,10 @@ export class AuditTrail {
       CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
         BEGIN SELECT RAISE(ABORT, 'Audit entries cannot be changed.'); END;
       CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
-        BEGIN SELECT RAISE(ABORT, 'Audit entries cannot be deleted.'); END;`);
+        BEGIN SELECT RAISE(ABORT, 'Audit entries cannot be deleted.'); END;
+      CREATE TRIGGER IF NOT EXISTS audit_no_replace BEFORE INSERT ON audit
+        WHEN EXISTS (SELECT 1 FROM audit WHERE sequence = NEW.sequence)
+        BEGIN SELECT RAISE(ABORT, 'Audit entries cannot be changed.'); END;`);
   }
 
   /** A writer for one command. `written` counts its entries so far. */

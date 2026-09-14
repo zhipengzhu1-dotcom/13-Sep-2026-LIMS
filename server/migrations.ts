@@ -51,6 +51,33 @@ export const migrations: readonly Migration[] = [
     WHEN EXISTS (SELECT 1 FROM commandReplays WHERE id = NEW.id)
     BEGIN SELECT RAISE(ABORT, 'Command replays cannot be changed.'); END;`),
   },
+  {
+    version: 21,
+    change:
+      'Signatures, audit entries, attachments, Certificates, publications and Acceptable intake entries cannot be replaced',
+    // A replacing insert deletes the row it replaces without firing delete
+    // triggers. Kept as applied, like version 20.
+    apply: (db) =>
+      db.exec(`
+  CREATE TRIGGER IF NOT EXISTS signaturesNoReplace BEFORE INSERT ON signatures
+    WHEN EXISTS (SELECT 1 FROM signatures WHERE id = NEW.id)
+    BEGIN SELECT RAISE(ABORT, 'Electronic signatures cannot be changed.'); END;
+  CREATE TRIGGER IF NOT EXISTS audit_no_replace BEFORE INSERT ON audit
+    WHEN EXISTS (SELECT 1 FROM audit WHERE sequence = NEW.sequence)
+    BEGIN SELECT RAISE(ABORT, 'Audit entries cannot be changed.'); END;
+  CREATE TRIGGER IF NOT EXISTS attachments_no_replace BEFORE INSERT ON attachments
+    WHEN EXISTS (SELECT 1 FROM attachments WHERE id = NEW.id OR rowid = NEW.rowid)
+    BEGIN SELECT RAISE(ABORT, 'Attachments cannot be changed.'); END;
+  CREATE TRIGGER IF NOT EXISTS certificatesNoReplace BEFORE INSERT ON certificates
+    WHEN EXISTS (SELECT 1 FROM certificates WHERE sampleId = NEW.sampleId AND version = NEW.version)
+    BEGIN SELECT RAISE(ABORT, 'Certificates of Analysis are locked.'); END;
+  CREATE TRIGGER IF NOT EXISTS publicationsNoReplace BEFORE INSERT ON publications
+    WHEN EXISTS (SELECT 1 FROM publications WHERE sampleId = NEW.sampleId AND version = NEW.version)
+    BEGIN SELECT RAISE(ABORT, 'Publications are append-only.'); END;
+  CREATE TRIGGER IF NOT EXISTS acceptableIntakesNoReplace BEFORE INSERT ON acceptableIntakes
+    WHEN EXISTS (SELECT 1 FROM acceptableIntakes WHERE id = NEW.id)
+    BEGIN SELECT RAISE(ABORT, 'Acceptable intake entries are append-only.'); END;`),
+  },
 ];
 
 function latestVersion(pending: readonly Migration[]) {

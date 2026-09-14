@@ -133,7 +133,7 @@ test('a migration that rebuilds a protected table or disarms its triggers is ref
     outcome: 'refused',
     version: 19,
     reason:
-      'Migrating to version 20 would remove or alter the protection triggers signaturesNoDelete, signaturesNoUpdate. Nothing was changed.',
+      'Migrating to version 20 would remove or alter the protection triggers signaturesNoDelete, signaturesNoReplace, signaturesNoUpdate. Nothing was changed.',
   });
   assert.deepEqual(migrate(file, [disarm]), {
     outcome: 'refused',
@@ -266,9 +266,21 @@ test('a migration that fails is refused and leaves the database as it was, earli
   });
 });
 
+/** The triggers that refuse replacing inserts on the tables protected before
+ * migrations existed, which migration version 21 adds. */
+const replaceProtection = [
+  'signaturesNoReplace',
+  'audit_no_replace',
+  'attachments_no_replace',
+  'certificatesNoReplace',
+  'publicationsNoReplace',
+  'acceptableIntakesNoReplace',
+];
+
 /** A version 19 database as the last build before migrations left it: its
- * applied commands and command replays have no protection triggers. It holds
- * the demo's records and one replayed command. */
+ * applied commands and command replays have no protection triggers, and no
+ * protected table refuses a replacing insert. It holds the demo's records and
+ * one replayed command. */
 function databaseBeforeCommandProtection(t: TestContext) {
   const file = seededDatabase(t);
   const { lab, close } = open(file);
@@ -303,8 +315,49 @@ function databaseBeforeCommandProtection(t: TestContext) {
     )
     .all() as { name: string }[])
     db.exec(`DROP TRIGGER ${name}`);
+  for (const name of replaceProtection)
+    db.exec(`DROP TRIGGER IF EXISTS ${name}`);
   db.close();
   return file;
+}
+
+/** A version 20 database as that build left it: its protected tables refuse
+ * updates and deletes, but only applied commands and command replays refuse a
+ * replacing insert. It holds the demo's records. */
+function databaseBeforeReplaceProtection(t: TestContext) {
+  const file = seededDatabase(t);
+  const db = new DatabaseSync(file);
+  for (const name of replaceProtection) db.exec(`DROP TRIGGER ${name}`);
+  db.exec('PRAGMA user_version=20');
+  db.close();
+  return file;
+}
+
+/** Every row of the tables protected before migrations existed. */
+function protectedRecords(file: string) {
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    return Object.fromEntries(
+      [
+        'signatures',
+        'audit',
+        'attachments',
+        'certificates',
+        'publications',
+        'acceptableIntakes',
+      ].map((table) => [
+        table,
+        // Only attachments have a rowid that is not one of their columns.
+        db
+          .prepare(
+            `SELECT ${table === 'attachments' ? 'rowid, ' : ''}* FROM ${table} ORDER BY 1, 2`,
+          )
+          .all(),
+      ]),
+    );
+  } finally {
+    db.close();
+  }
 }
 
 /** Applied commands and command replays, row for row. */
@@ -332,7 +385,7 @@ test('migrating to version 20 keeps every applied command and command replay, an
   assert.equal(migration.outcome, 'migrated');
   if (migration.outcome === 'migrated') {
     assert.equal(migration.from, 19);
-    assert.equal(migration.to, 20);
+    assert.equal(migration.to, 21);
   }
   assert.deepEqual(records(file), before);
   assert.deepEqual(commandRecords(file), commands);
@@ -363,6 +416,66 @@ test('migrating to version 20 keeps every applied command and command replay, an
   ] as const)
     assert.throws(() => db.exec(sql), refusal, sql);
   assert.deepEqual(commandRecords(file), commands);
+});
+
+test('migrating to version 21 keeps every protected record, and the database then refuses replacing signatures, audit entries, attachments, Certificates, publications and Acceptable intake entries', (t) => {
+  const file = databaseBeforeReplaceProtection(t);
+  const before = records(file);
+  const rows = protectedRecords(file);
+  assert.ok(before.signatures.every((s) => s.valid));
+
+  assert.deepEqual(migrate(file), {
+    outcome: 'migrated',
+    from: 20,
+    to: 21,
+    applied: [
+      'Signatures, audit entries, attachments, Certificates, publications and Acceptable intake entries cannot be replaced',
+    ],
+  });
+  assert.deepEqual(records(file), before);
+  assert.deepEqual(protectedRecords(file), rows);
+
+  const db = new DatabaseSync(file);
+  t.after(() => db.close());
+  for (const [sql, refusal] of [
+    [
+      `INSERT OR REPLACE INTO signatures
+        SELECT id, sampleId, signerId, 'Someone Else', signedAt, meaning, command, commandId, signedContent, sha256 FROM signatures`,
+      /Electronic signatures cannot be changed/,
+    ],
+    [
+      `INSERT OR REPLACE INTO audit
+        SELECT sequence, recordType, recordId, sampleId, field, oldValue, newValue, reason, 'manager', at, commandType, commandId FROM audit`,
+      /Audit entries cannot be changed/,
+    ],
+    [
+      `INSERT OR REPLACE INTO attachments (rowid, id, filename, contentType, size, sha256, uploadedBy, uploadedAt, content)
+        SELECT rowid, id, filename, contentType, size, '00', uploadedBy, uploadedAt, X'00' FROM attachments`,
+      /Attachments cannot be changed/,
+    ],
+    [
+      `INSERT OR REPLACE INTO attachments (rowid, id, filename, contentType, size, sha256, uploadedBy, uploadedAt, content)
+        SELECT rowid, id || '-other', filename, contentType, size, '00', uploadedBy, uploadedAt, X'00' FROM attachments`,
+      /Attachments cannot be changed/,
+    ],
+    [
+      `INSERT OR REPLACE INTO certificates
+        SELECT sampleId, version, 'TAMPERED', sha256, content, commandId FROM certificates`,
+      /Certificates of Analysis are locked/,
+    ],
+    [
+      `INSERT OR REPLACE INTO publications
+        SELECT sampleId, version, recipients, channel, channelDetail, publishedAt, 'manager', recordedAt, commandId FROM publications`,
+      /Publications are append-only/,
+    ],
+    [
+      `INSERT OR REPLACE INTO acceptableIntakes
+        SELECT id, 'TAMPERED', value, sourceTitle, sourceUrl, sourceRevisionDate, effectiveFrom, illustrative FROM acceptableIntakes`,
+      /Acceptable intake entries are append-only/,
+    ],
+  ] as const)
+    assert.throws(() => db.exec(sql), refusal, sql);
+  assert.deepEqual(protectedRecords(file), rows);
 });
 
 test('a rehearsal of the Benchline migrations on a version 19 database passes', (t) => {

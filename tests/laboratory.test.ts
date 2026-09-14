@@ -2199,7 +2199,7 @@ const verification = (lab: Laboratory) =>
 const invalidSignature =
   /Electronic signature .* is invalid\. Contact the Quality lead/;
 
-test('the database refuses changing or deleting signatures, audit entries, attachments, Certificates, publications, Acceptable intake entries, applied commands and command replays', (t) => {
+test('the database refuses changing, replacing or deleting signatures, audit entries, attachments, Certificates, publications, Acceptable intake entries, applied commands and command replays', (t) => {
   const { lab, file } = onFile(t);
   const published = run(
     lab,
@@ -2227,44 +2227,80 @@ test('the database refuses changing or deleting signatures, audit entries, attac
       table: 'signatures',
       change: "signedContent='{}', printedName='Someone Else'",
       refusal: /Electronic signatures cannot be (changed|deleted)/,
+      // A replacing insert deletes the row it replaces without firing delete
+      // triggers, so each is tried as well.
+      replacing: [
+        `INSERT OR REPLACE INTO signatures
+          SELECT id, sampleId, signerId, 'Someone Else', signedAt, meaning, command, commandId, signedContent, sha256 FROM signatures`,
+      ],
     },
     {
       table: 'audit',
       change: "newValue='\"Withdrawn\"', actor='manager'",
       refusal: /Audit entries cannot be (changed|deleted)/,
+      replacing: [
+        `INSERT OR REPLACE INTO audit
+          SELECT sequence, recordType, recordId, sampleId, field, oldValue, '"Withdrawn"', reason, 'manager', at, commandType, commandId FROM audit`,
+      ],
     },
     {
       table: 'attachments',
       change: "content=X'00', sha256='00'",
       refusal: /Attachments cannot be (changed|deleted)/,
+      replacing: [
+        `INSERT OR REPLACE INTO attachments (id, filename, contentType, size, sha256, uploadedBy, uploadedAt, content)
+          SELECT id, filename, contentType, size, '00', uploadedBy, uploadedAt, X'00' FROM attachments`,
+        // Attachments also have a rowid, which a replacing insert can name.
+        `INSERT OR REPLACE INTO attachments (rowid, id, filename, contentType, size, sha256, uploadedBy, uploadedAt, content)
+          SELECT rowid, id || '-other', filename, contentType, size, '00', uploadedBy, uploadedAt, X'00' FROM attachments`,
+      ],
     },
     {
       table: 'certificates',
       change: "content='{}', sha256='00'",
       refusal: /Certificates of Analysis are locked/,
+      replacing: [
+        `INSERT OR REPLACE INTO certificates
+          SELECT sampleId, version, '2020-01-01', sha256, content, commandId FROM certificates`,
+      ],
     },
     {
       table: 'publications',
       change: "recipients='[]', publishedBy='manager'",
       refusal: /Publications are append-only/,
+      replacing: [
+        `INSERT OR REPLACE INTO publications
+          SELECT sampleId, version, '[]', channel, channelDetail, publishedAt, 'manager', recordedAt, commandId FROM publications`,
+      ],
     },
     {
       table: 'acceptableIntakes',
       change: 'value=1000000',
       refusal: /Acceptable intake entries are append-only/,
+      replacing: [
+        `INSERT OR REPLACE INTO acceptableIntakes
+          SELECT id, 'TAMPERED', value, sourceTitle, sourceUrl, sourceRevisionDate, effectiveFrom, illustrative FROM acceptableIntakes`,
+      ],
     },
     {
       table: 'commands',
       change: "actorId='manager', receivedAt='2020-01-01'",
       refusal: /Applied commands cannot be (changed|deleted)/,
+      // A replacing insert over an applied command is ignored, not refused;
+      // the test below covers it.
+      replacing: [],
     },
     {
       table: 'commandReplays',
       change: "actorId='manager'",
       refusal: /Command replays cannot be (changed|deleted)/,
+      replacing: [
+        `INSERT OR REPLACE INTO commandReplays (id, commandId, at, actorId)
+          SELECT id, commandId, at, 'manager' FROM commandReplays`,
+      ],
     },
   ];
-  for (const { table, change, refusal } of protectedTables) {
+  for (const { table, change, refusal, replacing } of protectedTables) {
     // A trigger fires per row, so an empty table would refuse nothing.
     const { count } = db
       .prepare(`SELECT count(*) AS count FROM ${table}`)
@@ -2280,13 +2316,9 @@ test('the database refuses changing or deleting signatures, audit entries, attac
       refusal,
       `DELETE FROM ${table}`,
     );
+    for (const sql of replacing)
+      assert.throws(() => db.exec(sql), refusal, sql);
   }
-  assert.throws(
-    () =>
-      db.exec(`INSERT OR REPLACE INTO commandReplays (id, commandId, at, actorId)
-        SELECT id, commandId, at, 'manager' FROM commandReplays`),
-    /Command replays cannot be changed/,
-  );
   // Every committed command recorded its subject, so none is left to fill in.
   assert.deepEqual(
     {
