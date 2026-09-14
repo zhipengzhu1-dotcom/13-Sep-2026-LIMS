@@ -926,6 +926,26 @@ test('the demo database is kept across restarts, and one from an older build is 
   let lab = start();
   const seeded = shape(lab);
   assert.ok(seeded.length, 'a new database is seeded');
+  // The demo shows a Retest linked to the investigation that Invalidated the
+  // Result before it.
+  const retests = lab.snapshot().samples.flatMap((x) =>
+    x.tests.flatMap((test) =>
+      test.results.flatMap((r) => {
+        const i = x.investigations.find((i) => i.id === r.retestAfter);
+        return i
+          ? [
+              [
+                i.outcome,
+                i.testId === test.id,
+                test.results.find((p) => p.sequence === i.resultSequence)
+                  ?.status,
+              ],
+            ]
+          : [];
+      }),
+    ),
+  );
+  assert.deepEqual(retests, [['Invalidated', true, 'invalidated']]);
   const added = execute(lab, receipt, 'coordinator').submission!.id;
   lab.close();
   // A database this build wrote is current, however often it is reopened.
@@ -2423,10 +2443,11 @@ test('Invalidated: the Result stays on record with its cause and reference, and 
       r.value,
       r.conformity,
       r.investigationId,
+      r.retestAfter,
     ]),
     [
-      [1, 'invalidated', 30, 'Does not comply', 'OOS26-0001'],
-      [2, 'current', 12.4, 'Complies', null],
+      [1, 'invalidated', 30, 'Does not comply', 'OOS26-0001', null],
+      [2, 'current', 12.4, 'Complies', null, 'OOS26-0001'],
     ],
   );
   s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
@@ -3744,9 +3765,19 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
       ],
     ],
   );
-  assert.match(
+  // ISO/IEC 17025 7.8.8.1: the Retest's value change is a change to the
+  // report, so the summary names it; its link to OOS26-0002 is on the trail
+  // but is no change to report.
+  assert.equal(
     v2.content.amendment!.changeSummary,
-    /^Impurity A \(NIT-001 v1\): Result 30 → 2\.5 ng\/day/,
+    'Impurity A (NIT-001 v1): Result 30 → 2.5 ng/day, qualifier quantified → < LOQ, Conformity statement Does not comply → Complies (reason: "Recalculated with the dilution factor on the worksheet.")',
+  );
+  assert.deepEqual(
+    lab
+      .auditTrail(s.id)
+      .filter((e) => e.field === 'result.retestAfter')
+      .map((e) => [e.commandType, e.actor, e.recordId, e.oldValue, e.newValue]),
+    [['enterResult', 'analyst', `${s.id}/NIT-001-v1`, null, 'OOS26-0002']],
   );
   assert.equal(oosPublishBlocker(s), null, 'the Client was already informed');
   assert.equal(run(lab, publish(s), 'coordinator').status, 'Published');

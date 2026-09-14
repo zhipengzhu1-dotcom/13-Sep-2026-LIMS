@@ -17,8 +17,17 @@ import {
   attachmentAccept,
   attachmentContentType,
 } from '../laboratory/attachment-contracts';
-import { resultsView } from '../laboratory/results';
-import { investigationLabel, OosNote, RefusalNote } from './oos';
+import {
+  resultsView,
+  retestLabel,
+  type RetestLineage,
+} from '../laboratory/results';
+import {
+  investigationAnchor,
+  investigationLabel,
+  OosNote,
+  RefusalNote,
+} from './oos';
 import {
   ConformityTag,
   type Draft,
@@ -347,6 +356,34 @@ export function WorksheetLink({ data, id }: { data: Snapshot; id: string }) {
   );
 }
 
+/** An investigation reference that links to it in the Sample's OOS
+ * investigations. */
+const InvestigationLink = ({ id }: { id: string }) => (
+  <a className="link num" href={`#${investigationAnchor(id)}`}>
+    {id}
+  </a>
+);
+
+/** A Retest's lineage in the module's words, with the investigation linked. */
+function RetestLineageText({
+  test,
+  lineage,
+}: {
+  test: Test;
+  lineage: RetestLineage;
+}) {
+  const text = retestLabel(test, lineage);
+  const id = lineage.investigation.id;
+  const at = text.indexOf(id);
+  return (
+    <>
+      {text.slice(0, at)}
+      <InvestigationLink id={id} />
+      {text.slice(at + id.length)}
+    </>
+  );
+}
+
 /** Every requested test as one row. Unrecorded tests show their entry fields
  * inline for the assigned analyst, so a whole sample can be keyed in one pass
  * with Tab and Enter; a current Result opens for correction on request. */
@@ -393,7 +430,8 @@ export function TestSheet({
         // Earlier Results besides the current one, such as an Invalidated
         // result awaiting its retest.
         const earlier = results.length - (current ? 1 : 0);
-        const retest = view.retestRequired;
+        const due = view.retestDue;
+        const lineage = results.find((h) => h.result === current)?.retestOf;
         return (
           <tbody key={t.id} className={editing ? 'editing' : undefined}>
             <tr>
@@ -432,9 +470,17 @@ export function TestSheet({
                   <>
                     <LimitCell result={current} />
                     <OosNote sample={s} result={current} />
+                    {lineage && (
+                      <span className="sub">
+                        <RetestLineageText test={t} lineage={lineage} />
+                      </span>
+                    )}
                   </>
-                ) : retest ? (
-                  <span className="oos-note">Retest required</span>
+                ) : due ? (
+                  <span className="oos-note">
+                    Retest required after{' '}
+                    <InvestigationLink id={due.investigation.id} />
+                  </span>
                 ) : (
                   <span className="dim">—</span>
                 )}
@@ -505,7 +551,7 @@ export function TestSheet({
                   <ol>
                     {[...results]
                       .reverse()
-                      .map(({ result: r, investigation }) => (
+                      .map(({ result: r, investigation, retestOf }) => (
                         <li key={r.sequence} className={r.status}>
                           <span className="num">#{r.sequence}</span>
                           <span className={'result-status ' + r.status}>
@@ -524,6 +570,11 @@ export function TestSheet({
                           </time>
                           {r.reason && (
                             <span className="reason">Reason: {r.reason}</span>
+                          )}
+                          {retestOf && (
+                            <span className="reason">
+                              <RetestLineageText test={t} lineage={retestOf} />
+                            </span>
                           )}
                           {r.investigationId && (
                             <span className="reason">

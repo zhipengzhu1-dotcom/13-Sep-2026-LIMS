@@ -92,10 +92,19 @@ export type Refusal = {
   investigationId: string | null;
 };
 
-/** One Result on a Test's history, with the investigation that decided it. */
+/** The closed OOS investigation a Retest follows, and the Invalidated result
+ * it decided on the same Test. */
+export type RetestLineage = {
+  investigation: OosInvestigation;
+  invalidated: Result;
+};
+
+/** One Result on a Test's history, with the investigation that decided it
+ * and, for a Retest, the investigation and Invalidated result it follows. */
 export type ResultRecord = {
   result: Result;
   investigation: OosInvestigation | undefined;
+  retestOf: RetestLineage | undefined;
 };
 
 /** An investigation as a Certificate of Analysis row lists it. */
@@ -110,6 +119,9 @@ export type TestResults = {
   readonly history: readonly ResultRecord[];
   /** Whether the Test's Result was Invalidated and no Retest is recorded. */
   readonly retestRequired: boolean;
+  /** While a Retest is required, the investigation it will follow and the
+   * Invalidated result: the last one Invalidated on the Test. */
+  readonly retestDue: RetestLineage | undefined;
   /** The closed investigations a Certificate of Analysis row for this Test
    * lists. */
   readonly certificateInvestigations: CertificateInvestigation[];
@@ -230,6 +242,36 @@ export function investigationOf(
 
 const testLabel = (t: Test) => `${t.analyteName} (${t.methodCode})`;
 
+/** The investigation `id` and the Result it decided. The module writes the
+ * link, so a broken one is a programming error rather than a refusal. */
+function lineageOf(sample: Sample, id: string): RetestLineage {
+  const investigation = sample.investigations.find((i) => i.id === id);
+  const invalidated = sample.tests
+    .find((t) => t.id === investigation?.testId)
+    ?.results.find((r) => r.sequence === investigation?.resultSequence);
+  if (!investigation || !invalidated)
+    throw new Error(`Retest link ${id} names no Invalidated result.`);
+  return { investigation, invalidated };
+}
+
+/**
+ * A Retest's lineage as the Test sheet shows it, e.g. "Retest after
+ * OOS26-0003 · Invalidated result #1, 31.2 ng/day". A `< LOD` or `< LOQ`
+ * value is shown with its bound, as the Certificate of Analysis reports it.
+ */
+export function retestLabel(
+  test: Pick<Test, 'lod' | 'loq'>,
+  { investigation, invalidated: r }: RetestLineage,
+) {
+  const value =
+    r.qualifier === '< LOD'
+      ? `< LOD (${test.lod})`
+      : r.qualifier === '< LOQ'
+        ? `< LOQ (${test.loq})`
+        : String(r.value);
+  return `Retest after ${investigation.id} · Invalidated result #${r.sequence}, ${value} ${r.unit}`;
+}
+
 export function resultsView(sample: Sample): SampleResults {
   const testResults = (test: Test): TestResults => ({
     test,
@@ -240,12 +282,22 @@ export function resultsView(sample: Sample): SampleResults {
       return test.results.map((result) => ({
         result,
         investigation: investigationOf(sample, result),
+        retestOf: result.retestAfter
+          ? lineageOf(sample, result.retestAfter)
+          : undefined,
       }));
     },
     get retestRequired() {
       return (
         !this.current && test.results.some((r) => r.status === 'invalidated')
       );
+    },
+    get retestDue() {
+      if (this.current) return undefined;
+      const last = test.results.findLast((r) => r.status === 'invalidated');
+      return last?.investigationId
+        ? lineageOf(sample, last.investigationId)
+        : undefined;
     },
     get certificateInvestigations() {
       return sample.investigations.flatMap((i) =>
@@ -259,14 +311,12 @@ export function resultsView(sample: Sample): SampleResults {
       if (!current) {
         // An Invalidated result is never corrected: the Test calls for a
         // Retest, which keeps it on record.
-        if (!this.retestRequired) return null;
-        const { result, investigation } = this.history.findLast(
-          (h) => h.result.status === 'invalidated',
-        )!;
-        const id = investigation!.id;
+        const due = this.retestDue;
+        if (!due) return null;
+        const id = due.investigation.id;
         return {
           code: 'retest required',
-          reason: `Result #${result.sequence} was Invalidated by OOS investigation ${id}, so it cannot be corrected. Enter a Retest instead.`,
+          reason: `Result #${due.invalidated.sequence} was Invalidated by OOS investigation ${id}, so it cannot be corrected. Enter a Retest instead.`,
           investigationId: id,
         };
       }
@@ -554,9 +604,12 @@ export function recordResult(
     throw new WorkflowError(
       'The worksheet attachment was not found. Upload the calculation worksheet again.',
     );
+  // A Retest follows the investigation that Invalidated the last Result, and
+  // needs no reason of its own: that investigation's assignable cause stands.
+  const due = previous ? undefined : view.retestDue;
   const kind: RecordedKind = previous
     ? 'correction'
-    : test.results.some((r) => r.status === 'invalidated')
+    : due
       ? 'retest'
       : 'first entry';
   // The unit and LOD/LOQ come from the Test, which took them from the
@@ -577,10 +630,14 @@ export function recordResult(
     limit,
     conformity: conformity({ value: input.value, qualifier }, test, limit),
     investigationId: null,
+    retestAfter: due ? due.investigation.id : null,
   };
   // The actor, time and reason are the entry's own columns, and the sequence
   // and status only say which Result is current, so only the Result's content
-  // is compared, field by field, with the current Result. The Limit is a copy
+  // is compared, field by field, with the Result it replaces: the current one
+  // for a correction, the Invalidated result for a Retest. The Retest link is
+  // compared like any field, so it is on the trail; an Amendment's change
+  // summary leaves it out because it names only reported fields. The Limit is a copy
   // of reference data, so the trail names its entry and value rather than
   // every field of the source it was published in.
   const audited = (r: Result) => ({
@@ -591,9 +648,10 @@ export function recordResult(
   });
   const record = auditRecord.test(sample, test);
   const reason = input.reason;
+  const replaced = previous ?? due?.invalidated;
   const changed = audit.compare(
     record,
-    previous ? audited(previous) : null,
+    replaced ? audited(replaced) : null,
     audited(next),
     {
       reason,
@@ -609,7 +667,7 @@ export function recordResult(
   );
   // Re-entering an unchanged value is still an act the trail must show.
   if (!changed)
-    audit.change(record, 'result.value', previous!.value, next.value, reason);
+    audit.change(record, 'result.value', replaced!.value, next.value, reason);
   if (previous) previous.status = 'superseded';
   test.results.push(next);
   return kind;
