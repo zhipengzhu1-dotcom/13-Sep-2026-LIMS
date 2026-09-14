@@ -1,6 +1,6 @@
 # An Admin acts in every role, still bound by separation of duties
 
-_Partly superseded by ADR-0007: before Go-live the Admin role is the developer's; after Go-live it is one backup person with no account or configuration rights, and system administration is an external provider's job._
+Partly superseded by ADR-0007.
 
 The lab has three people, too few to staff Coordinator, Analyst and Manager separately, so the lab owner asked for a "super admin" with access to everything. We decided to add an Admin role that acts in every role: it sees every workspace view and may perform every command a Coordinator, Analyst or Manager may, and can be assigned Samples as their Analyst. Permission is decided in one place (`actsAs` in `contracts.ts`, used by `requireRole` and by the workspace), rather than by per-command exceptions.
 
