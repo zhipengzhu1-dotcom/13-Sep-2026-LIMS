@@ -205,7 +205,19 @@ export function CertificateView({
                         {section.rows.map((row, i) => (
                           <tr key={i}>
                             {row.map((cell, j) => (
-                              <td key={j}>{cell}</td>
+                              <td key={j}>
+                                {typeof cell === 'string' ? (
+                                  cell
+                                ) : (
+                                  // role="list" keeps list semantics in
+                                  // WebKit, which drops them without bullets.
+                                  <ul className="certificate-lines" role="list">
+                                    {cell.map((line) => (
+                                      <li key={line}>{line}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </td>
                             ))}
                           </tr>
                         ))}

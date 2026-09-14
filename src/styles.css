@@ -2194,6 +2194,14 @@ body.resizing {
   background: #eef1ef;
   font-weight: 600;
 }
+.certificate-lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.certificate-lines li + li {
+  margin-top: 2px;
+}
 .certificate-notes {
   margin: 6px 0 0;
   padding-left: 18px;

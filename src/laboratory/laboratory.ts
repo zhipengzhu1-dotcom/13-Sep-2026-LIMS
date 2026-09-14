@@ -49,7 +49,7 @@ import {
 export { WorkflowError } from './workflow-error.ts';
 
 /** The schema this build expects. A migration runner advances it; this module never does. */
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 /**
  * Verifies a signer's password against their stored hash. The accounts store

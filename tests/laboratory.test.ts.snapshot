@@ -87,7 +87,12 @@ exports[`Approval freezes Certificate version 1 for a finished product with a Re
       "investigations": [
         {
           "id": "OOS26-0001",
-          "outcome": "Confirmed"
+          "outcome": "Confirmed",
+          "result": {
+            "value": 30,
+            "qualifier": "quantified",
+            "unit": "ng/day"
+          }
         }
       ]
     },
