@@ -152,7 +152,15 @@ _Avoid_: Correction, reissue, revision
 
 **Go-live**:
 The moment the Quality lead signs off Benchline's validation, from which the electronic record, not paper, is the official record.
-_Avoid_: Production, launch, cut-over
+_Avoid_: Going to production, launch, cut-over
+
+**Production instance**:
+The Benchline instance on the lab server whose database holds the lab's official electronic record from Go-live.
+_Avoid_: Live system, prod
+
+**Validation environment**:
+A separate Benchline instance on the lab server, set up like the Production instance but with its own database, on which Benchline's validation is run; its records are never the official record.
+_Avoid_: Test environment, staging, sandbox
 
 **Quality lead**:
 The person responsible for the lab's quality system, who approves its controlled documents, signs off Benchline's validation for Go-live, and approves every account change and release of Benchline. In Benchline they can see every Sample, the lab-wide audit trail and exports, but never act on a record.

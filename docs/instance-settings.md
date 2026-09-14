@@ -1,10 +1,10 @@
 # Instance settings
 
-Benchline reads its start-up settings from the environment. Each instance on the lab server (production, and the Validation environment) has its own settings, changed only under the Benchline change control SOP. At start-up Benchline prints the effective settings, without the mail password, for the installation record. Invalid settings stop it from starting, with a message naming each setting to fix.
+Benchline reads its start-up settings from the environment. Each instance on the lab server (the Production instance and the Validation environment, see `CONTEXT.md`) has its own settings, changed only under the Benchline change control SOP. Both run in `production` mode: the mode names how an instance behaves, not whether its records are official. At start-up Benchline prints the effective settings, without the mail password, for the installation record. Invalid settings stop it from starting, with a message naming each setting to fix.
 
 | Setting                                | `demo`                            | `production`                                                             |
 | -------------------------------------- | --------------------------------- | ------------------------------------------------------------------------ |
-| `BENCHLINE_MODE`                       | `demo`                            | `production`, for the production instance and the Validation environment |
+| `BENCHLINE_MODE`                       | `demo`                            | `production`, for the Production instance and the Validation environment |
 | `BENCHLINE_DATABASE`                   | optional, `data/prototype.sqlite` | required: this instance's database file                                  |
 | `PORT`                                 | optional, `5173`                  | optional, `5173`; each instance its own                                  |
 | `BENCHLINE_SMTP_URL`                   | not used                          | required: `smtp://` or `smtps://user:password@host:port`                 |
