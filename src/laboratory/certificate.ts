@@ -3,6 +3,7 @@ import { resultsView, type CertificateInvestigation } from './results.ts';
 import {
   isFinishedProduct,
   stabilityConditionLabels,
+  type ClientContact,
   type ClientDecision,
   type ClientKind,
   type IssueChannel,
@@ -69,7 +70,6 @@ export const clientSuppliedFields = [
   'manufacturer',
   'manufactureDate',
   'expiryDate',
-  'materialType',
   'maximumDailyDose',
   'stability',
 ] as const;
@@ -142,7 +142,7 @@ export type CertificateContent = {
     kind: ClientKind;
     /** Null for a Submission received before contacts were recorded; absent
      * on older versions. */
-    contact?: string | null;
+    contact?: ClientContact | null;
   };
   submission: {
     id: string;

@@ -4,6 +4,7 @@ import { Laboratory } from '../src/laboratory/laboratory.ts';
 import {
   cderSource,
   currentResult,
+  laboratoryDay,
   methods,
   newCommandId,
   type Sample,
@@ -57,7 +58,10 @@ function run(lab: Laboratory, command: object, actor: string): Sample {
     .samples.find((x) => x.id === entry.sampleId)?.receivedAt;
   const defaults =
     entry.type === 'enterResult'
-      ? { attachmentId: worksheet(lab), analysedOn: received?.slice(0, 10) }
+      ? {
+          attachmentId: worksheet(lab),
+          analysedOn: received && laboratoryDay(received),
+        }
       : {};
   return lab.execute(
     { commandId: newCommandId(), ...defaults, ...command },
@@ -70,7 +74,12 @@ function assigned(lab: Laboratory, sample: object = finishedProduct) {
     {
       type: 'receiveSubmission',
       clientId: 'northstar',
-      clientContact: 'Dana Wells, QA Northstar',
+      clientContact: {
+        name: 'Dana Wells',
+        role: 'QA Manager',
+        email: 'dana.wells@northstar.example',
+        phone: '+1 555 0100',
+      },
       shippingCondition: 'ambient',
       packageCondition: 'intact',
       samples: [sample],

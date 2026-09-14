@@ -14,7 +14,12 @@ exports[`Approval freezes Certificate version 1 for a finished product with a Re
     "id": "northstar",
     "name": "Northstar Pharma",
     "kind": "external",
-    "contact": "Dana Wells, QA Northstar"
+    "contact": {
+      "name": "Dana Wells",
+      "role": "QA Manager",
+      "email": "dana.wells@northstar.example",
+      "phone": "+1 555 0100"
+    }
   },
   "submission": {
     "id": "S26-0001",
@@ -138,7 +143,6 @@ exports[`Approval freezes Certificate version 1 for a finished product with a Re
     "manufacturer",
     "manufactureDate",
     "expiryDate",
-    "materialType",
     "maximumDailyDose",
     "stability"
   ],
@@ -180,7 +184,12 @@ exports[`a raw material Certificate reports each Result with Report and no Limit
     "id": "northstar",
     "name": "Northstar Pharma",
     "kind": "external",
-    "contact": "Dana Wells, QA Northstar"
+    "contact": {
+      "name": "Dana Wells",
+      "role": "QA Manager",
+      "email": "dana.wells@northstar.example",
+      "phone": "+1 555 0100"
+    }
   },
   "submission": {
     "id": "S26-0001",
@@ -258,8 +267,7 @@ exports[`a raw material Certificate reports each Result with Report and no Limit
     "batch",
     "manufacturer",
     "manufactureDate",
-    "expiryDate",
-    "materialType"
+    "expiryDate"
   ],
   "statements": [
     "The results relate only to the items tested.",

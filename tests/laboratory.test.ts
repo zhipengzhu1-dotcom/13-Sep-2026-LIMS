@@ -17,6 +17,7 @@ import {
   currentResult,
   didBenchWork,
   investigationOf,
+  laboratoryDay,
   methodLodLoq,
   methods,
   oosRows,
@@ -60,10 +61,16 @@ const rawMaterial = {
   maximumDailyDose: null,
   methodIds: ['NIT-005-v1'],
 };
+const contact = {
+  name: 'Dana Wells',
+  role: 'QA Manager',
+  email: 'dana.wells@northstar.example',
+  phone: '+1 555 0100',
+};
 const receipt = {
   type: 'receiveSubmission',
   clientId: 'northstar',
-  clientContact: 'Dana Wells, QA Northstar',
+  clientContact: contact,
   shippingCondition: 'ambient',
   packageCondition: 'intact',
   samples: [finishedProduct],
@@ -124,17 +131,16 @@ function sent(lab: Laboratory, command: object, actor: string) {
     sampleId?: string;
   };
   const receivedOn = () =>
-    lab
-      .snapshot()
-      .samples.find((x) => x.id === sampleId)
-      ?.receivedAt.slice(0, 10);
+    lab.snapshot().samples.find((x) => x.id === sampleId)?.receivedAt;
   const withAttachment =
     type === 'enterResult'
       ? {
           ...('attachmentId' in command
             ? {}
             : { attachmentId: worksheet(lab) }),
-          ...('analysedOn' in command ? {} : { analysedOn: receivedOn() }),
+          ...('analysedOn' in command
+            ? {}
+            : { analysedOn: laboratoryDay(receivedOn() ?? '') }),
           ...command,
         }
       : command;
@@ -419,7 +425,7 @@ test('a receipt keeps the full Submission and Sample record', (t) => {
     client: 'Formulation Development',
     clientKind: 'internal',
     clientReference: 'PO-42',
-    clientContact: 'Dana Wells, QA Northstar',
+    clientContact: contact,
     receivedAt: NOW,
     receivedAtCorrection: null,
     receivedBy: 'coordinator',
@@ -458,8 +464,23 @@ test('Client contact, received date/time, quantity, condition on receipt and bat
     samples: [rawMaterial, { ...finishedProduct, ...patch }],
   });
   for (const [command, message] of [
-    [{ ...receipt, clientContact: ' ' }, /Enter the Client contact/],
     [{ ...receipt, clientContact: undefined }, /Enter the Client contact/],
+    [
+      { ...receipt, clientContact: { ...contact, name: ' ' } },
+      /clientContact.name: Enter the Client contact's name/,
+    ],
+    [
+      { ...receipt, clientContact: { ...contact, role: '' } },
+      /clientContact.role: Enter the Client contact's role/,
+    ],
+    [
+      { ...receipt, clientContact: { ...contact, email: 'dana.wells' } },
+      /clientContact.email: Enter the Client contact's email address/,
+    ],
+    [
+      { ...receipt, clientContact: { ...contact, phone: undefined } },
+      /clientContact.phone: Enter the Client contact's phone number/,
+    ],
     [sample({ batch: ' ' }), /Sample 2, batch: Enter the batch or lot/],
     [sample({ batch: undefined }), /Sample 2, batch: Enter the batch or lot/],
     [
@@ -1134,7 +1155,7 @@ test('a retried command is replayed, not applied a second time', () => {
   const entry = {
     commandId: newCommandId(),
     attachmentId: worksheet(lab),
-    analysedOn: s.receivedAt.slice(0, 10),
+    analysedOn: laboratoryDay(s.receivedAt),
     ...result(s, 'NIT-001-v1', 1),
   };
   lab.execute(entry, 'analyst');
@@ -1425,7 +1446,10 @@ test('receipt audits every field of the new Submission, Sample and Test', (t) =>
       ['client', 'Northstar Pharma'],
       ['clientKind', 'external'],
       ['clientReference', ''],
-      ['clientContact', 'Dana Wells, QA Northstar'],
+      ['clientContact.name', 'Dana Wells'],
+      ['clientContact.role', 'QA Manager'],
+      ['clientContact.email', 'dana.wells@northstar.example'],
+      ['clientContact.phone', '+1 555 0100'],
       ['receivedAt', at],
       ['receivedBy', 'coordinator'],
       ['courier', ''],
@@ -1480,7 +1504,7 @@ test('receipt audits every field of the new Submission, Sample and Test', (t) =>
   }
   assert.deepEqual(
     entries.map((e) => e.sampleId),
-    [...Array(12).fill(null), ...Array(33).fill('26-00001')],
+    [...Array(15).fill(null), ...Array(33).fill('26-00001')],
   );
 });
 
@@ -3459,7 +3483,7 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
 
   // ISO/IEC 17025 7.8.2: the report content is locked, hashed content.
   assert.equal(certificate.content.issuedAt, NOW, 'issued at Approval');
-  assert.equal(certificate.content.client.contact, 'Dana Wells, QA Northstar');
+  assert.deepEqual(certificate.content.client.contact, contact);
   assert.deepEqual(
     certificate.content.results.map((r) => r.analysedOn),
     ['2026-09-10', '2026-09-10'],
@@ -3536,7 +3560,11 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
     heading: 'Client and Submission',
     fields: [
       { label: 'Client', value: 'Northstar Pharma' },
-      { label: 'Client contact †', value: 'Dana Wells, QA Northstar' },
+      {
+        label: 'Client contact †',
+        value:
+          'Dana Wells, QA Manager · dana.wells@northstar.example · +1 555 0100',
+      },
       { label: 'Client reference †', value: 'PO-4471' },
       { label: 'Submission', value: 'S26-0001' },
       { label: 'Received', value: '2026-09-10 12:00:00 UTC' },
@@ -3551,7 +3579,7 @@ test('Approval freezes Certificate version 1 for a finished product with a Recei
     'Manufacturer †',
     'Manufacture date †',
     'Expiry date †',
-    'Material type †',
+    'Material type',
     'Maximum daily dose †',
     'Quantity received',
     'Containers',

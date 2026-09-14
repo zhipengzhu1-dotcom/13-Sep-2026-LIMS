@@ -3,6 +3,7 @@ import {
   conformity,
   decisionRule,
   isFinishedProduct,
+  laboratoryDay,
   limitInForce,
   qualify,
   type AcceptableIntake,
@@ -334,13 +335,13 @@ export function ResultEntry({
       </label>
       <label>
         <span>Analysis date</span>
-        {/* UTC calendar days, as the core checks them. */}
+        {/* The laboratory's calendar days, as the core checks them. */}
         <input
           name="analysedOn"
           type="date"
           required
-          min={new Date(s.receivedAt).toISOString().slice(0, 10)}
-          max={new Date().toISOString().slice(0, 10)}
+          min={laboratoryDay(s.receivedAt)}
+          max={laboratoryDay(new Date().toISOString())}
           defaultValue={current?.analysedOn}
         />
       </label>

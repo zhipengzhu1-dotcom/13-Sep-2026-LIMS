@@ -57,7 +57,12 @@ function readyToSubmit(lab: Laboratory) {
     {
       type: 'receiveSubmission',
       clientId: 'northstar',
-      clientContact: 'Dana Wells, QA Northstar',
+      clientContact: {
+        name: 'Dana Wells',
+        role: 'QA Manager',
+        email: 'dana.wells@northstar.example',
+        phone: '+1 555 0100',
+      },
       shippingCondition: 'ambient',
       packageCondition: 'intact',
       samples: [

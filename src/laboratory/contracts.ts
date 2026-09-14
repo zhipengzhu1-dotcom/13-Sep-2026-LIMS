@@ -161,9 +161,10 @@ export type Result = {
   sequenceId: string;
   /** The calculation worksheet the value was derived from (ADR-0002). */
   attachmentId: string;
-  /** The UTC calendar date (YYYY-MM-DD) the Analyst ran the analysis, as
-   * entered; `enteredAt` stays the server time of recording. Absent on a
-   * Result entered before analysis dates were recorded. */
+  /** The laboratory's calendar day (YYYY-MM-DD, `laboratoryDay`) the Analyst
+   * ran the analysis, as entered; `enteredAt` stays the server time of
+   * recording. Absent on a Result entered before analysis dates were
+   * recorded. */
   analysedOn?: string;
   enteredBy: string;
   enteredAt: string;
@@ -355,6 +356,15 @@ export type Stability = {
   condition: (typeof stabilityConditions)[number];
 };
 
+/** The person at the Client a Submission's Certificates of Analysis are for,
+ * as the Client gave them at receipt. */
+export type ClientContact = {
+  name: string;
+  role: string;
+  email: string;
+  phone: string;
+};
+
 export type Submission = {
   id: string;
   clientId: string;
@@ -362,10 +372,8 @@ export type Submission = {
   client: string;
   clientKind: ClientKind;
   clientReference: string;
-  /** The person at the Client the Certificate of Analysis is for, as the
-   * Client gave it at receipt; absent on a Submission received before the
-   * contact was recorded. */
-  clientContact?: string;
+  /** Absent on a Submission received before the contact was recorded. */
+  clientContact?: ClientContact;
   /** When the delivery arrived: the server time of the receipt, or the
    * Coordinator's corrected time when `receivedAtCorrection` is present. */
   receivedAt: string;
@@ -538,6 +546,21 @@ export function auditEntriesWithin<E extends Pick<AuditEntry, 'at'>>(
     return (!from || day >= from) && (!to || day <= to);
   });
 }
+
+/** The laboratory's time zone: the calendar day an Analysis date names is a
+ * day here. */
+export const laboratoryTimeZone = 'America/New_York';
+
+const laboratoryDays = new Intl.DateTimeFormat('en-CA', {
+  timeZone: laboratoryTimeZone,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+/** The laboratory's calendar day (YYYY-MM-DD) at an ISO instant. */
+export const laboratoryDay = (iso: string) =>
+  laboratoryDays.format(new Date(iso));
 
 /** The lab-wide audit trail's event-type filter: every entry, Access events
  * alone, or record changes alone. */
@@ -779,7 +802,17 @@ export const receiveSubmissionSchema = z.object({
   type: z.literal('receiveSubmission'),
   clientId: text,
   clientReference: optionalText,
-  clientContact: required('Client contact'),
+  clientContact: z.object(
+    {
+      name: required("Client contact's name"),
+      role: required("Client contact's role"),
+      email: z
+        .email({ error: "Enter the Client contact's email address." })
+        .max(200),
+      phone: required("Client contact's phone number"),
+    },
+    { error: 'Enter the Client contact.' },
+  ),
   /** Omitted to take the server time. A correction must give a reason. */
   receivedAt: z
     .object({

@@ -9,14 +9,19 @@ import { api } from '../server/http.ts';
 import type { Mode } from '../server/startup.ts';
 import { IDLE_TIMEOUT_MS, Sessions } from '../server/sessions.ts';
 import { createHash } from 'node:crypto';
-import { newCommandId } from '../src/laboratory/contracts.ts';
+import { laboratoryDay, newCommandId } from '../src/laboratory/contracts.ts';
 
 const json = { 'Content-Type': 'application/json' };
 const receipt = () => ({
   commandId: newCommandId(),
   type: 'receiveSubmission',
   clientId: 'northstar',
-  clientContact: 'Dana Wells, QA Northstar',
+  clientContact: {
+    name: 'Dana Wells',
+    role: 'QA Manager',
+    email: 'dana.wells@northstar.example',
+    phone: '+1 555 0100',
+  },
   shippingCondition: 'ambient',
   packageCondition: 'intact',
   samples: [
@@ -323,7 +328,7 @@ test('locking an account on a signature ends its sessions, and its own password 
       value: 0.02,
       instrumentReading: 0.2,
       sequenceId: 'SEQ-0001',
-      analysedOn: new Date().toISOString().slice(0, 10),
+      analysedOn: laboratoryDay(new Date().toISOString()),
       attachmentId: attachment.id,
       reason: '',
     },
@@ -577,7 +582,7 @@ test('a wrong signing password is refused without ending the session', async (t)
       value: 0.02,
       instrumentReading: 0.2,
       sequenceId: 'SEQ-0001',
-      analysedOn: new Date().toISOString().slice(0, 10),
+      analysedOn: laboratoryDay(new Date().toISOString()),
       attachmentId: attachment.id,
       reason: '',
     },
@@ -744,7 +749,7 @@ test('a Result carries its worksheet, which Analyst and Manager download intact'
     value: 0.05,
     instrumentReading: 1.2,
     sequenceId: 'SEQ-1',
-    analysedOn: new Date().toISOString().slice(0, 10),
+    analysedOn: laboratoryDay(new Date().toISOString()),
     attachmentId,
     reason: '',
   });
@@ -862,7 +867,7 @@ test("an approved Sample's Certificate is retrieved by signed-in users", async (
       value: 0.05,
       instrumentReading: 0.5,
       sequenceId: 'SEQ-0001',
-      analysedOn: new Date().toISOString().slice(0, 10),
+      analysedOn: laboratoryDay(new Date().toISOString()),
       attachmentId: attachment.id,
       reason: '',
     },
@@ -998,7 +1003,7 @@ test('an Admin signs in and acts in every role over HTTP, as themselves and with
     value: 0.02,
     instrumentReading: 0.2,
     sequenceId: 'SEQ-0001',
-    analysedOn: new Date().toISOString().slice(0, 10),
+    analysedOn: laboratoryDay(new Date().toISOString()),
     attachmentId: attachment.id,
     reason: '',
   });

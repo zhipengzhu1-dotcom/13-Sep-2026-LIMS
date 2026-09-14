@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Laboratory } from '../src/laboratory/laboratory.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import {
+  laboratoryDay,
   newCommandId,
   type SampleReceipt,
   type SubmissionReceipt,
@@ -89,7 +90,12 @@ export function seed(lab: Laboratory) {
     {
       clientId: 'northstar',
       clientReference: 'PO-448120',
-      clientContact: 'Priya Raman, Quality Assurance',
+      clientContact: {
+        name: 'Priya Raman',
+        role: 'Quality Assurance Lead',
+        email: 'priya.raman@northstar.example',
+        phone: '+1 555 0101',
+      },
       courier: 'World Courier',
       trackingNumber: 'WC-7731-0042',
       shippingCondition: 'ambient',
@@ -177,7 +183,12 @@ export function seed(lab: Laboratory) {
     {
       clientId: 'meridian',
       clientReference: 'MT-REQ-0917',
-      clientContact: 'Marcus Hale, QC Release',
+      clientContact: {
+        name: 'Marcus Hale',
+        role: 'QC Release Manager',
+        email: 'marcus.hale@meridian.example',
+        phone: '+1 555 0102',
+      },
       courier: 'DHL Express',
       trackingNumber: '1Z-448-221-907',
       shippingCondition: 'refrigerated',
@@ -227,7 +238,12 @@ export function seed(lab: Laboratory) {
     {
       clientId: 'aster',
       clientReference: 'AL-2026-311',
-      clientContact: 'Elena Sorensen, Analytical Services',
+      clientContact: {
+        name: 'Elena Sorensen',
+        role: 'Analytical Services Manager',
+        email: 'elena.sorensen@aster.example',
+        phone: '+1 555 0103',
+      },
       courier: 'FedEx',
       trackingNumber: '7489 2231 0045',
       shippingCondition: 'ambient',
@@ -253,7 +269,12 @@ export function seed(lab: Laboratory) {
     {
       clientId: 'aster',
       clientReference: 'AL-2026-318',
-      clientContact: 'Elena Sorensen, Analytical Services',
+      clientContact: {
+        name: 'Elena Sorensen',
+        role: 'Analytical Services Manager',
+        email: 'elena.sorensen@aster.example',
+        phone: '+1 555 0103',
+      },
       courier: 'UPS',
       trackingNumber: '1Z-99A-331-0418',
       shippingCondition: 'refrigerated',
@@ -321,7 +342,12 @@ export function seed(lab: Laboratory) {
     {
       clientId: 'formulation-development',
       clientReference: 'FD-STAB-014',
-      clientContact: 'Jordan Okafor, Stability Programme',
+      clientContact: {
+        name: 'Jordan Okafor',
+        role: 'Stability Programme Lead',
+        email: 'jordan.okafor@formulation.example',
+        phone: '+1 555 0104',
+      },
       shippingCondition: 'ambient',
       packageCondition: 'intact',
       chainOfCustodyReference: 'COC-FD-014-6M',
@@ -355,7 +381,12 @@ export function seed(lab: Laboratory) {
     {
       clientId: 'harbor',
       clientReference: 'HH-QC-2609',
-      clientContact: 'Grace Lindqvist, QC Laboratory',
+      clientContact: {
+        name: 'Grace Lindqvist',
+        role: 'QC Laboratory Supervisor',
+        email: 'grace.lindqvist@harbor.example',
+        phone: '+1 555 0105',
+      },
       courier: 'UPS',
       trackingNumber: '1Z-902-771-3304',
       shippingCondition: 'ambient',
@@ -512,7 +543,7 @@ export function seed(lab: Laboratory) {
             value,
             instrumentReading,
             sequenceId,
-            analysedOn: new Date().toISOString().slice(0, 10),
+            analysedOn: laboratoryDay(new Date().toISOString()),
             attachmentId: worksheet.id,
             reason,
           },

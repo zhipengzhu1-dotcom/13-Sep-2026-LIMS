@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
-import { newCommandId } from '../src/laboratory/contracts.ts';
+import { laboratoryDay, newCommandId } from '../src/laboratory/contracts.ts';
 import { seed } from '../server/seed.ts';
 import {
   migrate,
@@ -308,7 +308,12 @@ function databaseBeforeCommandProtection(t: TestContext) {
     commandId: newCommandId(),
     type: 'receiveSubmission',
     clientId: 'northstar',
-    clientContact: 'Dana Wells, QA Northstar',
+    clientContact: {
+      name: 'Dana Wells',
+      role: 'QA Manager',
+      email: 'dana.wells@northstar.example',
+      phone: '+1 555 0100',
+    },
     shippingCondition: 'ambient',
     packageCondition: 'intact',
     samples: [
@@ -562,7 +567,12 @@ test('migrating to version 22 keeps every Acceptable intake entry, marked with n
       commandId: newCommandId(),
       type: 'receiveSubmission',
       clientId: 'northstar',
-      clientContact: 'Dana Wells, QA Northstar',
+      clientContact: {
+        name: 'Dana Wells',
+        role: 'QA Manager',
+        email: 'dana.wells@northstar.example',
+        phone: '+1 555 0100',
+      },
       shippingCondition: 'ambient',
       packageCondition: 'intact',
       samples: [
@@ -602,7 +612,7 @@ test('migrating to version 22 keeps every Acceptable intake entry, marked with n
       value: 2,
       instrumentReading: 1.25,
       sequenceId: 'SEQ-0001',
-      analysedOn: new Date().toISOString().slice(0, 10),
+      analysedOn: laboratoryDay(new Date().toISOString()),
       attachmentId,
       reason: '',
     },

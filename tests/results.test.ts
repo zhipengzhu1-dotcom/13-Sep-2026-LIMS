@@ -678,6 +678,38 @@ for (const c of refused)
     assert.deepEqual(s, before);
   });
 
+test('analysis dates are calendar days in the laboratory’s time zone, US Eastern', () => {
+  const s = sampleOf();
+  s.receivedAt = '2026-09-10T03:00:00.000Z'; // 23:00 EDT on 9 September
+  const at = '2026-09-11T02:00:00.000Z'; // 22:00 EDT on 10 September
+  const enter = (analysedOn: string, reason = '') =>
+    recordResult(s, input({ analysedOn, reason }), {
+      actor: 'analyst',
+      at,
+      audit: recordingAudit(),
+    });
+  assert.throws(
+    () => enter('2026-09-11'),
+    (e) =>
+      e instanceof WorkflowError &&
+      e.message ===
+        'The analysis date cannot be later than the date of saving (2026-09-10).',
+  );
+  assert.throws(
+    () => enter('2026-09-08'),
+    (e) =>
+      e instanceof WorkflowError &&
+      e.message ===
+        'The analysis date cannot be before the Sample was received (2026-09-09).',
+  );
+  enter('2026-09-09');
+  enter('2026-09-10', 'Run date typed wrong.');
+  assert.deepEqual(
+    s.tests[0].results.map((r) => r.analysedOn),
+    ['2026-09-09', '2026-09-10'],
+  );
+});
+
 test('the Retest blocker refuses only the worksheet of the Invalidated result a Retest, or a correction of it, follows', () => {
   const s = sampleOf();
   const view = resultsView(s).test('NIT-001-v1');

@@ -19,7 +19,7 @@ The party a Submission is tested for, either an external customer or an internal
 _Avoid_: Customer (in data), requester
 
 **Client contact**:
-The person at the Client a Submission's Certificates of Analysis are for, recorded by the Coordinator at receipt as the Client gives it.
+The person at the Client a Submission's Certificates of Analysis are for — their name, role, email address and phone number — recorded by the Coordinator at receipt as the Client gives them.
 _Avoid_: Requester, customer contact
 
 **Material type**:
@@ -61,7 +61,7 @@ The reported outcome of a Test in the Material type's reporting unit: a number, 
 _Avoid_: Reading, measurement, raw data
 
 **Analysis date**:
-The UTC calendar date the Analyst ran a Result's analysis, entered with the Result and printed in its row of the Certificate of Analysis; never later than the day it is recorded or earlier than the day the Sample was received. Correcting it is a correction of the Result.
+The calendar date, in the laboratory's time zone (US Eastern), the Analyst ran a Result's analysis, entered with the Result and printed in its row of the Certificate of Analysis; never later than the day it is recorded or earlier than the day the Sample was received. Correcting it is a correction of the Result.
 _Avoid_: Test date, run date
 
 **LOD / LOQ**:

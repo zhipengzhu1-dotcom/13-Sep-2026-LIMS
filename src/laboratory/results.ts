@@ -1,6 +1,7 @@
 import {
   conformity,
   isFinishedProduct,
+  laboratoryDay,
   qualify,
   type AcceptableIntake,
   type AuditEntry,
@@ -267,8 +268,8 @@ export type RecordResultInput = {
   value: number;
   instrumentReading: number;
   sequenceId: string;
-  /** YYYY-MM-DD, UTC; no later than the date of saving and no earlier than
-   * the Sample's receipt. */
+  /** YYYY-MM-DD, a day in the laboratory's time zone; no later than the day
+   * of saving and no earlier than the day of the Sample's receipt. */
   analysedOn: string;
   /** Required for a correction; kept as given otherwise. */
   reason: string;
@@ -695,13 +696,13 @@ export function recordResult(
   }
   if (previous && input.reason.length < 3)
     throw new WorkflowError('Give a reason for changing the Result.');
-  // Calendar dates compare as UTC days, like every date the record prints.
-  const today = at.slice(0, 10);
+  // Calendar dates are days in the laboratory's time zone.
+  const today = laboratoryDay(at);
   if (input.analysedOn > today)
     throw new WorkflowError(
       `The analysis date cannot be later than the date of saving (${today}).`,
     );
-  const receivedOn = new Date(sample.receivedAt).toISOString().slice(0, 10);
+  const receivedOn = laboratoryDay(sample.receivedAt);
   if (input.analysedOn < receivedOn)
     throw new WorkflowError(
       `The analysis date cannot be before the Sample was received (${receivedOn}).`,

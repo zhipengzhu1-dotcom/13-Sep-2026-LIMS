@@ -4,7 +4,7 @@ import {
   type CertificateResult,
   type ClientSuppliedField,
 } from './certificate.ts';
-import { isFinishedProduct } from './contracts.ts';
+import { isFinishedProduct, type ClientContact } from './contracts.ts';
 import { reportedValue } from './results.ts';
 
 /**
@@ -87,6 +87,11 @@ function testingDates(results: CertificateResult[]) {
 
 const notRecorded = 'Not recorded';
 
+/** A Client contact on one line: "Dana Wells, QA Manager ·
+ * dana.wells@northstar.example · +1 555 0100". */
+export const contactLine = (c: ClientContact) =>
+  `${c.name}, ${c.role} · ${c.email} · ${c.phone}`;
+
 function limitSource(limit: NonNullable<CertificateResult['limit']>) {
   return `${limit.sourceTitle}, revision ${limit.sourceRevisionDate}, in force from ${limit.effectiveFrom}${limit.illustrative ? ' (illustrative value)' : ''}`;
 }
@@ -126,7 +131,7 @@ export function renderCertificate(
       value: text(sample.expiryDate),
     },
     {
-      label: mark('materialType', 'Material type'),
+      label: 'Material type',
       value: capital(content.materialType),
     },
     ...(finished
@@ -173,7 +178,9 @@ export function renderCertificate(
           ? [
               {
                 label: mark('clientContact', 'Client contact'),
-                value: content.client.contact ?? notRecorded,
+                value: content.client.contact
+                  ? contactLine(content.client.contact)
+                  : notRecorded,
               },
             ]
           : []),

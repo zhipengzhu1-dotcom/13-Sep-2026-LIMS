@@ -25,6 +25,7 @@ import {
   longDate,
   personName,
 } from './shared';
+import { contactLine } from '../laboratory/certificate-renderer';
 
 export type ReceiptDraft = Extract<Draft, { type: 'receiveSubmission' }>;
 
@@ -137,7 +138,12 @@ export function Intake({
           type: 'receiveSubmission',
           clientId: text('clientId'),
           clientReference: text('clientReference'),
-          clientContact: text('clientContact'),
+          clientContact: {
+            name: text('clientContactName'),
+            role: text('clientContactRole'),
+            email: text('clientContactEmail'),
+            phone: text('clientContactPhone'),
+          },
           receivedAt: correcting
             ? {
                 at: new Date(text('receivedAt')).toISOString(),
@@ -186,12 +192,41 @@ export function Intake({
             </select>
           </label>
           <label>
-            Client contact
+            Client contact name
             <input
-              name="clientContact"
+              name="clientContactName"
               required
               maxLength={200}
-              placeholder="Name and role at the Client"
+              autoComplete="off"
+            />
+          </label>
+          <label>
+            Client contact role
+            <input
+              name="clientContactRole"
+              required
+              maxLength={200}
+              autoComplete="off"
+            />
+          </label>
+          <label>
+            Client contact email
+            <input
+              name="clientContactEmail"
+              type="email"
+              required
+              maxLength={200}
+              autoComplete="off"
+            />
+          </label>
+          <label>
+            Client contact phone
+            <input
+              name="clientContactPhone"
+              type="tel"
+              required
+              maxLength={200}
+              autoComplete="off"
             />
           </label>
           <label>
@@ -635,7 +670,9 @@ export function ReceiptRecord({
               // Absent on a Submission received before it was recorded.
               [
                 'Client contact',
-                submission.clientContact ?? (
+                submission.clientContact ? (
+                  contactLine(submission.clientContact)
+                ) : (
                   <span className="not-recorded">Not recorded</span>
                 ),
               ],
