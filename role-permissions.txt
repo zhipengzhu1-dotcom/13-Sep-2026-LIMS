@@ -1,0 +1,125 @@
+Benchline LIMS - roles, permissions and duties
+===============================================
+
+Applies to the code in PR #16 (branch spec-1-nitrosamine-lims). Main does not
+contain this workflow until that PR is merged.
+
+Source of truth: every rule below is enforced in the Laboratory core
+(src/laboratory/handlers.ts), not just hidden in the UI. Role checks go
+through requireRole / actsAs; the Admin passes every role check.
+
+Roles: Coordinator, Analyst, Manager, Admin.
+Background decisions: docs/adr/0001 (Part 11 / ISO 17025), 0003 (single
+Manager Approval, no peer review), 0004 (Admin within separation of duties).
+
+
+EVERY SIGNED-IN USER
+--------------------
+- Sign in with their own account; the session ends on sign-out or after 15
+  minutes of inactivity. Every action is attributed to the signed-in user.
+- Can view all Samples, the Samples' Results and history, Certificates of
+  Analysis (every version), Methods & Limits and the Audit trail.
+- Can download worksheet attachments.
+- Cannot edit or delete audit trail entries, Certificates, Acceptable intake
+  entries or attachments. Nobody can; the application has no way to do it.
+
+
+COORDINATOR
+-----------
+Duty: receives work into the lab, manages holds, assigns work, and issues
+Certificates to the Client.
+
+Views: Receiving, Holds, Publish queue, Samples, Methods, Audit trail.
+
+Can:
+- Receive a Submission with one or more Samples (full receipt record).
+  Correcting the received date/time requires a reason.
+- Record a Receipt deviation on a Received Sample, which puts it On hold.
+- Record the Client's instruction for a held Sample (contact and time
+  required): proceed -> Received, withdraw -> Withdrawn.
+- Assign or reassign a Sample to an Analyst (or the Admin). Not while the
+  Sample is On hold or Withdrawn.
+- Record that the Client was informed of a Confirmed OOS (contact, date and
+  time). Required before publishing that Sample.
+- Publish an Approved Sample's Certificate: recipient(s), channel (email,
+  portal, print, other) and time. The system does not send it.
+- Start an Amendment on a Published Sample, with a reason.
+
+Cannot: enter Results, give Approval, return Samples, run OOS investigations,
+or add Acceptable intake entries.
+
+
+ANALYST
+-------
+Duty: performs the testing on Samples assigned to them and records Results.
+
+Views: My work, Methods, Audit trail.
+
+Can (only on a Sample assigned to them):
+- Upload calculation worksheets (PDF, XLSX, XLS, CSV, PNG, JPEG; 10 MB max).
+- Enter a Result per Test: value in the reporting unit, instrument reading,
+  sequence ID and worksheet. Qualifier (< LOD / < LOQ), Limit and Conformity
+  statement are assigned by the system.
+- Correct a Result, with a reason. Earlier Results stay in history.
+  Results can be entered or corrected only while the Sample is In progress,
+  Returned or Amendment in progress, and never while it is On hold/Withdrawn.
+- Submit for Approval once every Test has a current Result. This is an
+  Electronic signature (own password): "performed by", or "amended by" when
+  submitting an Amendment.
+- Record the laboratory error check on an open OOS investigation.
+
+Cannot: work on Samples assigned to someone else, receive or assign Samples,
+give Approval, open or conclude OOS investigations, or publish.
+
+
+MANAGER
+-------
+Duty: reviews and approves the work, and runs OOS investigations.
+
+Views: Approval queue, OOS investigations, Methods, Audit trail.
+
+Can:
+- Give Approval to a Sample Awaiting approval. This is an Electronic signature
+  (own password): "approved by". Approval locks the Results and produces the
+  next Certificate of Analysis version.
+  Approval is refused while any OOS investigation is open, while a
+  "Does not comply" Result has no closed investigation, or while an
+  Invalidated result has no retest.
+- Return a Sample Awaiting approval to its Analyst, with a comment.
+- Open an OOS investigation on a "Does not comply" Result.
+- Conclude an OOS investigation (after the Analyst's lab error check) as
+  Invalidated (assignable cause required; a retest is then needed) or
+  Confirmed, which closes it.
+- Start an Amendment on a Published Sample, with a reason.
+- Add a new Acceptable intake entry (append-only; no screen in this release).
+
+Cannot: approve a Sample on which they entered, corrected or retested a
+Result (separation of duties). Cannot receive, assign, enter Results, record
+Client notifications or publish.
+
+
+ADMIN
+-----
+Duty: covers any job in a small lab, so one person can stand in for any role.
+
+Views: every view (Receiving, Holds, Samples, Publish queue, My work,
+Approval queue, OOS investigations, Methods, Audit trail).
+
+Can: everything the Coordinator, Analyst and Manager can do, including being
+assigned Samples and entering Results on them.
+
+Still bound by:
+- Own password for every Electronic signature, recorded under the Admin's own
+  printed name; every action is audit-trailed as the Admin.
+- Separation of duties: cannot approve a Sample on which the Admin entered,
+  corrected or retested a Result.
+- Results only on Samples assigned to the Admin.
+
+
+LOCKED STATES (apply to everyone, including the Admin)
+------------------------------------------------------
+- Approved:  only Publish and the Client OOS notification are allowed.
+- Published: only Start Amendment is allowed.
+- Withdrawn: nothing is allowed.
+- On hold:   no assignment, Results or OOS investigation until the Client's
+             instruction is recorded.
