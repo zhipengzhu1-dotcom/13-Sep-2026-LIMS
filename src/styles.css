@@ -2275,9 +2275,30 @@ body.resizing {
 .certificate-hash {
   overflow-wrap: anywhere;
 }
+.certificate-end {
+  margin-top: 16px;
+  padding-top: 6px;
+  border-top: 2px solid #111614;
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+/* The open Certificate view fills the bottom margin boxes. */
 @page {
   size: A4;
   margin: 14mm;
+  @bottom-left {
+    font:
+      9px system-ui,
+      sans-serif;
+    color: #4a5550;
+  }
+  @bottom-right {
+    font:
+      9px system-ui,
+      sans-serif;
+    color: #4a5550;
+  }
 }
 @media print {
   /* The workspace ground would otherwise print around the open dialog. */

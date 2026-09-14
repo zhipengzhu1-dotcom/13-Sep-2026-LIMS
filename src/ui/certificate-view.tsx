@@ -15,6 +15,11 @@ export function publicationLine(data: Snapshot, p: Publication) {
   return `Published ${signatureStamp(p.publishedAt)} by ${personName(data, p.publishedBy) ?? p.publishedBy}, ${how}, to ${p.recipients.join('; ')}`;
 }
 
+/** Text as a quoted CSS string: quotes and backslashes escaped, line breaks
+ * as CSS hex escapes. */
+const cssString = (text: string) =>
+  `"${text.replace(/["\\]/g, '\\$&').replace(/[\n\r\f]/g, '\\a ')}"`;
+
 /** The Sample's Certificate of Analysis versions, each opened as a printable
  * document. */
 export function CertificateVersions({
@@ -288,6 +293,12 @@ export function CertificateView({
               <p>{doc.footer}</p>
               <p className="certificate-hash">SHA-256 {certificate!.sha256}</p>
             </footer>
+            <p className="certificate-end">{doc.endStatement}</p>
+            {/* Every printed page of the Certificate, and only of it, carries
+                its identification and "Page x of y" (ISO/IEC 17025 7.8.2.1 d).
+                Chromium prints page margin boxes; Firefox and Safari don't.
+                Removed with the view. */}
+            <style>{`@page { margin-bottom: 18mm; @bottom-left { content: ${cssString(doc.reference)}; } @bottom-right { content: 'Page ' counter(page) ' of ' counter(pages); } }`}</style>
           </article>
         )
       )}

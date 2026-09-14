@@ -4199,6 +4199,15 @@ test('a Certificate issued before its report content was recorded reads back and
   );
 });
 
+test('a Certificate marks its end', (t) => {
+  const lab = memory(t);
+  const s = throughApproval(lab, run(lab, receipt, 'coordinator'));
+
+  // ISO/IEC 17025 7.8.2.1 d): a clear identification of the end.
+  const document = renderCertificate(lab.certificate(s.id).content);
+  assert.equal(document.endStatement, 'End of Certificate of Analysis');
+});
+
 test('a Certificate stays as issued through replays, reference data changes and reopening', (t) => {
   const folder = mkdtempSync(join(tmpdir(), 'lims-certificate-'));
   t.after(() => rmSync(folder, { recursive: true, force: true }));

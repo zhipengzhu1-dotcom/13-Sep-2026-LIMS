@@ -48,6 +48,9 @@ export type CertificateDocument = {
   laboratory: { name: string; lines: string[] };
   sections: DocumentSection[];
   footer: string;
+  /** Printed after everything else, so a reader can tell the Certificate is
+   * complete (ISO/IEC 17025 7.8.2.1 d). Not part of the hashed content. */
+  endStatement: string;
 };
 
 const none = '—';
@@ -311,5 +314,6 @@ export function renderCertificate(
     },
     sections,
     footer: `Certificate of Analysis for Sample ${content.sampleId}, version ${content.version}, approved ${utcStamp(content.approvedAt)}. Electronically signed; valid without a handwritten signature.`,
+    endStatement: 'End of Certificate of Analysis',
   };
 }
