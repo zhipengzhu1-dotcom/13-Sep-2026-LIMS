@@ -690,7 +690,7 @@ test('an Admin signs in and acts in every role over HTTP, as themselves and with
   await act({ type: 'submitForApproval', password: 'admin-demo' });
   assert.equal(sample.status, 'Awaiting approval');
   const refused = await act({ type: 'approve', password: 'admin-demo' }, 403);
-  assert.match(refused.error, /cannot approve a Sample on which they entered/);
+  assert.match(refused.error, /cannot approve a Sample on which you entered/);
   assert.equal(lab.snapshot().samples[0].status, 'Awaiting approval');
 
   const workspace = await (

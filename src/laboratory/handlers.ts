@@ -607,7 +607,7 @@ export const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     // Corrections, retests and Amendment corrections are Results too.
     if (enteredResultOn(sample, actor.id))
       throw new WorkflowError(
-        'A Manager cannot approve a Sample on which they entered or corrected a Result.',
+        'You cannot approve a Sample on which you entered, corrected or retested a Result.',
         403,
       );
     const blocked = oosApprovalBlocker(sample);

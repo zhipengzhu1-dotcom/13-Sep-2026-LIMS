@@ -3627,7 +3627,7 @@ test('a Manager never approves a Sample on which they entered or corrected a Res
       () => run(promoted, { type: 'approve', ...target(x) }, 'analyst-2'),
       (e: Error & { status: number }) =>
         e.status === 403 &&
-        /cannot approve a Sample on which they entered or corrected a Result/.test(
+        /^You cannot approve a Sample on which you entered, corrected or retested a Result\.$/.test(
           e.message,
         ),
     );
@@ -3701,7 +3701,7 @@ test('an Admin acts in every role as themselves, and is refused Approval of a Sa
     () => run(lab, { type: 'approve', ...target(s) }, 'admin'),
     (e: Error & { status: number }) =>
       e.status === 403 &&
-      /cannot approve a Sample on which they entered or corrected a Result/.test(
+      /^You cannot approve a Sample on which you entered, corrected or retested a Result\.$/.test(
         e.message,
       ),
   );
