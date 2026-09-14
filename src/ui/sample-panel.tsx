@@ -13,10 +13,10 @@ import {
   type Signature,
   type SigningCommandType,
 } from '../laboratory/contracts';
-import { resultsView } from '../laboratory/results';
+import { resultsView, separationOfDutiesRefusal } from '../laboratory/results';
 import { AuditTable } from './audit-trail';
 import { CertificateVersions } from './certificate-view';
-import { Investigations } from './oos';
+import { Investigations, RefusalNote } from './oos';
 import { PublishForm } from './publish';
 import { ReceiptDeviations, ReceiptRecord } from './receiving';
 import { TestSheet } from './results';
@@ -52,6 +52,7 @@ export function SamplePanel({
   const [signing, setSigning] = useState<SigningCommandType | null>(null);
   useEffect(() => setSigning(null), [s.id]);
   const tabIds = useId();
+  const approvalNoteId = useId();
   const person = data.people.find((p) => p.id === actor)!;
   const canRecord =
     s.assignee === actor &&
@@ -59,10 +60,12 @@ export function SamplePanel({
   const canDecide =
     actsAs(person, 'manager') && s.status === 'Awaiting approval';
   const results = resultsView(s);
-  // Separation of duties (ADR-0003): the core refuses this Approval too.
-  const ownResults = results.benchWork.some((e) => e.person === actor);
-  // The OOS gate, as the core enforces it.
-  const oosBlocker = results.approvalBlocker?.reason ?? null;
+  // The first rule refusing this Approval, in the order the core checks:
+  // separation of duties (ADR-0003, ADR-0005), then the OOS gate.
+  const ownWork = results.benchWork.find((e) => e.person === actor);
+  const approvalRefusal = ownWork
+    ? separationOfDutiesRefusal(s, ownWork)
+    : results.approvalBlocker;
   const canAssign =
     actsAs(person, 'coordinator') &&
     !['Approved', 'Published', 'Awaiting approval', ...heldStatuses].includes(
@@ -331,10 +334,10 @@ export function SamplePanel({
                 });
               }}
             >
-              {oosBlocker && (
-                <p className="flash warn inline" role="status">
-                  {oosBlocker}
-                </p>
+              {approvalRefusal && (
+                <div role="status">
+                  <RefusalNote id={approvalNoteId} refusal={approvalRefusal} />
+                </div>
               )}
               <textarea
                 name="comment"
@@ -356,12 +359,15 @@ export function SamplePanel({
                   className="btn primary"
                   name="choice"
                   value="approve"
-                  disabled={busy || ownResults || !!oosBlocker}
-                  title={
-                    ownResults
-                      ? 'You entered a Result on this Sample, so another Manager must approve it.'
-                      : (oosBlocker ?? undefined)
+                  disabled={busy}
+                  // Blocked but focusable, its reason the visible note.
+                  aria-disabled={approvalRefusal ? true : undefined}
+                  aria-describedby={
+                    approvalRefusal ? approvalNoteId : undefined
                   }
+                  onClick={(e) => {
+                    if (approvalRefusal) e.preventDefault();
+                  }}
                 >
                   Approve…
                 </button>

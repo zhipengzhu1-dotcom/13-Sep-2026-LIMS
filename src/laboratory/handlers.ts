@@ -45,6 +45,7 @@ import {
   recordLabErrorCheck,
   recordResult,
   resultsView,
+  separationOfDutiesRefusal,
 } from './results.ts';
 
 /**
@@ -534,10 +535,13 @@ export const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     requireRole(actor, 'manager');
     requireAwaitingApproval(sample);
     const results = resultsView(sample);
-    // Corrections, retests and Amendment corrections are Bench work too.
-    if (results.benchWork.some((e) => e.person === actor.id))
+    // Separation of duties: corrections, retests, Amendment corrections and
+    // Laboratory error checks are Bench work too (ADR-0005). The refusal
+    // names the approver's first act.
+    const own = results.benchWork.find((e) => e.person === actor.id);
+    if (own)
       throw new WorkflowError(
-        'You cannot approve a Sample on which you entered, corrected or retested a Result.',
+        separationOfDutiesRefusal(sample, own).reason,
         403,
       );
     const blocked = results.approvalBlocker;
