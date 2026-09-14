@@ -10,6 +10,8 @@ import {
   type Snapshot,
   type Test,
 } from '../laboratory/contracts';
+import { auditedTest } from '../laboratory/audit-writer';
+import { testLabel } from '../laboratory/results';
 import { type Filter } from './register';
 import { InvalidSignatureTag, personName, stamp } from './shared';
 
@@ -78,11 +80,21 @@ export function LabAuditTrail({ data }: { data: Snapshot }) {
 export const auditValue = (value: AuditValue) =>
   value === null ? <span className="none">empty</span> : String(value);
 
-/** A Test's record ID repeats its Sample, which the History tab already shows. */
-export const recordLabel = (e: AuditEntry, showSample: boolean) =>
-  e.recordType === 'Test' && !showSample
-    ? `Test ${e.recordId.slice(e.recordId.indexOf('/') + 1)}`
-    : `${e.recordType} ${e.recordId}`;
+/** The record an entry describes. A Test is named as the rest of the workspace
+ * names it, from the Analyte and Method code and version it copied, since its
+ * stored ID is only its Method's; its Sample is left to the History tab, which
+ * already shows it. */
+export function recordLabel(
+  e: AuditEntry,
+  data: Snapshot,
+  showSample: boolean,
+) {
+  const audited = auditedTest(e, data.samples);
+  if (!audited) return `${e.recordType} ${e.recordId}`;
+  return showSample
+    ? `Test ${audited.sample.id} · ${testLabel(audited.test)}`
+    : `Test ${testLabel(audited.test)}`;
+}
 
 /** The audit trail, newest first, one group per command: who acted, when and
  * through which command, then each field it changed with the reason. */
@@ -143,7 +155,9 @@ export function AuditTable({
             </tr>
             {fields.map((e) => (
               <tr key={e.sequence}>
-                <td className="num nowrap">{recordLabel(e, showSample)}</td>
+                <td className="num nowrap">
+                  {recordLabel(e, data, showSample)}
+                </td>
                 <td className="num nowrap">{e.field}</td>
                 <td className="wrap">{auditValue(e.oldValue)}</td>
                 <td className="wrap">{auditValue(e.newValue)}</td>

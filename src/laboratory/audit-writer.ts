@@ -61,6 +61,20 @@ export const auditRecord = {
   }),
 };
 
+/** The Sample and Test an entry on a Test describes, or undefined when the
+ * entry is on another record or names a Test not among `samples`. */
+export function auditedTest(
+  entry: Pick<AuditEntry, 'recordType' | 'recordId' | 'sampleId'>,
+  samples: readonly Sample[],
+): { sample: Sample; test: Test } | undefined {
+  if (entry.recordType !== 'Test') return undefined;
+  const sample = samples.find((s) => s.id === entry.sampleId);
+  const test = sample?.tests.find(
+    (t) => auditRecord.test(sample, t).id === entry.recordId,
+  );
+  return sample && test && { sample, test };
+}
+
 /** Fields of `T` whose values the trail can hold as they are. */
 type AuditableKey<T> = {
   [K in keyof T]: T[K] extends AuditValue ? K : never;
