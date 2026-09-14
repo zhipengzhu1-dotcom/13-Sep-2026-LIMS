@@ -10,6 +10,8 @@ import {
   type Test,
 } from '../src/laboratory/contracts.ts';
 import { WorkflowError } from '../src/laboratory/workflow-error.ts';
+import { changeSummary } from '../src/laboratory/amendments.ts';
+import type { AuditEntry } from '../src/laboratory/contracts.ts';
 import {
   concludeInvestigation,
   didBenchWork,
@@ -125,6 +127,7 @@ function record(sample: Sample, fields: Partial<RecordResultInput> = {}) {
   });
   return {
     kind,
+    entries: audit.entries,
     changes: audit.entries.map((e) => [
       `${e.recordType} ${e.recordId}`,
       e.field,
@@ -1874,5 +1877,73 @@ test('an investigation whose Result cannot be found is a programming error, not 
   assert.throws(
     () => resultsView(s).investigation(ID),
     (e) => e instanceof Error && !(e instanceof WorkflowError),
+  );
+});
+
+// The Amendment change summary of a Retest, from the entries its commands
+// wrote. Only Result entries after the start belong to the Amendment.
+
+/** An Amendment's audit history, as the trail keeps it: the start, then each
+ * Result recorded, one command each. */
+function amendmentHistory(s: Sample) {
+  const history: AuditEntry[] = [
+    {
+      sequence: 1,
+      recordType: 'Sample',
+      recordId: s.id,
+      sampleId: s.id,
+      field: 'status',
+      oldValue: 'Published',
+      newValue: 'In progress',
+      reason: 'Result reported against the wrong run.',
+      actor: 'manager',
+      at: AT,
+      commandType: 'startAmendment',
+      commandId: 'C1',
+    },
+  ];
+  return {
+    history,
+    enter(fields: Partial<RecordResultInput>) {
+      const commandId = `C${history.length + 1}`;
+      for (const change of record(s, fields).entries)
+        history.push({
+          ...change,
+          sequence: history.length + 1,
+          actor: 'analyst',
+          at: AT,
+          commandType: 'enterResult',
+          commandId,
+        });
+    },
+  };
+}
+
+test('an Amendment change summary gives a Retest the investigation it follows as its reason', () => {
+  const s = sampleOf();
+  record(s, { value: 30 });
+  const amendment = amendmentHistory(s);
+  open(s, 'NIT-001-v1', () => 2);
+  check(s, true, SECOND);
+  conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
+  amendment.enter({ value: 12, worksheet: { id: 'ATT-2' } });
+  assert.equal(
+    changeSummary(s, amendment.history),
+    'Impurity A (NIT-001 v1): Result 30 → 12 ng/day, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.)',
+  );
+});
+
+test("an Amendment change summary never gives a Retest an earlier correction's reason", () => {
+  const s = sampleOf();
+  record(s, { value: 20 });
+  const amendment = amendmentHistory(s);
+  amendment.enter({ value: 30, reason: 'transcription error' });
+  open(s, 'NIT-001-v1', () => 2);
+  check(s, true, SECOND);
+  conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
+  amendment.enter({ value: 25, worksheet: { id: 'ATT-2' } });
+  assert.equal(
+    changeSummary(s, amendment.history),
+    'Impurity A (NIT-001 v1): Result 20 → 25 ng/day, worksheet replaced (reason: "transcription error"; Retest after OOS26-0002, Invalidated: Standard diluted twice.)',
   );
 });

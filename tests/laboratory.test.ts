@@ -3945,7 +3945,7 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
   // but is no change to report.
   assert.equal(
     v2.content.amendment!.changeSummary,
-    'Impurity A (NIT-001 v1): Result 30 → 2.5 ng/day, qualifier quantified → < LOQ, Conformity statement Does not comply → Complies, worksheet replaced (reason: "Recalculated with the dilution factor on the worksheet.")',
+    'Impurity A (NIT-001 v1): Result 30 → 2.5 ng/day, qualifier quantified → < LOQ, Conformity statement Does not comply → Complies, worksheet replaced (reason: "Recalculated with the dilution factor on the worksheet."; Retest after OOS26-0002, Invalidated: Dilution error in the standard.)',
   );
   assert.deepEqual(
     lab

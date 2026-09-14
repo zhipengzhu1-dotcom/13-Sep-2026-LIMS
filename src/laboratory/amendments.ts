@@ -118,39 +118,48 @@ export function changeSummary(
     if (!entries.length) return [];
     // A Retest is a new Result, so its entries have no old values: what it
     // replaced on the report is the Invalidated result it follows.
-    const invalidatedBefore = (entry: AuditEntry) => {
-      const link = entries.find(
-        (e) =>
-          e.commandId === entry.commandId &&
-          e.field === 'result.retestAfter' &&
-          e.newValue !== null,
-      );
-      return link
-        ? resultsView(sample).investigation(String(link.newValue)).result
-        : undefined;
-    };
+    const view = resultsView(sample);
+    const retestBy = (commandId: string) =>
+      view.retestRecordedBy(entries.filter((e) => e.commandId === commandId));
     const changes = summarised.flatMap(({ field, label, unit, of }) => {
       const own = entries.filter((e) => e.field === field);
       if (!own.length) return [];
-      const invalidated = invalidatedBefore(own[0]);
-      const from = invalidated ? of(invalidated) : own[0].oldValue;
+      const retest = retestBy(own[0].commandId);
+      const from = retest ? of(retest.invalidated) : own[0].oldValue;
       const to = own.at(-1)!.newValue;
       if (from === to) return [];
       if (unit === 'replaced') return [`${label} replaced`];
       const suffix = unit === 'test' ? ` ${test.unit}` : unit ? ` ${unit}` : '';
       return [`${label} ${shown(from)} → ${shown(to)}${suffix}`];
     });
-    // Each correction's reason once, quoted, as the Analyst gave it.
-    const reasons = [
-      ...new Set(entries.map((e) => e.reason).filter((r) => r !== null)),
-    ].map((r) => `"${r}"`);
-    const why = reasons.length
-      ? ` (${reasons.length > 1 ? 'reasons' : 'reason'}: ${reasons.join('; ')})`
-      : '';
+    // Each correction's reason once, quoted, as the Analyst gave it. A Retest
+    // gives the investigation it follows instead, never a correction's reason.
+    const quoted = new Set<string>();
+    const retests = new Set<string>();
+    for (const commandId of new Set(entries.map((e) => e.commandId))) {
+      const retest = retestBy(commandId);
+      if (retest)
+        retests.add(
+          `Retest after ${retest.investigation.id}, Invalidated: ${retest.investigation.assignableCause}`,
+        );
+      else
+        for (const e of entries)
+          if (e.commandId === commandId && e.reason !== null)
+            quoted.add(`"${e.reason}"`);
+    }
+    const why = [
+      ...(quoted.size
+        ? [
+            `${quoted.size > 1 ? 'reasons' : 'reason'}: ${[...quoted].join('; ')}`,
+          ]
+        : []),
+      ...retests,
+    ];
+    const reasons = why.length ? ` (${why.join('; ')})` : '';
     return [
       `${test.analyteName} (${test.methodCode} v${test.methodVersion}): ${
         changes.length ? changes.join(', ') : 're-entered unchanged'
-      }${why}`,
+      }${reasons}`,
     ];
   });
   return clauses.length ? clauses.join('; ') : null;

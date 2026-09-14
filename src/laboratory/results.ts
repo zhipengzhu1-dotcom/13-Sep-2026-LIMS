@@ -3,6 +3,7 @@ import {
   isFinishedProduct,
   qualify,
   type AcceptableIntake,
+  type AuditEntry,
   type Result,
   type Sample,
   type Test,
@@ -227,6 +228,15 @@ export type SampleResults = {
   approvalRefusal(person: string): Refusal | null;
   /** A Confirmed OOS whose Client notification is not yet recorded. */
   readonly publishBlocker: Refusal | null;
+  /**
+   * The Retest one command recorded, from the audit entries it wrote: the
+   * investigation it follows and the Invalidated result, or undefined when the
+   * command recorded no Retest. A correction of a Retest keeps its link
+   * without writing it, so it is a correction here.
+   */
+  retestRecordedBy(
+    entries: readonly Pick<AuditEntry, 'field' | 'newValue'>[],
+  ): RetestLineage | undefined;
   /** The Sample's lines of the OOS investigations list. */
   readonly oosRows: OosRow[];
   /** Every Result entered, corrected or retested on the Sample, of every
@@ -547,6 +557,12 @@ export function resultsView(sample: Sample): SampleResults {
     },
     get oosRows() {
       return oosRows([sample]);
+    },
+    retestRecordedBy(entries) {
+      const link = entries.find(
+        (e) => e.field === 'result.retestAfter' && e.newValue !== null,
+      );
+      return link ? lineageOf(sample, String(link.newValue)) : undefined;
     },
     get benchWork() {
       return sample.tests.flatMap((test) => [
