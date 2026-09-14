@@ -21,6 +21,7 @@ import {
   recordLabErrorCheck,
   recordResult,
   resultsView,
+  retestLabel,
   separationOfDutiesRefusal,
   type Act,
   type RecordResultInput,
@@ -220,6 +221,8 @@ type Accepted = {
   statuses: Result['status'][];
   /** The correction blocker beforehand, which a Retest does not ask. */
   blocker?: Refusal;
+  /** The investigation the new Result records it follows; null by default. */
+  retestAfter?: string;
 };
 
 const accepted: Accepted[] = [
@@ -292,16 +295,41 @@ const accepted: Accepted[] = [
     statuses: ['superseded', 'current'],
   },
   {
-    name: 'a Retest after an Invalidated result needs no reason',
+    // A Retest replaces the Invalidated result, so the trail compares with
+    // it, and records the investigation it follows as an audited field.
+    name: 'a Retest after an Invalidated result needs no reason and records the investigation it follows',
     arrange: (s) => {
       record(s, { value: 30 });
       investigate(s, 'Invalidated');
     },
     fields: {},
     kind: 'retest',
-    changes: firstEntryChanges,
+    changes: [
+      [RECORD, 'result.value', 30, 2.5, null],
+      [RECORD, 'result.qualifier', 'quantified', '< LOQ', null],
+      [RECORD, 'result.conformity', 'Does not comply', 'Complies', null],
+      [RECORD, 'result.retestAfter', null, 'OOS26-0001', null],
+    ],
     statuses: ['invalidated', 'current'],
     blocker: retestCall,
+    retestAfter: 'OOS26-0001',
+  },
+  {
+    // Only a Retest records the link: correcting one supersedes it with a
+    // Result that is no Retest, and the trail says so.
+    name: 'a correction of a Retest records no link',
+    arrange: (s) => {
+      record(s, { value: 30 });
+      investigate(s, 'Invalidated');
+      record(s);
+    },
+    fields: { value: 2.6, reason: 'Re-integrated' },
+    kind: 'correction',
+    changes: [
+      [RECORD, 'result.value', 2.5, 2.6, 'Re-integrated'],
+      [RECORD, 'result.retestAfter', 'OOS26-0001', null, 'Re-integrated'],
+    ],
+    statuses: ['invalidated', 'superseded', 'current'],
   },
   {
     name: 'a raw material Result has no Limit, whatever is in force',
@@ -347,7 +375,17 @@ for (const c of accepted)
     assert.equal(current.enteredAt, AT);
     assert.equal(current.sequence, c.statuses.length);
     assert.equal(current.investigationId, null);
+    assert.equal(current.retestAfter, c.retestAfter ?? null);
     assert.equal(current.limit, c.materialType ? null : limit);
+    // Its own reading, sequence ID and worksheet, whatever kind it is.
+    assert.deepEqual(
+      [current.instrumentReading, current.sequenceId, current.attachmentId],
+      [
+        c.fields.instrumentReading ?? 1.25,
+        c.fields.sequenceId ?? 'SEQ-0001',
+        'ATT-1',
+      ],
+    );
   });
 
 type Refused = {
@@ -456,6 +494,17 @@ const refused: Refused[] = [
       'The worksheet attachment was not found. Upload the calculation worksheet again.',
   },
   {
+    name: 'a Retest whose worksheet was not found',
+    arrange: (s) => {
+      record(s, { value: 30 });
+      investigate(s, 'Invalidated');
+    },
+    fields: { worksheet: null },
+    blocker: retestCall,
+    reason:
+      'The worksheet attachment was not found. Upload the calculation worksheet again.',
+  },
+  {
     name: 'a Result on a Test the Sample does not have',
     arrange: () => {},
     fields: { testId: 'NIT-009-v1' },
@@ -547,6 +596,7 @@ test('Result history lists every Result oldest first with its investigation', ()
 
 const INVESTIGATION = 'OOS investigation OOS26-0001';
 const ID = 'OOS26-0001';
+const SECOND = 'OOS26-0002';
 const EARLIER = '2026-09-10T11:59:59.000Z';
 
 /** The writer a refusal test watches; commands otherwise get their own. */
@@ -622,6 +672,9 @@ type Stage =
   | 'invalidated'
   | 'retested'
   | 'retested over its Limit'
+  | 'retest corrected'
+  | 'invalidated again'
+  | 'retested again'
   | 'confirmed'
   | 'notified';
 
@@ -640,13 +693,31 @@ function staged(stage: Stage): Sample {
   if (stage === 'open') return s;
   // 'checked' found no laboratory error; 'error identified' and the
   // invalidated paths found one.
-  const invalidated = ['invalidated', 'retested', 'retested over its Limit'];
+  const invalidated = [
+    'invalidated',
+    'retested',
+    'retested over its Limit',
+    'retest corrected',
+    'invalidated again',
+    'retested again',
+  ];
   check(s, stage === 'error identified' || invalidated.includes(stage));
   if (stage === 'checked' || stage === 'error identified') return s;
   if (invalidated.includes(stage)) {
     conclude(s, 'Invalidated', 'Standard diluted twice.');
-    if (stage === 'retested') record(s);
-    if (stage === 'retested over its Limit') record(s, { value: 31 });
+    if (stage === 'invalidated') return s;
+    if (stage === 'retested' || stage === 'retest corrected') record(s);
+    else record(s, { value: 31 });
+    if (stage === 'retest corrected')
+      record(s, { value: 2.6, reason: 'Re-integrated' });
+    if (stage === 'invalidated again' || stage === 'retested again') {
+      // The Retest over its Limit is its own OOS, investigated and
+      // Invalidated in turn.
+      open(s, 'NIT-001-v1', () => 2);
+      check(s, true, SECOND);
+      conclude(s, 'Invalidated', 'Column overloaded.', SECOND);
+      if (stage === 'retested again') record(s);
+    }
     return s;
   }
   conclude(s, 'Confirmed');
@@ -1436,6 +1507,112 @@ test('an Amendment corrects a confirmed OOS with a reason, keeps it on record wi
     },
   );
   assert.equal(enteredResultOn(s, 'admin'), true);
+});
+
+// A Retest records the OOS investigation it follows, and through it the
+// Invalidated result.
+
+/** Per stage: each Result's recorded link, oldest first, and the
+ * investigation a Retest would follow now. */
+const retestLinks: [Stage, (string | null)[], string | undefined][] = [
+  ['empty', [], undefined],
+  ['complying', [null], undefined],
+  ['uninvestigated', [null], undefined],
+  ['open', [null], undefined],
+  ['confirmed', [null], undefined],
+  ['invalidated', [null], ID],
+  ['retested', [null, ID], undefined],
+  ['retested over its Limit', [null, ID], undefined],
+  ['retest corrected', [null, ID, null], undefined],
+  ['invalidated again', [null, ID], SECOND],
+  ['retested again', [null, ID, SECOND], undefined],
+];
+
+for (const [stage, links, due] of retestLinks)
+  test(`the Retest links for a Sample ${stage}`, () => {
+    const t = resultsView(staged(stage)).test('NIT-001-v1');
+    assert.deepEqual(
+      t.history.map((h) => h.result.retestAfter),
+      links,
+    );
+    assert.deepEqual(
+      t.history.map((h) => h.retestOf?.investigation.id ?? null),
+      links,
+      'the history resolves each link',
+    );
+    assert.equal(t.retestDue?.investigation.id, due);
+    assert.equal(t.retestRequired, due !== undefined);
+  });
+
+test('through its link a Retest reaches the closed investigation that Invalidated a Result on its Test, its cause and the Invalidated result', () => {
+  const s = staged('invalidated again');
+  const t = resultsView(s).test('NIT-001-v1');
+  const due = t.retestDue!;
+  assert.equal(
+    retestLabel(t.test, due),
+    'Retest after OOS26-0002 · Invalidated result #2, 31 ng/day',
+    '"Retest required" names the investigation the Retest will follow',
+  );
+  const before = structuredClone(s.tests[0].results);
+  const { changes } = record(s);
+  // The earlier Results are untouched: the Retest only adds a Result.
+  assert.deepEqual(s.tests[0].results.slice(0, 2), [
+    { ...before[0] },
+    { ...before[1] },
+  ]);
+  assert.ok(
+    changes.some(
+      ([, field, , value]) =>
+        field === 'result.retestAfter' && value === SECOND,
+    ),
+    'the trail alone connects the Retest to its justification',
+  );
+  const lineage = t.history.map((h) => {
+    const r = h.retestOf;
+    return (
+      r && [
+        r.investigation.id,
+        r.investigation.status,
+        r.investigation.outcome,
+        r.investigation.testId,
+        r.investigation.assignableCause,
+        r.investigation.causationConfirmed,
+        r.invalidated.sequence,
+        r.invalidated.status,
+        r.invalidated.value,
+        retestLabel(t.test, r),
+      ]
+    );
+  });
+  assert.deepEqual(lineage, [
+    undefined,
+    [
+      ID,
+      'Closed',
+      'Invalidated',
+      'NIT-001-v1',
+      'Standard diluted twice.',
+      true,
+      1,
+      'invalidated',
+      30,
+      'Retest after OOS26-0001 · Invalidated result #1, 30 ng/day',
+    ],
+    [
+      SECOND,
+      'Closed',
+      'Invalidated',
+      'NIT-001-v1',
+      'Column overloaded.',
+      true,
+      2,
+      'invalidated',
+      31,
+      'Retest after OOS26-0002 · Invalidated result #2, 31 ng/day',
+    ],
+  ]);
+  assert.equal(t.retestDue, undefined);
+  assert.equal(t.current?.sequence, 3);
 });
 
 test('an investigation whose Result cannot be found is a programming error, not a refusal', () => {

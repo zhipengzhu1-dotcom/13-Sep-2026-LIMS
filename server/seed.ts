@@ -51,6 +51,10 @@ type SeedSample = SampleReceipt & {
   /** That investigation is concluded as a Confirmed OOS before Approval; a
    * published Sample also records that the Client was informed. */
   confirmOos?: true;
+  /** That investigation finds a laboratory error and concludes the Result
+   * Invalidated; the Manager returns the Sample, and the Analyst records a
+   * Retest and submits again. */
+  invalidateOos?: { findings: string; cause: string; retest: number };
   /** The Client's word on a Receipt deviation, recorded before any work. */
   instruction?: { decision: 'proceed' | 'withdraw'; contact: string };
   /** An amended Sample: once version 1 is Published, the first Test's
@@ -396,6 +400,33 @@ export function seed(lab: Laboratory) {
           openOos: true,
           confirmOos: true,
         },
+        {
+          ...tablets,
+          clientSampleId: 'HH-IRB-75-01',
+          product: 'Irbesartan tablets',
+          strength: '75 mg',
+          batch: 'IR-260895',
+          manufacturer: 'Harbor Health Products',
+          manufactureDate: '2026-06-30',
+          expiryDate: '2028-06-29',
+          maximumDailyDose: 300,
+          materialType: 'finished product',
+          methodIds: ['NIT-001-v1', 'NIT-003-v1'],
+          dueDate: due(3),
+          priority: 'Routine',
+          // Invalidated for a laboratory error and retested: the Test sheet
+          // shows the Retest's lineage, awaiting Approval.
+          stage: 'awaiting',
+          values: [31.2, 1.8],
+          openOos: true,
+          invalidateOos: {
+            findings:
+              'Standard preparation log shows the working standard was diluted twice.',
+            cause:
+              'Working standard diluted twice (preparation log p. 14); the reading was low against it.',
+            retest: 12.4,
+          },
+        },
       ],
     },
   ];
@@ -411,6 +442,7 @@ export function seed(lab: Laboratory) {
             values: _v,
             openOos: _o,
             confirmOos: _c,
+            invalidateOos: _x,
             instruction: _i,
             amendment: _a,
             ...sample
@@ -420,8 +452,15 @@ export function seed(lab: Laboratory) {
       'coordinator',
     );
     receipt.samples.forEach((received, i) => {
-      const { stage, values, openOos, confirmOos, instruction, amendment } =
-        samples[i];
+      const {
+        stage,
+        values,
+        openOos,
+        confirmOos,
+        invalidateOos,
+        instruction,
+        amendment,
+      } = samples[i];
       if (instruction)
         received = lab.execute(
           {
@@ -513,6 +552,41 @@ export function seed(lab: Laboratory) {
             causationConfirmed: false,
           },
           'manager',
+        );
+      }
+      if (invalidateOos) {
+        act(
+          {
+            type: 'recordLabErrorCheck',
+            investigationId,
+            findings: invalidateOos.findings,
+            errorIdentified: true,
+          },
+          'analyst',
+        );
+        act(
+          {
+            type: 'concludeOosInvestigation',
+            investigationId,
+            outcome: 'Invalidated',
+            assignableCause: invalidateOos.cause,
+            causationConfirmed: true,
+          },
+          'manager',
+        );
+        act(
+          {
+            type: 'return',
+            comment: `Retest ${s.tests[0].methodCode} per ${investigationId}.`,
+          },
+          'manager',
+        );
+        // The Retest needs no reason of its own; it records the investigation
+        // it follows.
+        entry(0, invalidateOos.retest, 2);
+        act(
+          { type: 'submitForApproval', password: passwordOf('analyst') },
+          'analyst',
         );
       }
       const published = stage === 'published' || stage === 'amended';

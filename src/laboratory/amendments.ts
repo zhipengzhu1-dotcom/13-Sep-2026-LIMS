@@ -47,7 +47,10 @@ export function amendmentOf(
   );
 }
 
-/** Result fields a change summary names, in the order it names them. */
+/** Result fields a change summary names, in the order it names them. Only
+ * reported content is named: a Retest's link to the OOS investigation it
+ * follows (`result.retestAfter`) is on the audit trail but is no change to
+ * the report, while the Retest's value is. */
 const summarised: readonly { field: string; label: string; unit?: string }[] = [
   { field: 'result.value', label: 'Result', unit: 'test' },
   { field: 'result.qualifier', label: 'qualifier' },

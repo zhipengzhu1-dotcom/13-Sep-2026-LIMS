@@ -151,6 +151,10 @@ export type Result = {
   /** The OOS investigation opened on this Result, kept once it is closed
    * (its outcome and any assignable cause are on the investigation). */
   investigationId: string | null;
+  /** For a Retest, the OOS investigation that Invalidated the Result it
+   * follows, and through it that Invalidated result; null for a first entry
+   * or a correction. Written only by the Result & OOS investigation module. */
+  retestAfter: string | null;
 };
 
 /** One Method applied to one Sample. The Method's identity and Analyte are
