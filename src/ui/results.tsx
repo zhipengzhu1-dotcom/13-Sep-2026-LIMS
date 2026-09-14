@@ -1,9 +1,7 @@
 import { useRef, useState } from 'react';
 import {
   conformity,
-  currentResult,
   decisionRule,
-  investigationOf,
   isFinishedProduct,
   limitInForce,
   qualify,
@@ -19,6 +17,7 @@ import {
   attachmentAccept,
   attachmentContentType,
 } from '../laboratory/attachment-contracts';
+import { resultsView } from '../laboratory/results';
 import { investigationLabel, OosNote } from './oos';
 import {
   ConformityTag,
@@ -376,15 +375,15 @@ export function TestSheet({
           <th>Entered</th>
         </tr>
       </thead>
-      {s.tests.map((t) => {
-        const current = currentResult(t);
+      {resultsView(s).tests.map((view) => {
+        const { test: t, current, history: results } = view;
         const editing = canRecord && (!current || editingId === t.id);
         const history = openHistory === t.id;
         // Earlier Results besides the current one, such as an Invalidated
         // result awaiting its retest.
-        const earlier = t.results.length - (current ? 1 : 0);
+        const earlier = results.length - (current ? 1 : 0);
         const retest =
-          !current && t.results.some((r) => r.status === 'invalidated');
+          !current && results.some((h) => h.result.status === 'invalidated');
         return (
           <tbody key={t.id} className={editing ? 'editing' : undefined}>
             <tr>
@@ -414,7 +413,7 @@ export function TestSheet({
                     aria-expanded={history}
                     onClick={() => setOpenHistory(history ? null : t.id)}
                   >
-                    History ({t.results.length})
+                    History ({results.length})
                   </button>
                 )}
               </td>
@@ -440,13 +439,13 @@ export function TestSheet({
                       </time>
                     </span>
                     <span className="rec-actions">
-                      {t.results.length > 1 && (
+                      {results.length > 1 && (
                         <button
                           className="link"
                           aria-expanded={history}
                           onClick={() => setOpenHistory(history ? null : t.id)}
                         >
-                          History ({t.results.length})
+                          History ({results.length})
                         </button>
                       )}
                       {canRecord && (
@@ -486,36 +485,38 @@ export function TestSheet({
               <tr className="revisions">
                 <td colSpan={4}>
                   <ol>
-                    {[...t.results].reverse().map((r) => (
-                      <li key={r.sequence} className={r.status}>
-                        <span className="num">#{r.sequence}</span>
-                        <span className={'result-status ' + r.status}>
-                          {r.status[0].toUpperCase() + r.status.slice(1)}
-                        </span>
-                        <ResultValue result={r} />
-                        <ConformityTag statement={r.conformity} />
-                        <span className="dim num">
-                          {r.limit ? `Limit ${r.limit.value} ng/day · ` : ''}
-                          {r.instrumentReading} ng/mL · {r.sequenceId}
-                        </span>
-                        <WorksheetLink data={data} id={r.attachmentId} />
-                        <span>{personName(data, r.enteredBy)}</span>
-                        <time className="dim" dateTime={r.enteredAt}>
-                          {stamp(r.enteredAt)}
-                        </time>
-                        {r.reason && (
-                          <span className="reason">Reason: {r.reason}</span>
-                        )}
-                        {r.investigationId && (
-                          <span className="reason">
-                            {r.investigationId} ·{' '}
-                            {investigationLabel(investigationOf(s, r))}
-                            {investigationOf(s, r)?.assignableCause &&
-                              ` · Assignable cause: ${investigationOf(s, r)!.assignableCause}`}
+                    {[...results]
+                      .reverse()
+                      .map(({ result: r, investigation }) => (
+                        <li key={r.sequence} className={r.status}>
+                          <span className="num">#{r.sequence}</span>
+                          <span className={'result-status ' + r.status}>
+                            {r.status[0].toUpperCase() + r.status.slice(1)}
                           </span>
-                        )}
-                      </li>
-                    ))}
+                          <ResultValue result={r} />
+                          <ConformityTag statement={r.conformity} />
+                          <span className="dim num">
+                            {r.limit ? `Limit ${r.limit.value} ng/day · ` : ''}
+                            {r.instrumentReading} ng/mL · {r.sequenceId}
+                          </span>
+                          <WorksheetLink data={data} id={r.attachmentId} />
+                          <span>{personName(data, r.enteredBy)}</span>
+                          <time className="dim" dateTime={r.enteredAt}>
+                            {stamp(r.enteredAt)}
+                          </time>
+                          {r.reason && (
+                            <span className="reason">Reason: {r.reason}</span>
+                          )}
+                          {r.investigationId && (
+                            <span className="reason">
+                              {r.investigationId} ·{' '}
+                              {investigationLabel(investigation)}
+                              {investigation?.assignableCause &&
+                                ` · Assignable cause: ${investigation.assignableCause}`}
+                            </span>
+                          )}
+                        </li>
+                      ))}
                   </ol>
                 </td>
               </tr>

@@ -2,21 +2,18 @@ import {
   actsAs,
   analytes,
   clients,
-  conformity,
   currentResult,
   limitInForce,
   type AcceptableIntake,
   type AcceptableIntakeEntry,
   type Person,
   enteredResultOn,
-  investigationOf,
   isFinishedProduct,
   methods,
   oosApprovalBlocker,
   oosPublishBlocker,
   outOfSpecification,
   people,
-  qualify,
   reportingUnit,
   signatureMeanings,
   type Actor,
@@ -27,7 +24,6 @@ import {
   type Method,
   type OosInvestigation,
   type ReportingUnit,
-  type Result,
   type Sample,
   type SampleStatus,
   type Signature,
@@ -35,7 +31,7 @@ import {
   type Submission,
   type Test,
 } from './contracts.ts';
-import { auditRecord, type Audit } from './audit.ts';
+import { auditRecord, type Audit } from './audit-writer.ts';
 import {
   certificateContent,
   type Certificate,
@@ -47,6 +43,7 @@ import type { Attachment } from './attachment-contracts.ts';
 import { amendmentOf, changeSummary } from './amendments.ts';
 import { type Upload } from './attachments.ts';
 import { WorkflowError, requireRole } from './workflow-error.ts';
+import { recordResult, resultsView } from './results.ts';
 
 /**
  * The command handlers: what each verb means for the laboratory record. The
@@ -475,93 +472,23 @@ export const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
     { at, audit, limitInForce, attachment, certificates },
   ) {
     requireAssignedAnalyst(actor, sample);
-    const test = sample.tests.find((t) => t.id === command.testId);
-    if (!test) throw new WorkflowError('Test not found.');
-    const previous = currentResult(test);
-    // An investigated Result is decided by its investigation, never corrected
-    // around it: an open one must be concluded first, and a confirmed OOS
-    // stands until an Amendment of its published Certificate corrects it (see
-    // amendments.ts). The corrected Result is judged afresh and the
-    // investigation stays on record, linked to the Result it decided.
-    const investigated = previous && investigationOf(sample, previous);
-    if (investigated?.status === 'Open')
-      throw new WorkflowError(
-        `OOS investigation ${investigated.id} is open on this Result, so it cannot be corrected.`,
-      );
-    if (investigated && !certificates(sample.id).length)
-      throw new WorkflowError(
-        `This Result is a confirmed OOS (${investigated.id}) and cannot be corrected.`,
-      );
-    if (previous && command.reason.length < 3)
-      throw new WorkflowError('Give a reason for changing the Result.');
-    // Finished products are judged against the entry in force now; raw
-    // materials have no Limit.
-    const finished = isFinishedProduct(sample.materialType);
-    const limit = finished ? limitInForce(test.analyteId) : null;
-    if (finished && !limit)
-      throw new WorkflowError(
-        `No Acceptable intake is in force for ${test.analyteName}.`,
-      );
-    // The attachment record holds the filename and SHA-256, so the trail
-    // names only its id.
-    const worksheet = attachment(command.attachmentId);
-    if (!worksheet)
-      throw new WorkflowError(
-        'The worksheet attachment was not found. Upload the calculation worksheet again.',
-      );
-    // The unit and LOD/LOQ come from the Test, which took them from the
-    // Material type at receipt; the qualifier is never entered.
-    const qualifier = qualify(command.value, test);
-    const next: Result = {
-      sequence: test.results.length + 1,
-      status: 'current' as const,
-      value: command.value,
-      unit: test.unit,
-      qualifier,
-      instrumentReading: command.instrumentReading,
-      sequenceId: command.sequenceId,
-      attachmentId: worksheet.id,
-      enteredBy: actor.id,
-      enteredAt: at,
-      reason: command.reason,
-      limit,
-      conformity: conformity({ value: command.value, qualifier }, test, limit),
-      investigationId: null,
-    };
-    // The actor, time and reason are the entry's own columns, and the sequence
-    // and status only say which Result is current, so only the Result's
-    // content is compared, field by field, with the current Result. The Limit
-    // is a copy of reference data, so the trail names its entry and value
-    // rather than every field of the source it was published in.
-    const audited = (r: Result) => ({
-      result: {
-        ...r,
-        limit: r.limit && { entry: r.limit.id, value: r.limit.value },
-      },
-    });
-    const record = auditRecord.test(sample, test);
-    const reason = command.reason;
-    const changed = audit.compare(
-      record,
-      previous ? audited(previous) : null,
-      audited(next),
+    // The module decides what the Result is and whether it may be recorded;
+    // the handler looks up what it needs as values.
+    const { test } = resultsView(sample).test(command.testId);
+    recordResult(
+      sample,
       {
-        reason,
-        omit: [
-          'result.sequence',
-          'result.status',
-          'result.enteredBy',
-          'result.enteredAt',
-          'result.reason',
-          'result.investigationId',
-        ],
+        testId: test.id,
+        value: command.value,
+        instrumentReading: command.instrumentReading,
+        sequenceId: command.sequenceId,
+        reason: command.reason,
+        limit: limitInForce(test.analyteId),
+        worksheet: attachment(command.attachmentId),
+        hasCertificate: certificates(sample.id).length > 0,
       },
+      { actor: actor.id, at, audit },
     );
-    // Re-entering an unchanged value is still an act the trail must show.
-    if (!changed)
-      audit.change(record, 'result.value', previous!.value, next.value, reason);
-    if (previous) previous.status = 'superseded';
-    test.results.push(next);
   },
 
   submitForApproval(_command, actor, sample, { audit, certificates, history }) {
