@@ -42,15 +42,17 @@ export const investigationClass = (
 /** The element id of an investigation in the Sample's OOS investigations. */
 export const investigationAnchor = (id: string) => `investigation-${id}`;
 
-/** A rule's refusal as visible warning text, word for word the core's, with
- * the investigation it names linking to that investigation. Give the blocked
- * control `aria-describedby={id}`. */
+/** A rule's refusal as visible text, word for word the core's, with the
+ * investigation it names linking to that investigation. Separation of duties
+ * reads neutral ("someone else approves"); every other rule is a warning.
+ * Give the blocked control `aria-describedby={id}`. */
 export function RefusalNote({ id, refusal }: { id: string; refusal: Refusal }) {
   const { reason, investigationId: inv } = refusal;
   const at = inv ? reason.indexOf(inv) : -1;
+  const tone = refusal.code === 'separation of duties' ? 'neutral' : 'warn';
   return (
     // A block-level span, so it can sit beneath inline actions.
-    <span id={id} className="flash warn inline refusal">
+    <span id={id} className={`flash ${tone} inline refusal`}>
       {at < 0 ? (
         reason
       ) : (

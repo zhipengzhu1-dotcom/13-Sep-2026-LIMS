@@ -3817,14 +3817,18 @@ test('a Manager never approves a Sample on which they entered or corrected a Res
       [entered.id, 'Awaiting approval'],
     ],
   );
+  // Each refusal names the act that applies.
+  const acts = new Map([
+    [amended.id, 'corrected a Result on'],
+    [entered.id, 'entered a Result on'],
+  ]);
   for (const x of pending)
     assert.throws(
       () => run(promoted, { type: 'approve', ...target(x) }, 'analyst-2'),
       (e: Error & { status: number }) =>
         e.status === 403 &&
-        /^You cannot approve a Sample on which you entered, corrected or retested a Result\.$/.test(
-          e.message,
-        ),
+        e.message ===
+          `You ${acts.get(x.id)} Impurity A (NIT-001), so another Manager must give Approval.`,
     );
   assert.deepEqual(promoted.snapshot().samples, pending, 'nothing changed');
   assert.equal(promoted.certificates(amended.id).length, 1);
@@ -3896,9 +3900,8 @@ test('an Admin acts in every role as themselves, and is refused Approval of a Sa
     () => run(lab, { type: 'approve', ...target(s) }, 'admin'),
     (e: Error & { status: number }) =>
       e.status === 403 &&
-      /^You cannot approve a Sample on which you entered, corrected or retested a Result\.$/.test(
-        e.message,
-      ),
+      e.message ===
+        'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
   );
   assert.deepEqual(lab.snapshot(), before, 'nothing applied or audited');
 
@@ -3960,6 +3963,71 @@ test('an Admin acts in every role as themselves, and is refused Approval of a Sa
   });
   oos = run(lab, notifyClient(oos, id), 'admin');
   assert.equal(run(lab, publish(oos), 'admin').status, 'Published');
+});
+
+test('an Admin who recorded the Laboratory error check is refused Approval with 403, also in the Amendment; opening and concluding do not bar Approval', (t) => {
+  const lab = memory(t);
+  const checkRefusal =
+    'You recorded the Laboratory error check for OOS26-0001, so another Manager must give Approval.';
+  const refused = (s: Sample, actor: string) => {
+    const before = lab.snapshot();
+    assert.throws(
+      () => run(lab, { type: 'approve', ...target(s) }, actor),
+      (e: Error & { status: number }) =>
+        e.status === 403 && e.message === checkRefusal,
+    );
+    // No change, no audit entry and no Electronic signature.
+    assert.deepEqual(lab.snapshot(), before);
+  };
+
+  // The Analyst enters the Results; the Admin then takes the Sample over.
+  let s = assigned(lab);
+  s = run(lab, result(s, 'NIT-001-v1', 30), 'analyst');
+  s = run(lab, result(s, 'NIT-003-v1', 2.5), 'analyst');
+  s = run(lab, { type: 'assign', ...target(s), assignee: 'admin' }, 'admin');
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'admin');
+  s = run(lab, openOos(s), 'manager');
+  const id = s.investigations[0].id;
+  s = run(lab, { ...labErrorCheck(s, id), errorIdentified: false }, 'admin');
+  assert.equal(enteredResultOn(s, 'admin'), true);
+  // Separation of duties is checked before the open investigation.
+  assert.notEqual(oosApprovalBlocker(s), null);
+  refused(s, 'admin');
+  s = run(lab, conclude(s, id, 'Confirmed'), 'manager');
+  refused(s, 'admin');
+
+  // The Manager who opened and concluded the investigation gives Approval,
+  // signing with their own password.
+  assert.throws(
+    () =>
+      run(
+        lab,
+        { type: 'approve', ...target(s), password: 'admin-demo' },
+        'manager',
+      ),
+    /password is incorrect/,
+  );
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  assert.equal(s.status, 'Approved');
+  const approval = lab.snapshot().signatures.at(-1)!;
+  assert.deepEqual(
+    [approval.meaning, approval.signerId, Object.keys(approval.command).sort()],
+    ['approved by', 'manager', ['commandId', 'revision', 'sampleId', 'type']],
+  );
+
+  // The check stays Bench work in the Amendment.
+  s = run(lab, notifyClient(s, id), 'coordinator');
+  s = run(lab, publish(s), 'coordinator');
+  s = run(lab, startAmendment(s), 'coordinator');
+  s = run(lab, { type: 'assign', ...target(s), assignee: 'analyst' }, 'admin');
+  s = run(lab, result(s, 'NIT-003-v1', 2.6, 'Transcription error.'), 'analyst');
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  refused(s, 'admin');
+  assert.equal(
+    run(lab, { type: 'approve', ...target(s) }, 'manager').status,
+    'Approved',
+  );
+  assert.equal(lab.certificate(s.id).version, 2);
 });
 
 test('an Admin is not a role anyone else acquires: the other roles are still refused outside their own', (t) => {

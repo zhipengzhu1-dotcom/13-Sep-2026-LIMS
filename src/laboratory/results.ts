@@ -80,7 +80,8 @@ export type RefusalCode =
   | 'confirmed OOS'
   | 'retest required'
   | 'no laboratory error'
-  | 'notification pending';
+  | 'notification pending'
+  | 'separation of duties';
 
 /** A rule blocking an act right now. `reason` is exactly the text the
  * matching command refuses with. */
@@ -139,13 +140,22 @@ export type InvestigationResults = {
   concludeBlocker(outcome: OosOutcome): Refusal | null;
 };
 
-/** An act that counts as Bench work: the person's own work on a Result. */
-export type BenchWorkEntry = {
-  person: string;
-  act: 'entered' | 'corrected' | 'retested';
-  testId: string;
-  resultSequence: number;
-};
+/** An act that counts as Bench work: the person's own work on a Result, or
+ * their Laboratory error check of it (ADR-0005). Opening or concluding an
+ * investigation is not Bench work. */
+export type BenchWorkEntry =
+  | {
+      person: string;
+      act: 'entered' | 'corrected' | 'retested';
+      testId: string;
+      resultSequence: number;
+    }
+  | {
+      person: string;
+      act: 'Laboratory error check';
+      testId: string;
+      investigationId: string;
+    };
 
 /** One line of the Manager's OOS investigations list. */
 export type OosRow = {
@@ -176,7 +186,8 @@ export type SampleResults = {
   /** The Sample's lines of the OOS investigations list. */
   readonly oosRows: OosRow[];
   /** Every Result entered, corrected or retested on the Sample, of every
-   * status, per Test oldest first. */
+   * status, then every Laboratory error check recorded on that Test's
+   * investigations; per Test, oldest first. */
   readonly benchWork: BenchWorkEntry[];
 };
 
@@ -406,8 +417,8 @@ export function resultsView(sample: Sample): SampleResults {
       return oosRows([sample]);
     },
     get benchWork() {
-      return sample.tests.flatMap((test) =>
-        test.results.map((result, i): BenchWorkEntry => {
+      return sample.tests.flatMap((test) => [
+        ...test.results.map((result, i): BenchWorkEntry => {
           // A Result replaced the one before it: a superseded one by
           // correction, an invalidated one by Retest.
           const before = test.results[i - 1];
@@ -422,7 +433,20 @@ export function resultsView(sample: Sample): SampleResults {
             resultSequence: result.sequence,
           };
         }),
-      );
+        // The check is the Analyst's own review of the bench work (ADR-0005).
+        ...sample.investigations.flatMap((i): BenchWorkEntry[] =>
+          i.testId === test.id && i.labErrorCheck
+            ? [
+                {
+                  person: i.labErrorCheck.by,
+                  act: 'Laboratory error check',
+                  testId: test.id,
+                  investigationId: i.id,
+                },
+              ]
+            : [],
+        ),
+      ]);
     },
   };
 }
@@ -459,6 +483,35 @@ export const oosApprovalBlocker = (sample: Sample) =>
 /** The Publish blocker's reason, or null. */
 export const oosPublishBlocker = (sample: Sample) =>
   resultsView(sample).publishBlocker?.reason ?? null;
+
+/**
+ * The separation-of-duties refusal of Approval, naming the approver's Bench
+ * work `entry` (ADR-0003, ADR-0004, ADR-0005). Approval decides whether the
+ * approver did Bench work and refuses with this reason, and the Approve
+ * control shows the same text; callers pass the approver's first entry.
+ */
+export function separationOfDutiesRefusal(
+  sample: Sample,
+  entry: BenchWorkEntry,
+): Refusal {
+  const then = 'so another Manager must give Approval.';
+  if (entry.act === 'Laboratory error check')
+    return {
+      code: 'separation of duties',
+      reason: `You recorded the Laboratory error check for ${entry.investigationId}, ${then}`,
+      investigationId: entry.investigationId,
+    };
+  const label = testLabel(resultsView(sample).test(entry.testId).test);
+  const did =
+    entry.act === 'retested'
+      ? `retested ${label}`
+      : `${entry.act} a Result on ${label}`;
+  return {
+    code: 'separation of duties',
+    reason: `You ${did}, ${then}`,
+    investigationId: null,
+  };
+}
 
 /** Whether a person did Bench work on the Sample. */
 export const enteredResultOn = (sample: Sample, person: string) =>

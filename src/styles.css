@@ -524,6 +524,11 @@ kbd {
   background: var(--returned-wash);
   color: var(--returned);
 }
+/* Nothing is wrong, someone else acts: separation-of-duties notes. */
+.flash.neutral {
+  background: var(--sunk);
+  color: var(--ink-2);
+}
 .flash.inline {
   display: block;
   border: 0;

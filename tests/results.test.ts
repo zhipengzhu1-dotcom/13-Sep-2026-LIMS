@@ -21,6 +21,7 @@ import {
   recordLabErrorCheck,
   recordResult,
   resultsView,
+  separationOfDutiesRefusal,
   type Act,
   type RecordResultInput,
   type Refusal,
@@ -1148,15 +1149,27 @@ for (const [stage, required, entries] of retests)
     assert.deepEqual(t.certificateInvestigations, entries);
   });
 
-test('Bench work lists who entered, corrected or retested each Result, of every status', () => {
+test('Bench work lists who entered, corrected or retested each Result, of every status, and who recorded each Laboratory error check', () => {
   const s = sampleOf();
   const as = (actor: string, fields: Partial<RecordResultInput>) =>
     recordResult(s, input(fields), { actor, at: AT, audit: recordingAudit() });
   as('analyst', {});
   as('analyst-2', { value: 3, reason: 'Re-integrated' });
   as('analyst-2', { value: 30, reason: 'Dilution factor' });
+  // The Manager opens and concludes; the check is recorded by the Admin
+  // assigned the Sample (ADR-0005).
   open(s);
-  check(s);
+  acted('admin', (act) =>
+    recordLabErrorCheck(
+      s,
+      {
+        investigationId: ID,
+        findings: 'Dilution error.',
+        errorIdentified: true,
+      },
+      act,
+    ),
+  );
   conclude(s, 'Invalidated', 'Standard diluted twice.');
   as('admin', { value: 2.5 });
   const testId = 'NIT-001-v1';
@@ -1165,7 +1178,14 @@ test('Bench work lists who entered, corrected or retested each Result, of every 
     { person: 'analyst-2', act: 'corrected', testId, resultSequence: 2 },
     { person: 'analyst-2', act: 'corrected', testId, resultSequence: 3 },
     { person: 'admin', act: 'retested', testId, resultSequence: 4 },
+    {
+      person: 'admin',
+      act: 'Laboratory error check',
+      testId,
+      investigationId: ID,
+    },
   ]);
+  // Opening or concluding an investigation is not Bench work (ADR-0005).
   for (const [person, did] of [
     ['analyst', true],
     ['analyst-2', true],
@@ -1174,6 +1194,85 @@ test('Bench work lists who entered, corrected or retested each Result, of every 
     ['coordinator', false],
   ] as const)
     assert.equal(enteredResultOn(s, person), did, person);
+});
+
+/** Whose Bench work bars Approval, and the message naming the act. */
+const separated: {
+  stage: Stage;
+  person: string;
+  refusal: Refusal | null;
+}[] = [
+  {
+    stage: 'complying',
+    person: 'analyst',
+    refusal: {
+      code: 'separation of duties',
+      reason:
+        'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
+      investigationId: null,
+    },
+  },
+  {
+    stage: 'retested',
+    person: 'retester',
+    refusal: {
+      code: 'separation of duties',
+      reason:
+        'You retested Impurity A (NIT-001), so another Manager must give Approval.',
+      investigationId: null,
+    },
+  },
+  {
+    stage: 'checked',
+    person: 'checker',
+    refusal: {
+      code: 'separation of duties',
+      reason:
+        'You recorded the Laboratory error check for OOS26-0001, so another Manager must give Approval.',
+      investigationId: ID,
+    },
+  },
+  { stage: 'confirmed', person: 'manager', refusal: null },
+  { stage: 'invalidated', person: 'manager', refusal: null },
+  { stage: 'notified', person: 'coordinator', refusal: null },
+];
+
+for (const c of separated)
+  test(`separation of duties for ${c.person} on a Sample ${c.stage}`, () => {
+    const s = staged(c.stage);
+    // Hand the act under test to its own person.
+    if (c.person === 'retester') s.tests[0].results[1].enteredBy = 'retester';
+    if (c.person === 'checker')
+      s.investigations[0].labErrorCheck!.by = 'checker';
+    const own = resultsView(s).benchWork.find((e) => e.person === c.person);
+    assert.deepEqual(own ? separationOfDutiesRefusal(s, own) : null, c.refusal);
+  });
+
+test('the separation-of-duties message names a correction, and a person is refused for their first act', () => {
+  const s = sampleOf();
+  record(s, { value: 2.5 });
+  recordResult(s, input({ value: 3, reason: 'Re-integrated' }), {
+    actor: 'analyst-2',
+    at: AT,
+    audit: recordingAudit(),
+  });
+  const own = resultsView(s).benchWork.find((e) => e.person === 'analyst-2')!;
+  assert.deepEqual(separationOfDutiesRefusal(s, own), {
+    code: 'separation of duties',
+    reason:
+      'You corrected a Result on Impurity A (NIT-001), so another Manager must give Approval.',
+    investigationId: null,
+  });
+  // The analyst entered the Result and recorded the check: the first act, the
+  // entry, is named.
+  record(s, { value: 30, reason: 'Dilution factor' });
+  open(s);
+  check(s);
+  const first = resultsView(s).benchWork.find((e) => e.person === 'analyst')!;
+  assert.equal(
+    separationOfDutiesRefusal(s, first).reason,
+    'You entered a Result on Impurity A (NIT-001), so another Manager must give Approval.',
+  );
 });
 
 test('OOS rows list investigations and uninvestigated OOS Results, those needing action first', () => {
@@ -1327,12 +1426,15 @@ test('an Amendment corrects a confirmed OOS with a reason, keeps it on record wi
   assert.deepEqual(view.approvalBlocker, uninvestigatedBlocker);
   // The Amendment correction is Bench work, so the Admin who made it cannot
   // give the re-approval.
-  assert.deepEqual(view.benchWork.at(-1), {
-    person: 'admin',
-    act: 'corrected',
-    testId: 'NIT-001-v1',
-    resultSequence: 2,
-  });
+  assert.deepEqual(
+    view.benchWork.findLast((e) => e.person === 'admin'),
+    {
+      person: 'admin',
+      act: 'corrected',
+      testId: 'NIT-001-v1',
+      resultSequence: 2,
+    },
+  );
   assert.equal(enteredResultOn(s, 'admin'), true);
 });
 
