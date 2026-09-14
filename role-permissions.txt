@@ -1,9 +1,6 @@
 Benchline LIMS - roles, permissions and duties
 ===============================================
 
-Applies to the code in PR #16 (branch spec-1-nitrosamine-lims). Main does not
-contain this workflow until that PR is merged.
-
 Source of truth: every rule below is enforced in the Laboratory core
 (src/laboratory/handlers.ts), not just hidden in the UI. Role checks go
 through requireRole / actsAs; the Admin passes every role check.
