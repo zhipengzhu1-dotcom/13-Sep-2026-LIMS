@@ -75,19 +75,28 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      # Failed runs are kept too: a failing, passing and suspect run all stay
+      # on the record (FDA data-integrity Q13).
       - name: Attach the log to the tag's GitHub Release
-        if: success()
+        if: always() && steps.check.outputs.log != ''
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           LOG: ${{ steps.check.outputs.log }}
+          OUTCOME: ${{ steps.check.outcome == 'success' && 'passed' || 'failed' }}
         run: |
           if ! gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
             prerelease=()
-            [[ "$GITHUB_REF_NAME" == *-rc* ]] && prerelease=(--prerelease)
+            [[ "$GITHUB_REF_NAME" == *-rc* || "$OUTCOME" == failed ]] && prerelease=(--prerelease)
             gh release create "$GITHUB_REF_NAME" --verify-tag "${prerelease[@]}" \
               --title "Benchline $GITHUB_REF_NAME" \
-              --notes "Automated test record attached. Not validation on its own: see docs/releases.md."
+              --notes "Automated test records attached, one per run; each log ends with its exit status. Not validation on its own: see docs/releases.md."
+          fi
+          # A failed run never leaves the tag looking like a good release.
+          if [[ "$OUTCOME" == failed ]]; then
+            gh release edit "$GITHUB_REF_NAME" --prerelease \
+              --notes "The automated test record FAILED on at least one run: this tag is not a releasable build. Each log ends with its exit status. See docs/releases.md."
           fi
           # A rerun adds its own log beside the earlier ones; none is replaced.
-          gh release upload "$GITHUB_REF_NAME" "$LOG" "$LOG.sha256"
+          label="Run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT: $OUTCOME"
+          gh release upload "$GITHUB_REF_NAME" "$LOG#$label" "$LOG.sha256#$label (SHA-256)"
