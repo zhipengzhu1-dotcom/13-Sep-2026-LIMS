@@ -11,6 +11,7 @@ import { laboratoryDay, newCommandId } from '../src/laboratory/contracts.ts';
 import { seed } from '../server/seed.ts';
 import {
   migrate,
+  migrations,
   rehearseMigration,
   type Migration,
 } from '../server/migrations.ts';
@@ -427,7 +428,7 @@ test('migrating to version 20 keeps every applied command and command replay, an
   assert.equal(migration.outcome, 'migrated');
   if (migration.outcome === 'migrated') {
     assert.equal(migration.from, 19);
-    assert.equal(migration.to, 24);
+    assert.equal(migration.to, 25);
   }
   assert.deepEqual(records(file), before);
   assert.deepEqual(commandRecords(file), commands);
@@ -468,12 +469,13 @@ test('migrating to version 21 keeps every protected record, and the database the
   assert.deepEqual(migrate(file), {
     outcome: 'migrated',
     from: 20,
-    to: 24,
+    to: 25,
     applied: [
       'Signatures, audit entries, attachments, Certificates, publications and Acceptable intake entries cannot be replaced',
       'Acceptable intake entries record their Potency category and Limit type',
       'Accounts record whether their password is a One-time password',
       'Accounts record when their password was set',
+      'Methods are stored, and a stored Method version never changes',
     ],
   });
   assert.deepEqual(records(file), before);
@@ -545,11 +547,12 @@ test('migrating to version 22 keeps every Acceptable intake entry, marked with n
   assert.deepEqual(migrate(file), {
     outcome: 'migrated',
     from: 21,
-    to: 24,
+    to: 25,
     applied: [
       'Acceptable intake entries record their Potency category and Limit type',
       'Accounts record whether their password is a One-time password',
       'Accounts record when their password was set',
+      'Methods are stored, and a stored Method version never changes',
     ],
   });
   assert.deepEqual(records(file), before);
@@ -675,10 +678,11 @@ test('migrating to version 23 keeps every account signing in with its own passwo
   assert.deepEqual(migrate(file), {
     outcome: 'migrated',
     from: 22,
-    to: 24,
+    to: 25,
     applied: [
       'Accounts record whether their password is a One-time password',
       'Accounts record when their password was set',
+      'Methods are stored, and a stored Method version never changes',
     ],
   });
   const accounts = new Accounts(file);
@@ -717,8 +721,11 @@ test('migrating to version 24 makes every password whose set time was never reco
   assert.deepEqual(migrate(file), {
     outcome: 'migrated',
     from: 23,
-    to: 24,
-    applied: ['Accounts record when their password was set'],
+    to: 25,
+    applied: [
+      'Accounts record when their password was set',
+      'Methods are stored, and a stored Method version never changes',
+    ],
   });
   const accounts = new Accounts(file);
   const lab = new Laboratory(file, { people: () => accounts.people() });
@@ -740,6 +747,57 @@ test('migrating to version 24 makes every password whose set time was never reco
     ).outcome,
     'signedIn',
   );
+});
+
+test('migrating to version 25 stores the Methods in force when the Laboratory opens, and the database then refuses changing, deleting or replacing a stored Method', (t) => {
+  const file = join(folder(t), 'benchline.sqlite');
+  assert.equal(
+    migrate(
+      file,
+      migrations.filter((m) => m.version <= 24),
+    ).outcome,
+    'created',
+  );
+  open(file).close();
+  // As the version 24 build left it: no Methods stored.
+  {
+    const db = new DatabaseSync(file);
+    for (const { name } of db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name = 'methods'",
+      )
+      .all() as { name: string }[])
+      db.exec(`DROP TRIGGER ${name}`);
+    db.exec('DROP TABLE IF EXISTS methods');
+    db.close();
+  }
+
+  assert.deepEqual(migrate(file), {
+    outcome: 'migrated',
+    from: 24,
+    to: 25,
+    applied: ['Methods are stored, and a stored Method version never changes'],
+  });
+  open(file).close();
+  const db = new DatabaseSync(file);
+  t.after(() => db.close());
+  const stored = () =>
+    db.prepare('SELECT id, code, version FROM methods ORDER BY id').all();
+  assert.deepEqual(
+    stored().map((row) => row.id),
+    ['NIT-001-v1', 'NIT-002-v1', 'NIT-003-v1', 'NIT-004-v1', 'NIT-005-v1'],
+  );
+  const rows = db.prepare('SELECT * FROM methods ORDER BY id').all();
+  for (const sql of [
+    `UPDATE methods SET content = '{}'`,
+    'DELETE FROM methods',
+    `INSERT OR REPLACE INTO methods SELECT id, code, version, '{}' FROM methods`,
+    `REPLACE INTO methods SELECT id, code, version, '{}' FROM methods`,
+    `INSERT INTO methods SELECT id, code, version, '{}' FROM methods WHERE true
+      ON CONFLICT (id) DO UPDATE SET content = excluded.content`,
+  ])
+    assert.throws(() => db.exec(sql), /Stored Methods never change/, sql);
+  assert.deepEqual(db.prepare('SELECT * FROM methods ORDER BY id').all(), rows);
 });
 
 test('a rehearsal of the Benchline migrations on a version 19 database passes', (t) => {

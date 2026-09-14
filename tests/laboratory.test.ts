@@ -31,6 +31,7 @@ import {
   samplesWithInvalidSignatures,
   type AuditEntry,
   type Command,
+  type Method,
   type Person,
   signatureMeanings,
   type Sample,
@@ -80,6 +81,10 @@ const receipt = {
   samples: [finishedProduct],
 };
 const NOW = '2026-09-10T12:00:00.000Z';
+/** Audit entries other than the Methods a release put in force when the
+ * Laboratory opened. */
+const byUsers = (entries: AuditEntry[]) =>
+  entries.filter((e) => e.recordType !== 'Method');
 /** What an Approval signature attests was reviewed, as issue #31 words it. */
 const reviewStatement =
   "The Results, their calculation worksheets, the original instrument data, any OOS investigations and the Sample's audit trail were reviewed.";
@@ -188,9 +193,8 @@ function submitted(lab: Laboratory) {
  * uploads. */
 const commandsAudited = (lab: Laboratory) =>
   new Set(
-    lab
-      .snapshot()
-      .audit.filter((e) => e.commandType !== 'storeAttachment')
+    byUsers(lab.snapshot().audit)
+      .filter((e) => e.commandType !== 'storeAttachment')
       .map((e) => e.commandId),
   ).size;
 /** Runs a command and returns its outcome with the audit entries it wrote, in
@@ -391,7 +395,7 @@ test('receipt rejects unknown or duplicate Methods, blank fields, bad Material t
     assert.throws(() => run(lab, { ...receipt, ...patch }, 'coordinator'));
   assert.equal(lab.snapshot().submissions.length, 0);
   assert.equal(lab.snapshot().samples.length, 0);
-  assert.deepEqual(lab.snapshot().audit, []);
+  assert.deepEqual(byUsers(lab.snapshot().audit), []);
 });
 
 test('a receipt keeps the full Submission and Sample record', (t) => {
@@ -516,7 +520,7 @@ test('Client contact, received date/time, quantity, condition on receipt and bat
   ] as const)
     assert.throws(() => run(lab, command, 'coordinator'), message);
   assert.equal(lab.snapshot().samples.length, 0);
-  assert.deepEqual(lab.snapshot().audit, []);
+  assert.deepEqual(byUsers(lab.snapshot().audit), []);
 });
 
 test('received at defaults to server time; a correction needs a reason and is kept on the record', (t) => {
@@ -701,6 +705,160 @@ test('a Method with a higher Maximum-dose ceiling takes higher doses, with its n
   assert.deepEqual(
     material.tests.map((x) => [x.lod, x.loq, x.maximumDoseCeiling]),
     [[0.01, 0.03, null]],
+  );
+});
+
+/** A folder's database file, removed after the test. */
+function databaseFile(t: test.TestContext) {
+  const folder = mkdtempSync(join(tmpdir(), 'lims-methods-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  return join(folder, 'lab.sqlite');
+}
+
+const release = '1.0.0-rc2 (commit 0123456789ab)';
+const RELEASE = 'Benchline 1.0.0-rc2 (commit 0123456789ab)';
+
+/** Opens the Laboratory on a file with a list of Methods in force, and
+ * returns the Method audit entries oldest first, as act, Method, actor,
+ * field, old value and new value. */
+function methodEntriesOnOpening(file: string, list: readonly Method[]) {
+  const lab = new Laboratory(file, {
+    clock: () => NOW,
+    methods: list,
+    release,
+  });
+  try {
+    return lab
+      .auditTrail()
+      .filter((e) => e.recordType === 'Method')
+      .reverse()
+      .map((e) => [
+        e.commandType,
+        e.recordId,
+        e.actor,
+        e.field,
+        e.oldValue,
+        e.newValue,
+      ]);
+  } finally {
+    lab.close();
+  }
+}
+
+test('a Method version is stored when it is first put in force, and a withdrawn one stays stored, each on the audit trail by the release', (t) => {
+  const file = databaseFile(t);
+  const first = methodEntriesOnOpening(file, methods);
+  assert.equal(first.length, 45);
+  assert.deepEqual(first.slice(0, 9), [
+    ['methodInForce', 'NIT-001-v1', RELEASE, 'code', null, 'NIT-001'],
+    ['methodInForce', 'NIT-001-v1', RELEASE, 'version', null, 1],
+    ['methodInForce', 'NIT-001-v1', RELEASE, 'analyteId', null, 'impurity-a'],
+    ['methodInForce', 'NIT-001-v1', RELEASE, 'technique', null, 'LC-MS/MS'],
+    [
+      'methodInForce',
+      'NIT-001-v1',
+      RELEASE,
+      'materialTypes',
+      null,
+      'raw material, finished product',
+    ],
+    ['methodInForce', 'NIT-001-v1', RELEASE, 'ppmLod', null, 0.01],
+    ['methodInForce', 'NIT-001-v1', RELEASE, 'ppmLoq', null, 0.03],
+    ['methodInForce', 'NIT-001-v1', RELEASE, 'maximumDoseCeiling', null, 100],
+    ['methodInForce', 'NIT-001-v1', RELEASE, 'inForce', null, true],
+  ]);
+
+  // The controlled document is revised: version 2 replaces version 1.
+  const revised = [
+    {
+      ...methods[0],
+      id: 'NIT-001-v2',
+      version: 2,
+      ppmLodLoq: { lod: 0.005, loq: 0.015 },
+    },
+    ...methods.slice(1),
+  ];
+  const second = methodEntriesOnOpening(file, revised);
+  assert.deepEqual(second.slice(first.length), [
+    ['methodInForce', 'NIT-001-v2', RELEASE, 'code', null, 'NIT-001'],
+    ['methodInForce', 'NIT-001-v2', RELEASE, 'version', null, 2],
+    ['methodInForce', 'NIT-001-v2', RELEASE, 'analyteId', null, 'impurity-a'],
+    ['methodInForce', 'NIT-001-v2', RELEASE, 'technique', null, 'LC-MS/MS'],
+    [
+      'methodInForce',
+      'NIT-001-v2',
+      RELEASE,
+      'materialTypes',
+      null,
+      'raw material, finished product',
+    ],
+    ['methodInForce', 'NIT-001-v2', RELEASE, 'ppmLod', null, 0.005],
+    ['methodInForce', 'NIT-001-v2', RELEASE, 'ppmLoq', null, 0.015],
+    ['methodInForce', 'NIT-001-v2', RELEASE, 'maximumDoseCeiling', null, 100],
+    ['methodInForce', 'NIT-001-v2', RELEASE, 'inForce', null, true],
+    ['methodWithdrawn', 'NIT-001-v1', RELEASE, 'inForce', true, false],
+  ]);
+  assert.deepEqual(
+    methodEntriesOnOpening(file, revised),
+    second,
+    'the same Methods in force write nothing',
+  );
+
+  // Version 1 is put back in force; version 2 is withdrawn.
+  assert.deepEqual(methodEntriesOnOpening(file, methods).slice(second.length), [
+    ['methodInForce', 'NIT-001-v1', RELEASE, 'inForce', false, true],
+    ['methodWithdrawn', 'NIT-001-v2', RELEASE, 'inForce', true, false],
+  ]);
+});
+
+test('a stored Method version never changes: opening with different content under its id is refused, naming what differs, and nothing is stored', (t) => {
+  const file = databaseFile(t);
+  const stored = methodEntriesOnOpening(file, methods);
+  const newVersion = { ...methods[1], id: 'NIT-002-v2', version: 2 };
+  for (const { changed, differs } of [
+    {
+      changed: { ...methods[0], technique: 'GC-MS', maximumDoseCeiling: 500 },
+      differs: 'its technique and Maximum-dose ceiling differ',
+    },
+    {
+      changed: { ...methods[0], maximumDoseCeiling: 500 },
+      differs: 'its Maximum-dose ceiling differs',
+    },
+    {
+      changed: {
+        ...methods[0],
+        analyteId: 'impurity-b' as const,
+        ppmLodLoq: { lod: 0.01, loq: 0.02 },
+      },
+      differs: 'its Analyte and LOQ differ',
+    },
+  ])
+    assert.throws(
+      () =>
+        new Laboratory(file, {
+          clock: () => NOW,
+          methods: [newVersion, changed, ...methods.slice(1)],
+          release,
+        }),
+      {
+        message: `Method NIT-001 v1 is stored with different content: ${differs}. A revised Method is a new version, with its own code and version. Nothing was changed.`,
+      },
+    );
+  assert.deepEqual(
+    methodEntriesOnOpening(file, methods),
+    stored,
+    'NIT-002 v2 was not stored, nor anything withdrawn',
+  );
+});
+
+test('a Method whose id is not its code and version is refused', () => {
+  assert.throws(
+    () =>
+      new Laboratory(':memory:', { methods: [{ ...methods[0], version: 2 }] }),
+    {
+      message:
+        'Method NIT-001-v1 must have the id NIT-001-v2, from its code and version. Nothing was changed.',
+    },
   );
 });
 
@@ -2924,7 +3082,11 @@ test('only Analysts store worksheets, of an accepted type and size', (t) => {
       JSON.stringify(Object.keys(patch)),
     );
   assert.equal(lab.snapshot().attachments.length, 0);
-  assert.deepEqual(lab.auditTrail(), [], 'a refused upload is not audited');
+  assert.deepEqual(
+    byUsers(lab.auditTrail()),
+    [],
+    'a refused upload is not audited',
+  );
   const xlsx = upload({
     filename: 'sheet.XLSX',
     contentType:
@@ -3996,8 +4158,10 @@ test('a Certificate stays as issued through replays, reference data changes and 
   const reopened = new Laboratory(file, {
     clock: () => NOW,
     credentials: accounts,
+    // A stored Method never changes, so the revision is a new version.
     methods: methods.map((m) => ({
       ...m,
+      id: `${m.code}-v2`,
       version: 2,
       technique: 'GC-MS',
       ppmLodLoq: { lod: 1, loq: 2 },

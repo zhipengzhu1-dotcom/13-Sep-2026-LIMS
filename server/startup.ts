@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { Laboratory } from '../src/laboratory/laboratory.ts';
+import { Laboratory, WorkflowError } from '../src/laboratory/laboratory.ts';
 import { Accounts, type AccountsOptions } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
 import { verifyPasswordSync } from '../src/accounts/passwords.ts';
@@ -169,6 +169,7 @@ const demoLockoutNotice: AccountsOptions['lockoutNotice'] = {
 export function openInstance(
   settings: Settings,
   clock?: () => string,
+  release?: string,
 ): InstanceOutcome {
   const { database } = settings;
   // Both run before either store opens the file: a discarded demo file takes
@@ -210,10 +211,20 @@ export function openInstance(
   if (settings.mode === 'demo') accounts.seed(demoAccounts);
   // The core verifies Electronic signatures against these accounts' hashes and
   // takes its users from them, so a user added to the accounts can act at once.
-  const lab = new Laboratory(database, {
-    credentials: accounts,
-    people: () => accounts.people(),
-  });
+  let lab: Laboratory;
+  try {
+    lab = new Laboratory(database, {
+      credentials: accounts,
+      people: () => accounts.people(),
+      release,
+    });
+  } catch (error) {
+    accounts.close();
+    // A Method changed in place is refused, as a bad database is.
+    if (error instanceof WorkflowError)
+      return { outcome: 'refused', reason: error.message };
+    throw error;
+  }
   if (settings.mode === 'demo') seed(lab);
   return {
     outcome: 'opened',

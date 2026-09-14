@@ -16,10 +16,11 @@ function refuse(reason: string): never {
 const read = readSettings(process.env);
 if (read.outcome === 'refused') refuse(read.reasons.join(' '));
 const { settings } = read;
-const instance = openInstance(settings);
+// The release is named on the audit entries of the Methods it puts in force.
+const version = runningVersion(packageVersion(), currentCheckout());
+const instance = openInstance(settings, undefined, version);
 if (instance.outcome === 'refused') refuse(instance.reason);
 const { lab, accounts, migration, close } = instance;
-const version = runningVersion(packageVersion(), currentCheckout());
 console.log(describeSettings(settings, version));
 if (migration.outcome === 'created')
   console.log(`Created a new, empty database at ${settings.database}`);

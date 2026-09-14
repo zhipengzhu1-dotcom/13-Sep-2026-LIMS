@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { sha256 } from '../src/laboratory/attachments.ts';
+import { methodProtection } from '../src/laboratory/method-store.ts';
 import { verifyDatabase } from './backup.ts';
 
 /**
@@ -111,6 +112,13 @@ export const migrations: readonly Migration[] = [
       if (!columnNames(db, 'users').includes('passwordSetAt'))
         db.exec('ALTER TABLE users ADD COLUMN passwordSetAt TEXT');
     },
+  },
+  {
+    version: 25,
+    change: 'Methods are stored, and a stored Method version never changes',
+    // Nothing is stored here: the next time the Laboratory opens, it stores
+    // the Methods in force, each on the audit trail by its release.
+    apply: (db) => db.exec(methodProtection),
   },
 ];
 

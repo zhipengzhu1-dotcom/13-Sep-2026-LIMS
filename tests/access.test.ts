@@ -472,7 +472,13 @@ test('the lab-wide audit trail can show Access events alone, or hide them', asyn
   assert.equal(recordChanges.length, entries.length - 1);
   assert.deepEqual(
     [...new Set(recordChanges.map((e) => e.commandType))].sort(),
-    ['assign', 'enterResult', 'receiveSubmission', 'storeAttachment'],
+    [
+      'assign',
+      'enterResult',
+      'methodInForce',
+      'receiveSubmission',
+      'storeAttachment',
+    ],
   );
 });
 

@@ -98,7 +98,10 @@ test('production on a database the System administrator created has no Submissio
   assert.deepEqual(lab.snapshot().submissions, []);
   assert.deepEqual(accounts.people(), []);
   assert.deepEqual(
-    lab.auditTrail().map((e) => e.commandType),
+    lab
+      .auditTrail()
+      .filter((e) => e.recordType !== 'Method')
+      .map((e) => e.commandType),
     ['createDatabase'],
   );
 });

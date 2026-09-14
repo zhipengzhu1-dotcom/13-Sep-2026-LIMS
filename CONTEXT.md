@@ -49,7 +49,7 @@ A nitrosamine impurity a Method measures (currently Impurity A, B or C).
 _Avoid_: Impurity (as a data term), compound, parameter
 
 **Method**:
-A versioned analytical procedure that measures exactly one Analyte. One Analyte may have several Methods. Its code and version (e.g. `NIT-001 v1`) are the number and version of its controlled document, so a new document version is a new Method; every Result names the Method it was run under through its Test.
+A versioned analytical procedure that measures exactly one Analyte. One Analyte may have several Methods. Its code and version (e.g. `NIT-001 v1`) are the number and version of its controlled document, so a new document version is a new Method; every Result names the Method it was run under through its Test. A Method version is stored the first time a release puts it in force, and its content never changes after that: Benchline refuses to open with different content under a stored code and version. The audit trail records each Method version a release puts in force or withdraws.
 _Avoid_: SOP, procedure, assay
 
 **Test**:

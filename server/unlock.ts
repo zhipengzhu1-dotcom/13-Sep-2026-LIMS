@@ -6,6 +6,7 @@ import { Accounts } from '../src/accounts/accounts.ts';
 import { WorkflowError } from '../src/laboratory/workflow-error.ts';
 import { migrate } from './migrations.ts';
 import { readSettings } from './startup.ts';
+import { currentCheckout, packageVersion, runningVersion } from './release.ts';
 
 /**
  * Unlocks a Locked account from the lab server, so a lone Admin who locked
@@ -38,10 +39,17 @@ export function unlockFromServer({
   if (migration.outcome === 'refused')
     throw new WorkflowError(migration.reason, 409);
   const accounts = new Accounts(database);
-  const lab = new Laboratory(database, {
-    credentials: accounts,
-    people: () => accounts.people(),
-  });
+  let lab: Laboratory;
+  try {
+    lab = new Laboratory(database, {
+      credentials: accounts,
+      people: () => accounts.people(),
+      release: runningVersion(packageVersion(), currentCheckout()),
+    });
+  } catch (error) {
+    accounts.close();
+    throw error;
+  }
   try {
     accounts.unlockByServerCommand(
       username,

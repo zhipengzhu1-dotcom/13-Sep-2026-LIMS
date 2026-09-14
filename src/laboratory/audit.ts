@@ -1,5 +1,11 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { AuditedAct, AuditEntry, Sample } from './contracts.ts';
+import type {
+  AuditedAct,
+  AuditEntry,
+  AuditRecordType,
+  AuditValue,
+  Sample,
+} from './contracts.ts';
 import { auditWriter, type Audit } from './audit-writer.ts';
 
 export {
@@ -84,5 +90,20 @@ export class AuditTrail {
       oldValue: JSON.parse(row.oldValue),
       newValue: JSON.parse(row.newValue),
     }));
+  }
+
+  /** The value the newest entry gave a record's field, or undefined when no
+   * entry did. */
+  latestValue(
+    record: { type: AuditRecordType; id: string },
+    field: string,
+  ): AuditValue | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT newValue FROM audit WHERE recordType = ? AND recordId = ? AND field = ?
+         ORDER BY sequence DESC LIMIT 1`,
+      )
+      .get(record.type, record.id, field) as { newValue: string } | undefined;
+    return row && JSON.parse(row.newValue);
   }
 }

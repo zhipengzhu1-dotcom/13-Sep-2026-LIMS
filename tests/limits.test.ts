@@ -293,7 +293,11 @@ test('Acceptable intake entries are seeded, marked illustrative and only ever ap
   ])
     assert.throws(() => append(lab, bad));
   assert.deepEqual(lab.snapshot().acceptableIntakes, seeded);
-  assert.deepEqual(lab.auditTrail(), [], 'nothing refused is recorded');
+  assert.deepEqual(
+    lab.auditTrail().filter((e) => e.recordType !== 'Method'),
+    [],
+    'nothing refused is recorded',
+  );
 
   const commandId = newCommandId();
   const outcome = append(lab, revised, 'manager', commandId);
@@ -307,6 +311,7 @@ test('Acceptable intake entries are seeded, marked illustrative and only ever ap
   assert.deepEqual(
     lab
       .auditTrail()
+      .filter((e) => e.recordType !== 'Method')
       .reverse()
       .map((e) => [
         e.recordType,
@@ -387,7 +392,11 @@ test('an Acceptable intake entry is refused without a potency category and a lim
   for (const [fields, refusal] of refusals)
     assert.throws(() => append(lab, fields), refusal);
   assert.deepEqual(lab.snapshot().acceptableIntakes, before);
-  assert.deepEqual(lab.auditTrail(), [], 'nothing refused is recorded');
+  assert.deepEqual(
+    lab.auditTrail().filter((e) => e.recordType !== 'Method'),
+    [],
+    'nothing refused is recorded',
+  );
 
   const accepted = (
     [
@@ -578,5 +587,10 @@ test('an Admin appends an Acceptable intake entry as themselves', (t) => {
     ...revised,
     id: 5,
   });
-  assert.ok(lab.auditTrail().every((e) => e.actor === 'admin'));
+  assert.ok(
+    lab
+      .auditTrail()
+      .filter((e) => e.recordType !== 'Method')
+      .every((e) => e.actor === 'admin'),
+  );
 });

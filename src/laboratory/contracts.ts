@@ -464,7 +464,10 @@ export type AuditRecordType =
   | 'Backup'
   /** The instance's database, by its file, as the System administrator
    * created it. */
-  | 'Database';
+  | 'Database'
+  /** A Method version, by its id, as a release put it in force or withdrew
+   * it. */
+  | 'Method';
 /** Why a user set a password of their own, as its Access event records it, so
  * the periodic access review tells the three apart. */
 export type PasswordSetReason =
@@ -555,6 +558,9 @@ export type AuditedAct =
   | AccessEventType
   /** The System administrator's creation, backup and restore of the database. */
   | 'createDatabase'
+  /** A release putting a Method version in force, or withdrawing one. */
+  | 'methodInForce'
+  | 'methodWithdrawn'
   | 'backup'
   | 'restore';
 
@@ -589,6 +595,8 @@ export const auditedActLabels: Record<AuditedAct, string> = {
   unlock: 'Account unlocked',
   oneTimePasswordIssued: 'One-time password issued',
   createDatabase: 'Database created',
+  methodInForce: 'Method put in force',
+  methodWithdrawn: 'Method withdrawn',
   backup: 'Backup taken',
   restore: 'Restored from backup',
 };

@@ -42,6 +42,7 @@ import {
   requireRole,
 } from './workflow-error.ts';
 import { AcceptableIntakeStore } from './reference-data.ts';
+import { MethodStore } from './method-store.ts';
 import { CertificateStore } from './certificate-store.ts';
 import { SignatureStore } from './signature-store.ts';
 import {
@@ -121,8 +122,14 @@ export type LaboratoryOptions = {
   clock?: () => string;
   /** Verifies signers' passwords. Absent, every Electronic signature is refused. */
   credentials?: SignerCredentials | null;
-  /** The Method reference data in force; defaults to the seeded Methods. */
+  /** The Method reference data in force; defaults to the seeded Methods.
+   * Opening stores each new Method version and refuses one whose content
+   * differs from what is stored under its id. */
   methods?: readonly Method[];
+  /** The running release (ADR-0012), named on the audit entries of the
+   * Methods it puts in force or withdraws; the server passes its version and
+   * commit. */
+  release?: string;
   /** The user directory in force, or where to read it on each use; defaults
    * to the seeded people. A person's role may change over time, while the
    * record keeps what they did. */
@@ -192,6 +199,32 @@ export class Laboratory {
     this.signatureStore = new SignatureStore(this.db);
     this.audit = new AuditTrail(this.db);
     this.attachments = new AttachmentStore(this.db);
+    // After the audit trail, which records each Method put in force or
+    // withdrawn. A refused Method list leaves the file as it was.
+    const methodStore = new MethodStore(this.db);
+    const actor = options.release
+      ? `Benchline ${options.release}`
+      : 'Benchline (release not named)';
+    const at = this.clock();
+    try {
+      this.db.exec('BEGIN');
+      methodStore.putInForce(
+        this.methods,
+        (commandType) =>
+          this.audit.writer({
+            actor,
+            at,
+            commandType,
+            commandId: newCommandId(),
+          }),
+        (id) => this.audit.latestValue({ type: 'Method', id }, 'inForce'),
+      );
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      this.db.close();
+      throw error;
+    }
   }
 
   close() {

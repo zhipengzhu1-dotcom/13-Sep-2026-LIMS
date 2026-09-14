@@ -348,10 +348,12 @@ test('the actor for a command is the session user, not anything the browser clai
   ).json();
   assert.equal(workspace.submissions.length, 1);
   assert.equal(workspace.samples.length, 1);
-  assert.ok(workspace.audit.length);
-  assert.ok(
-    workspace.audit.every((e: { actor: string }) => e.actor === 'coordinator'),
+  // Besides the Methods the release put in force, the coordinator did it all.
+  const byUsers = workspace.audit.filter(
+    (e: { recordType: string }) => e.recordType !== 'Method',
   );
+  assert.ok(byUsers.length);
+  assert.ok(byUsers.every((e: { actor: string }) => e.actor === 'coordinator'));
 
   // An analyst cannot borrow the coordinator's role by claiming it.
   const analyst = await signIn('analyst', 'analyst-demo');
@@ -1215,7 +1217,9 @@ test('an Admin signs in and acts in every role over HTTP, as themselves and with
     await fetch(url + '/api/workspace', { headers: admin })
   ).json();
   assert.ok(
-    workspace.audit.every((e: { actor: string }) => e.actor === 'admin'),
+    workspace.audit
+      .filter((e: { recordType: string }) => e.recordType !== 'Method')
+      .every((e: { actor: string }) => e.actor === 'admin'),
   );
 });
 

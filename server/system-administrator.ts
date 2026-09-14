@@ -14,6 +14,7 @@ import {
 import { migrate, type MigrationOutcome } from './migrations.ts';
 import { missingDatabase, readSettings } from './startup.ts';
 import { backupDatabase, verifyDatabase, type Verification } from './backup.ts';
+import { currentCheckout, packageVersion, runningVersion } from './release.ts';
 
 /** A verification's report, ending with the SHA-256 of the backup it is
  * about. One that failed is refused, so the command exits with an error once
@@ -363,10 +364,17 @@ function opened<T>(
   if (migration.outcome === 'refused')
     throw new WorkflowError(migration.reason, 409);
   const accounts = new Accounts(database);
-  const lab = new Laboratory(database, {
-    credentials: accounts,
-    people: () => accounts.people(),
-  });
+  let lab: Laboratory;
+  try {
+    lab = new Laboratory(database, {
+      credentials: accounts,
+      people: () => accounts.people(),
+      release: runningVersion(packageVersion(), currentCheckout()),
+    });
+  } catch (error) {
+    accounts.close();
+    throw error;
+  }
   try {
     return act({ accounts, lab, migration });
   } finally {
