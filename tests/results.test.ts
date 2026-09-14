@@ -649,15 +649,18 @@ const conclude = (
       act,
     ),
   );
+const SENT =
+  'OOS26-0001 data, worksheet ATT-1 and the Laboratory error check findings, by email.';
 const notify = (
   s: Sample,
   notifiedAt: () => string = () => AT,
   investigationId = ID,
+  sent = SENT,
 ) =>
   acted('coordinator', (act) =>
     recordClientNotification(
       s,
-      { investigationId, contact: 'Priya Nair, QA (phone)', notifiedAt },
+      { investigationId, contact: 'Priya Nair, QA (phone)', sent, notifiedAt },
       act,
     ),
   );
@@ -762,6 +765,8 @@ const causationUnconfirmed =
   'Confirm that the laboratory error the check identified caused the value before invalidating the Result.';
 const confirmedWithCausation =
   'A confirmed OOS has no laboratory error confirmed as its cause. Choose Invalidated to confirm one.';
+const sentMissing =
+  'State what data and Laboratory error check findings were sent to the Client.';
 
 const refusedSteps: RefusedStep[] = [
   {
@@ -941,6 +946,26 @@ const refusedSteps: RefusedStep[] = [
     stage: 'confirmed',
     command: (s) => notify(s, tooEarly, 'OOS26-0099'),
     reason: 'OOS investigation not found.',
+  },
+  // #27: the laboratory hands its data and findings to the Client, and the
+  // notification states what was sent (ADR-0006).
+  ...['', '   ', 'ok '].map((sent): RefusedStep => ({
+    name: `a Client notification stating "${sent}" was sent`,
+    stage: 'confirmed',
+    command: (s) => notify(s, tooEarly, ID, sent),
+    reason: sentMissing,
+  })),
+  {
+    name: 'a second Client notification with another statement of what was sent',
+    stage: 'notified',
+    command: (s) => notify(s, tooEarly, ID, 'A corrected statement.'),
+    reason: 'The Client notification for OOS26-0001 is already recorded.',
+  },
+  {
+    name: 'a Client notification without a statement for an Invalidated OOS',
+    stage: 'invalidated',
+    command: (s) => notify(s, tooEarly, ID, ''),
+    reason: 'Client notification is recorded only for a confirmed OOS.',
   },
 ];
 
@@ -1124,13 +1149,18 @@ test('concluding Confirmed writes no assignable cause and leaves the Result curr
   assert.equal(view.test('NIT-001-v1').retestRequired, false);
 });
 
-test('recordClientNotification audits the contact and time, and stores who recorded it', () => {
+test('recordClientNotification audits the contact, what was sent and the time, and stores who recorded it', () => {
   const s = staged('confirmed');
   let asked = 0;
-  const { changes } = notify(s, () => {
-    asked++;
-    return AT;
-  });
+  const { changes } = notify(
+    s,
+    () => {
+      asked++;
+      return AT;
+    },
+    ID,
+    `  ${SENT}\n`,
+  );
   assert.equal(asked, 1);
   assert.deepEqual(changes, [
     [
@@ -1140,14 +1170,35 @@ test('recordClientNotification audits the contact and time, and stores who recor
       'Priya Nair, QA (phone)',
       null,
     ],
+    [INVESTIGATION, 'clientNotification.sent', null, SENT, null],
     [INVESTIGATION, 'clientNotification.notifiedAt', null, AT, null],
   ]);
   assert.deepEqual(s.investigations[0].clientNotification, {
     contact: 'Priya Nair, QA (phone)',
+    sent: SENT,
     notifiedAt: AT,
     recordedBy: 'coordinator',
     recordedAt: AT,
   });
+  assert.equal(resultsView(s).publishBlocker, null);
+});
+
+test('a confirmed investigation drafts the statement of its data and Laboratory error check findings for the Client', () => {
+  const s = staged('confirmed');
+  assert.equal(
+    resultsView(s).investigation(ID).findingsForClient,
+    'OOS26-0001: Impurity A (NIT-001) Result #1, 30 ng/day, worksheet ATT-1. Laboratory error check (no laboratory error identified): Standard preparation log shows a dilution error.',
+  );
+  // It names the Result the investigation decided, not the current one.
+  const amended = staged('amended and confirmed again');
+  assert.match(
+    resultsView(amended).investigation(ID).findingsForClient,
+    /^OOS26-0001: Impurity A \(NIT-001\) Result #1, 30 ng\/day,/,
+  );
+  assert.match(
+    resultsView(amended).investigation(SECOND).findingsForClient,
+    /^OOS26-0002: Impurity A \(NIT-001\) Result #2, 28 ng\/day,/,
+  );
 });
 
 const uninvestigatedBlocker: Refusal = {

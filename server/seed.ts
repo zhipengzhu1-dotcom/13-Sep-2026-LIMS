@@ -610,6 +610,7 @@ export function seed(lab: Laboratory) {
               type: 'recordClientOosNotification',
               investigationId,
               contact: 'Client QA contact (phone)',
+              sent: `${investigationId} data, calculation worksheet and Laboratory error check findings, by email.`,
               notifiedAt: new Date().toISOString(),
             },
             'coordinator',

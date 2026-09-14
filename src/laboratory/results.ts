@@ -64,6 +64,10 @@ export type OosInvestigation = {
   clientNotification: {
     /** The person at the Client who was informed. */
     contact: string;
+    /** The statement of the laboratory's data and Laboratory error check
+     * findings sent to the Client for its full-scale investigation
+     * (ADR-0006). */
+    sent: string;
     /** When the Client was informed; never later than its recording. */
     notifiedAt: string;
     recordedBy: string;
@@ -158,6 +162,11 @@ export type InvestigationResults = {
   /** Why the investigation cannot be concluded with `outcome` now, or null.
    * The assignable cause is checked by the command, on its input. */
   concludeBlocker(outcome: OosOutcome): Refusal | null;
+  /** A draft of the statement of what is sent to the Client: the
+   * investigation, the Result it decides with its worksheet, and the
+   * Laboratory error check findings. The Coordinator edits it before
+   * recording the Client notification. */
+  readonly findingsForClient: string;
 };
 
 /** An act that counts as Bench work: the person's own work on a Result, or
@@ -271,14 +280,16 @@ export function retestLabel(
   test: Pick<Test, 'lod' | 'loq'>,
   { investigation, invalidated: r }: RetestLineage,
 ) {
-  const value =
-    r.qualifier === '< LOD'
-      ? `< LOD (${test.lod})`
-      : r.qualifier === '< LOQ'
-        ? `< LOQ (${test.loq})`
-        : String(r.value);
-  return `Retest after ${investigation.id} · Invalidated result #${r.sequence}, ${value} ${r.unit}`;
+  return `Retest after ${investigation.id} · Invalidated result #${r.sequence}, ${reportedValue(test, r)} ${r.unit}`;
 }
+
+/** A Result's value as reported: `< LOD (1)`, `< LOQ (3)` or the number. */
+const reportedValue = (test: Pick<Test, 'lod' | 'loq'>, r: Result) =>
+  r.qualifier === '< LOD'
+    ? `< LOD (${test.lod})`
+    : r.qualifier === '< LOQ'
+      ? `< LOQ (${test.loq})`
+      : String(r.value);
 
 export function resultsView(sample: Sample): SampleResults {
   const testResults = (test: Test): TestResults => ({
@@ -420,6 +431,13 @@ export function resultsView(sample: Sample): SampleResults {
             investigationId: investigation.id,
           };
         return null;
+      },
+      get findingsForClient() {
+        const check = investigation.labErrorCheck;
+        const found = check
+          ? `Laboratory error check (${check.errorIdentified ? 'laboratory error identified' : 'no laboratory error identified'}): ${check.findings}`
+          : 'Laboratory error check not recorded.';
+        return `${investigation.id}: ${testLabel(test)} Result #${result.sequence}, ${reportedValue(test, result)} ${result.unit}, worksheet ${result.attachmentId}. ${found}`;
       },
     };
   };
@@ -859,6 +877,9 @@ export function concludeInvestigation(
 export type ClientNotificationInput = {
   investigationId: string;
   contact: string;
+  /** What data and Laboratory error check findings were sent to the Client;
+   * at least 3 characters once trimmed. */
+  sent: string;
   /**
    * When the Client was informed, as an instant. The handler checks it is
    * not later than the time of saving; the module asks for it only once its
@@ -867,11 +888,17 @@ export type ClientNotificationInput = {
   notifiedAt: () => string;
 };
 
-/** Records that the Client was informed of a Confirmed OOS, once, no earlier
- * than the investigation was concluded. */
+/** Records that the Client was informed of a Confirmed OOS and what data and
+ * Laboratory error check findings were sent for its full-scale investigation,
+ * once, no earlier than the investigation was concluded (ADR-0006). */
 export function recordClientNotification(
   sample: Sample,
-  { investigationId, contact, notifiedAt: instant }: ClientNotificationInput,
+  {
+    investigationId,
+    contact,
+    sent: statement,
+    notifiedAt: instant,
+  }: ClientNotificationInput,
   { actor, at, audit }: Act,
 ) {
   const { investigation } = resultsView(sample).investigation(investigationId);
@@ -883,12 +910,17 @@ export function recordClientNotification(
     throw new WorkflowError(
       `The Client notification for ${investigation.id} is already recorded.`,
     );
+  const sent = statement.trim();
+  if (sent.length < 3)
+    throw new WorkflowError(
+      'State what data and Laboratory error check findings were sent to the Client.',
+    );
   const notifiedAt = instant();
   if (notifiedAt < investigation.closedAt!)
     throw new WorkflowError(
       'The Client cannot have been informed of a confirmed OOS before the investigation was concluded.',
     );
-  const notification = { contact, notifiedAt };
+  const notification = { contact, sent, notifiedAt };
   audit.compare(auditRecord.investigation(sample, investigation), null, {
     clientNotification: notification,
   });

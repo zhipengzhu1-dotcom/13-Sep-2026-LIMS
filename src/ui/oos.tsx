@@ -297,6 +297,10 @@ export function Investigations({
                             )}
                             , {stamp(inv.clientNotification.recordedAt)}
                           </span>
+                          <span className="sent-to-client">
+                            <strong>Sent to the Client:</strong>{' '}
+                            {inv.clientNotification.sent}
+                          </span>
                         </>
                       ) : coordinator ? (
                         <form
@@ -311,6 +315,7 @@ export function Investigations({
                               ...target,
                               investigationId: inv.id,
                               contact: String(f.get('contact') ?? '').trim(),
+                              sent: String(f.get('sent') ?? ''),
                               notifiedAt: when
                                 ? new Date(when).toISOString()
                                 : '',
@@ -324,6 +329,20 @@ export function Investigations({
                             maxLength={200}
                             placeholder="Name and role at the Client"
                           />
+                          <label className="field">
+                            What data and Laboratory error check findings were
+                            sent to the Client
+                            <textarea
+                              name="sent"
+                              required
+                              minLength={3}
+                              maxLength={2000}
+                              rows={3}
+                              defaultValue={
+                                results.investigation(inv.id).findingsForClient
+                              }
+                            />
+                          </label>
                           <input
                             type="datetime-local"
                             name="notifiedAt"
