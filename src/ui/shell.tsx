@@ -10,6 +10,7 @@ import {
   currentResult,
   materialTypes,
   newCommandId,
+  methodLodLoq,
   reportingUnit,
   type Command,
   type Result,
@@ -811,8 +812,9 @@ export function App() {
                   <th>Analyte</th>
                   <th>Technique</th>
                   <th>Material types · reporting unit</th>
-                  <th className="r">LOD / LOQ, ng/day</th>
                   <th className="r">LOD / LOQ, ppm</th>
+                  <th className="r">Maximum-dose ceiling, mg/day</th>
+                  <th className="r">LOD / LOQ, ng/day at ceiling</th>
                 </tr>
               </thead>
               <tbody>
@@ -830,10 +832,12 @@ export function App() {
                         .join(', ')}
                     </td>
                     <td className="r num">
-                      {m.lodLoq['ng/day'].lod} / {m.lodLoq['ng/day'].loq}
+                      {m.ppmLodLoq.lod} / {m.ppmLodLoq.loq}
                     </td>
+                    <td className="r num">{m.maximumDoseCeiling}</td>
                     <td className="r num">
-                      {m.lodLoq.ppm.lod} / {m.lodLoq.ppm.loq}
+                      {methodLodLoq(m, 'ng/day').lod} /{' '}
+                      {methodLodLoq(m, 'ng/day').loq}
                     </td>
                   </tr>
                 ))}
@@ -843,8 +847,10 @@ export function App() {
               Each Test copies its Method code, version, Analyte and the LOD/LOQ
               pair for the Sample's Material type when the Sample is received. A
               Result below the LOD is reported as {'< LOD'}, from the LOD up to
-              but not including the LOQ as {'< LOQ'}. Illustrative Methods and
-              values only.
+              but not including the LOQ as {'< LOQ'}. The ng/day LOD and LOQ are
+              the ppm values at the Maximum-dose ceiling, and a finished product
+              whose Maximum daily dose is above the ceiling of a requested
+              Method is not received. Illustrative Methods and values only.
             </p>
             <AcceptableIntakeTable data={data} />
           </div>

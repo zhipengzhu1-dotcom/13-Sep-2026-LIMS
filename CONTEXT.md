@@ -57,7 +57,11 @@ The reported outcome of a Test in the Material type's reporting unit: a number, 
 _Avoid_: Reading, measurement, raw data
 
 **LOD / LOQ**:
-The Method's fixed, validated limit of detection and limit of quantitation; where a Result falls against them decides whether it is reported as `< LOD`, `< LOQ` or a quantified number.
+The Method's fixed, validated limit of detection and limit of quantitation; where a Result falls against them decides whether it is reported as `< LOD`, `< LOQ` or a quantified number. They are held in ppm, and in ng/day they are the ppm values at the Method's Maximum-dose ceiling.
+
+**Maximum-dose ceiling**:
+The highest Maximum daily dose, in mg/day, a Method may be requested for; receipt refuses a finished product above it, so the Method's ng/day LOD and LOQ, set at the ceiling, are conservative for every Sample it tests.
+_Avoid_: Dose limit, maximum dose
 
 **Acceptable intake**:
 The FDA-recommended maximum daily exposure to a specific nitrosamine, in ng/day, as published on CDER's Nitrosamine Impurity Acceptable Intake Limits list.

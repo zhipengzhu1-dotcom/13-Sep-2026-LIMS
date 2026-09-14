@@ -83,13 +83,32 @@ export type Method = {
   analyteId: Analyte['id'];
   technique: string;
   materialTypes: readonly MaterialType[];
-  /** Fixed, validated values in both reporting units (ADR-0002). */
-  lodLoq: Readonly<Record<ReportingUnit, LodLoq>>;
+  /** Fixed, validated LOD and LOQ in ppm (ADR-0002). */
+  ppmLodLoq: LodLoq;
+  /** The highest Maximum daily dose, in mg/day, the Method may be requested
+   * for. Its ng/day LOD and LOQ are set at this dose, so they are conservative
+   * for every dose at or below it. */
+  maximumDoseCeiling: number;
 };
 
 /** A limit of detection and limit of quantitation in one reporting unit. */
 export type LodLoq = { lod: number; loq: number };
 
+/**
+ * A Method's LOD and LOQ in a reporting unit. In ng/day they are the ppm pair
+ * at the Maximum-dose ceiling (ng/day = ppm × mg/day), never stored apart
+ * from it, rounded to 12 significant digits to drop binary noise.
+ */
+export function methodLodLoq(method: Method, unit: ReportingUnit): LodLoq {
+  const { lod, loq } = method.ppmLodLoq;
+  if (unit === 'ppm') return { lod, loq };
+  const atCeiling = (ppm: number) =>
+    Number((ppm * method.maximumDoseCeiling).toPrecision(12));
+  return { lod: atCeiling(lod), loq: atCeiling(loq) };
+}
+
+/** At a 100 mg/day ceiling the ng/day LOQ is 3, within 20 % of the lowest
+ * Acceptable intake, 26.5 ng/day. */
 const method = (code: string, analyteId: Analyte['id']): Method => ({
   id: `${code}-v1`,
   code,
@@ -97,7 +116,8 @@ const method = (code: string, analyteId: Analyte['id']): Method => ({
   analyteId,
   technique: 'LC-MS/MS',
   materialTypes,
-  lodLoq: { 'ng/day': { lod: 1, loq: 3 }, ppm: { lod: 0.01, loq: 0.03 } },
+  ppmLodLoq: { lod: 0.01, loq: 0.03 },
+  maximumDoseCeiling: 100,
 });
 /** Illustrative placeholders; each Method measures exactly one Analyte. */
 export const methods: readonly Method[] = [
@@ -174,6 +194,10 @@ export type Test = {
    * receipt. */
   lod: number;
   loq: number;
+  /** The Method's Maximum-dose ceiling (mg/day) the ng/day LOD and LOQ were
+   * set at, copied at receipt; null for a ppm Test, and absent on a Test
+   * received before ceilings were recorded. */
+  maximumDoseCeiling?: number | null;
   /** Every Result ever entered, oldest first, each with its status. */
   results: Result[];
 };

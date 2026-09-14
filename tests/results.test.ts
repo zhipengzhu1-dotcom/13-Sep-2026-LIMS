@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  methodLodLoq,
   methods,
   type AcceptableIntake,
   type MaterialType,
@@ -61,7 +62,8 @@ function testOf(methodId: string, materialType: MaterialType): Test {
     analyteName: 'Impurity A',
     technique: method.technique,
     unit,
-    ...method.lodLoq[unit],
+    ...methodLodLoq(method, unit),
+    maximumDoseCeiling: unit === 'ng/day' ? method.maximumDoseCeiling : null,
     results: [],
   };
 }

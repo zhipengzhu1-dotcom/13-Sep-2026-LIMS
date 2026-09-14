@@ -17,6 +17,7 @@ import {
   currentResult,
   didBenchWork,
   investigationOf,
+  methodLodLoq,
   methods,
   oosRows,
   people,
@@ -593,6 +594,69 @@ test('Maximum daily dose is required for finished products and not accepted for 
   assert.equal(material.maximumDailyDose, null);
 });
 
+test("receipt refuses a Maximum daily dose above a requested Method's Maximum-dose ceiling", (t) => {
+  const lab = memory(t);
+  assert.throws(
+    () =>
+      run(
+        lab,
+        {
+          ...receipt,
+          samples: [
+            { ...finishedProduct, maximumDailyDose: 100 },
+            { ...finishedProduct, maximumDailyDose: 100.1 },
+          ],
+        },
+        'coordinator',
+      ),
+    /Sample 2: The Maximum daily dose of 100\.1 mg\/day is above the 100 mg\/day Maximum-dose ceiling of NIT-001 v1\./,
+  );
+  assert.equal(lab.snapshot().samples.length, 0);
+  const s = run(
+    lab,
+    { ...receipt, samples: [{ ...finishedProduct, maximumDailyDose: 100 }] },
+    'coordinator',
+  );
+  assert.equal(s.maximumDailyDose, 100);
+});
+
+test('a Method with a higher Maximum-dose ceiling takes higher doses, with its ng/day LOD and LOQ scaled to that ceiling', (t) => {
+  // 0.01 and 0.03 ppm at a 500 mg/day ceiling are 5 and 15 ng/day.
+  const highDose = {
+    ...methods[4],
+    id: 'NIT-901-v1',
+    code: 'NIT-901',
+    maximumDoseCeiling: 500,
+  };
+  const lab = new Laboratory(':memory:', {
+    clock: () => NOW,
+    methods: [...methods, highDose],
+  });
+  t.after(() => lab.close());
+  const atDose = (methodIds: string[]) => ({
+    ...receipt,
+    samples: [{ ...finishedProduct, maximumDailyDose: 400, methodIds }],
+  });
+  assert.throws(
+    () => run(lab, atDose(['NIT-901-v1', 'NIT-005-v1']), 'coordinator'),
+    /The Maximum daily dose of 400 mg\/day is above the 100 mg\/day Maximum-dose ceiling of NIT-005 v1\./,
+  );
+  const s = run(lab, atDose(['NIT-901-v1']), 'coordinator');
+  assert.deepEqual(
+    s.tests.map((x) => [x.methodCode, x.lod, x.loq, x.maximumDoseCeiling]),
+    [['NIT-901', 5, 15, 500]],
+  );
+  const material = run(
+    lab,
+    { ...receipt, samples: [{ ...rawMaterial, methodIds: ['NIT-901-v1'] }] },
+    'coordinator',
+  );
+  assert.deepEqual(
+    material.tests.map((x) => [x.lod, x.loq, x.maximumDoseCeiling]),
+    [[0.01, 0.03, null]],
+  );
+});
+
 test('requested Methods must apply to the Sample Material type', (t) => {
   // Every seeded Method applies to both Material types, so the rule is
   // exercised over reference data holding one finished-product-only Method.
@@ -1112,7 +1176,7 @@ test('a rejected command releases its key and may be resubmitted', () => {
   lab.close();
 });
 
-test('Tests snapshot the LOD/LOQ pair for the Material type', (t) => {
+test('Tests snapshot the LOD/LOQ pair for the Material type and the ceiling it was set at', (t) => {
   const lab = memory(t);
   const [product, material] = execute(
     lab,
@@ -1120,26 +1184,22 @@ test('Tests snapshot the LOD/LOQ pair for the Material type', (t) => {
     'coordinator',
   ).samples;
   assert.deepEqual(
-    product.tests.map((x) => [x.unit, x.lod, x.loq]),
+    product.tests.map((x) => [x.unit, x.lod, x.loq, x.maximumDoseCeiling]),
     [
-      ['ng/day', 1, 3],
-      ['ng/day', 1, 3],
+      ['ng/day', 1, 3, 100],
+      ['ng/day', 1, 3, 100],
     ],
   );
   assert.deepEqual(
-    material.tests.map((x) => [x.unit, x.lod, x.loq]),
-    [['ppm', 0.01, 0.03]],
+    material.tests.map((x) => [x.unit, x.lod, x.loq, x.maximumDoseCeiling]),
+    [['ppm', 0.01, 0.03, null]],
   );
-  const methods = lab.snapshot().methods;
-  assert.ok(
-    methods.every(
-      (m) =>
-        m.lodLoq['ng/day'].lod === 1 &&
-        m.lodLoq['ng/day'].loq === 3 &&
-        m.lodLoq.ppm.lod === 0.01 &&
-        m.lodLoq.ppm.loq === 0.03,
-    ),
-  );
+  // 0.01 and 0.03 ppm at a 100 mg/day ceiling are 1 and 3 ng/day.
+  for (const m of lab.snapshot().methods) {
+    assert.equal(m.maximumDoseCeiling, 100);
+    assert.deepEqual(methodLodLoq(m, 'ppm'), { lod: 0.01, loq: 0.03 });
+    assert.deepEqual(methodLodLoq(m, 'ng/day'), { lod: 1, loq: 3 });
+  }
 });
 
 test('the qualifier is assigned from the LOD and LOQ in each reporting unit, boundaries included', (t) => {
@@ -3575,7 +3635,8 @@ test('a Certificate stays as issued through replays, reference data changes and 
       ...m,
       version: 2,
       technique: 'GC-MS',
-      lodLoq: { 'ng/day': { lod: 5, loq: 10 }, ppm: { lod: 1, loq: 2 } },
+      ppmLodLoq: { lod: 1, loq: 2 },
+      maximumDoseCeiling: 500,
     })),
   });
   t.after(() => reopened.close());

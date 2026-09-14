@@ -4,5 +4,5 @@ The LC-MS/MS instrument reports ng/mL, but Results are reported in ng/day (finis
 
 ## Consequences
 
-- LOD and LOQ are stored per Method as two fixed pairs, one in ppm and one in ng/day, even though an ng/day LOQ really depends on the Maximum daily dose. This is accepted until the calculation moves into the system, at which point LOD and LOQ should be held in one unit and converted.
+- LOD and LOQ are fixed per Method in ppm, and its ng/day pair is that pair at the Method's Maximum-dose ceiling (ng/day = ppm × mg/day). Receipt refuses a Maximum daily dose above the ceiling of any requested Method, so the fixed ng/day LOQ is conservative for every Sample it judges (#57). The true ng/day LOQ at a lower dose is not derived; that waits until the calculation moves into the system (#36).
 - A future in-system calculation should supersede this ADR rather than edit it.

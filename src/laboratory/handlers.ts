@@ -10,6 +10,7 @@ import {
   isFinishedProduct,
   methods,
   people,
+  methodLodLoq,
   reportingUnit,
   signatureMeanings,
   type Actor,
@@ -202,7 +203,8 @@ function testOf(method: Method, unit: ReportingUnit): Test {
     analyteName: analyte.name,
     technique: method.technique,
     unit,
-    ...method.lodLoq[unit],
+    ...methodLodLoq(method, unit),
+    maximumDoseCeiling: unit === 'ng/day' ? method.maximumDoseCeiling : null,
     results: [],
   };
 }
@@ -268,6 +270,7 @@ export const receiveSubmission: ReceiptHandler = (
       );
     if (new Set(receipt.methodIds).size !== receipt.methodIds.length)
       throw new WorkflowError(`${label}Request each Method only once.`);
+    const dose = receipt.maximumDailyDose;
     return receipt.methodIds.map((id) => {
       const method = methods.find((m) => m.id === id);
       if (!method)
@@ -275,6 +278,12 @@ export const receiveSubmission: ReceiptHandler = (
       if (!method.materialTypes.includes(receipt.materialType))
         throw new WorkflowError(
           `${label}${method.code} v${method.version} does not apply to a ${receipt.materialType}.`,
+        );
+      // Above the ceiling the Method's ng/day LOQ would claim a sensitivity
+      // it does not have at this dose.
+      if (dose !== null && dose > method.maximumDoseCeiling)
+        throw new WorkflowError(
+          `${label}The Maximum daily dose of ${dose} mg/day is above the ${method.maximumDoseCeiling} mg/day Maximum-dose ceiling of ${method.code} v${method.version}.`,
         );
       return method;
     });

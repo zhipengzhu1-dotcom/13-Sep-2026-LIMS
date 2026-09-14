@@ -143,7 +143,8 @@ test('a quantified Result is rounded to the decimal places of its Limit and comp
   const { lab } = clocked(t, {
     methods: methods.map((m) => ({
       ...m,
-      lodLoq: { ...m.lodLoq, 'ng/day': { lod: 1e-9, loq: 2e-9 } },
+      ppmLodLoq: { lod: 1e-11, loq: 2e-11 },
+      maximumDoseCeiling: 100,
     })),
   });
   const cases = [

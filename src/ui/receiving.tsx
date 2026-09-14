@@ -519,7 +519,11 @@ export function Intake({
                     <span className="dim">
                       {data.analytes.find((a) => a.id === m.analyteId)?.name}
                     </span>
-                    <span className="num r">{m.technique}</span>
+                    <span className="num r">
+                      {m.technique}
+                      {finished &&
+                        ` · Maximum-dose ceiling ${m.maximumDoseCeiling} mg/day`}
+                    </span>
                   </label>
                 ))}
             </fieldset>
