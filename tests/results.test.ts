@@ -1937,7 +1937,7 @@ test('an Amendment change summary gives a Retest the investigation it follows as
   );
 });
 
-test("an Amendment change summary never gives a Retest an earlier correction's reason", () => {
+test('an Amendment change summary shows a correction and the Retest after it as separate steps, each with its own reason', () => {
   const s = sampleOf();
   record(s, { value: 20 });
   const amendment = amendmentHistory(s);
@@ -1948,6 +1948,57 @@ test("an Amendment change summary never gives a Retest an earlier correction's r
   amendment.enter({ value: 25, worksheet: { id: 'ATT-2' } });
   assert.equal(
     changeSummary(s, amendment.history),
-    'Impurity A (NIT-001 v1): Result 20 → 25 ng/day, worksheet replaced (reason: "transcription error"; Retest after OOS26-0002, Invalidated: Standard diluted twice.)',
+    'Impurity A (NIT-001 v1): Result 20 → 30 ng/day, Conformity statement Complies → Does not comply (reason: "transcription error"); Result 30 → 25 ng/day, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.)',
+  );
+});
+
+test('an Amendment change summary gives a reason typed with a Retest after the investigation it follows', () => {
+  const s = sampleOf();
+  record(s, { value: 30 });
+  const amendment = amendmentHistory(s);
+  open(s, 'NIT-001-v1', () => 2);
+  check(s, true, SECOND);
+  conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
+  amendment.enter({
+    value: 12,
+    worksheet: { id: 'ATT-2' },
+    reason: 're-prepared standard',
+  });
+  assert.equal(
+    changeSummary(s, amendment.history),
+    'Impurity A (NIT-001 v1): Result 30 → 12 ng/day, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.; reason: "re-prepared standard")',
+  );
+});
+
+test('an Amendment change summary shows each of two Retest cycles as its own step', () => {
+  const s = sampleOf();
+  record(s, { value: 30 });
+  const amendment = amendmentHistory(s);
+  open(s, 'NIT-001-v1', () => 2);
+  check(s, true, SECOND);
+  conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
+  amendment.enter({ value: 28, worksheet: { id: 'ATT-2' } });
+  open(s, 'NIT-001-v1', () => 3);
+  check(s, true, 'OOS26-0003');
+  conclude(s, 'Invalidated', 'Column overloaded.', 'OOS26-0003');
+  amendment.enter({ value: 12, worksheet: { id: 'ATT-3' } });
+  assert.equal(
+    changeSummary(s, amendment.history),
+    'Impurity A (NIT-001 v1): Result 30 → 28 ng/day, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.); Result 28 → 12 ng/day, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0003, Invalidated: Column overloaded.)',
+  );
+});
+
+test('an Amendment change summary shows a correction of a Retest as a step after the Retest', () => {
+  const s = sampleOf();
+  record(s, { value: 30 });
+  const amendment = amendmentHistory(s);
+  open(s, 'NIT-001-v1', () => 2);
+  check(s, true, SECOND);
+  conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
+  amendment.enter({ value: 25, worksheet: { id: 'ATT-2' } });
+  amendment.enter({ value: 24, worksheet: { id: 'ATT-2' }, reason: 'typo' });
+  assert.equal(
+    changeSummary(s, amendment.history),
+    'Impurity A (NIT-001 v1): Result 30 → 25 ng/day, Conformity statement Does not comply → Complies, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.); Result 25 → 24 ng/day (reason: "typo")',
   );
 });
