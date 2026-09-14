@@ -2199,22 +2199,29 @@ const verification = (lab: Laboratory) =>
 const invalidSignature =
   /Electronic signature .* is invalid\. Contact the Quality lead/;
 
-test('the database refuses changing or deleting signatures, audit entries, attachments, Certificates, publications and Acceptable intake entries', (t) => {
+test('the database refuses changing or deleting signatures, audit entries, attachments, Certificates, publications, Acceptable intake entries, applied commands and command replays', (t) => {
   const { lab, file } = onFile(t);
   const published = run(
     lab,
     publish(throughApproval(lab, run(lab, receipt, 'coordinator'))),
     'coordinator',
   );
+  const retried = { commandId: newCommandId(), ...receipt };
+  lab.execute(retried, 'coordinator');
+  assert.equal(lab.execute(retried, 'coordinator').outcome, 'replayed');
+  const db = new DatabaseSync(file);
+  t.after(() => db.close());
   const readRecords = () => ({
     snapshot: lab.snapshot(),
     auditTrail: lab.auditTrail(),
     certificate: lab.certificate(published.id, 1),
     worksheet: lab.readAttachment(worksheet(lab)),
+    commands: db.prepare('SELECT * FROM commands ORDER BY commandId').all(),
+    commandReplays: db
+      .prepare('SELECT * FROM commandReplays ORDER BY id')
+      .all(),
   });
   const before = readRecords();
-  const db = new DatabaseSync(file);
-  t.after(() => db.close());
   const protectedTables = [
     {
       table: 'signatures',
@@ -2246,6 +2253,16 @@ test('the database refuses changing or deleting signatures, audit entries, attac
       change: 'value=1000000',
       refusal: /Acceptable intake entries are append-only/,
     },
+    {
+      table: 'commands',
+      change: "actorId='manager', receivedAt='2020-01-01'",
+      refusal: /Applied commands cannot be (changed|deleted)/,
+    },
+    {
+      table: 'commandReplays',
+      change: "actorId='manager'",
+      refusal: /Command replays cannot be (changed|deleted)/,
+    },
   ];
   for (const { table, change, refusal } of protectedTables) {
     // A trigger fires per row, so an empty table would refuse nothing.
@@ -2264,7 +2281,93 @@ test('the database refuses changing or deleting signatures, audit entries, attac
       `DELETE FROM ${table}`,
     );
   }
+  assert.throws(
+    () =>
+      db.exec(`INSERT OR REPLACE INTO commandReplays (id, commandId, at, actorId)
+        SELECT id, commandId, at, 'manager' FROM commandReplays`),
+    /Command replays cannot be changed/,
+  );
+  // Every committed command recorded its subject, so none is left to fill in.
+  assert.deepEqual(
+    {
+      ...db
+        .prepare('SELECT count(*) AS count FROM commands WHERE subject IS NULL')
+        .get(),
+    },
+    { count: 0 },
+  );
   assert.deepEqual(readRecords(), before);
+});
+
+test('an applied command stays on the database file as applied, so a retry after tampering is still not applied twice', (t) => {
+  const { lab, file } = onFile(t);
+  const command = { commandId: newCommandId(), ...receipt };
+  assert.equal(lab.execute(command, 'coordinator').outcome, 'applied');
+  const db = new DatabaseSync(file);
+  t.after(() => db.close());
+  const stored = () =>
+    db.prepare('SELECT * FROM commands ORDER BY commandId').all();
+  const before = stored();
+
+  assert.throws(
+    () => db.exec('DELETE FROM commands'),
+    /Applied commands cannot be deleted/,
+  );
+  for (const change of [
+    "actorId='manager'",
+    "fingerprint=X'00'",
+    "receivedAt='2020-01-01'",
+    "commandType='assign'",
+    "commandId=X'00'",
+    `subject='{"submissionId":null,"sampleIds":[]}'`,
+  ])
+    assert.throws(
+      () => db.exec(`UPDATE commands SET ${change}`),
+      /Applied commands cannot be changed/,
+      change,
+    );
+  // A replacing insert deletes without firing delete triggers; it is ignored.
+  db.exec(`INSERT OR REPLACE INTO commands (commandId, actorId, commandType, fingerprint, receivedAt)
+    SELECT commandId, 'manager', commandType, fingerprint, '2020-01-01' FROM commands`);
+  assert.deepEqual(stored(), before);
+  assert.equal(lab.execute(command, 'coordinator').outcome, 'replayed');
+  assert.equal(lab.snapshot().submissions.length, 1, 'one Submission');
+});
+
+test("the database lets a command's subject be recorded once, and nothing else with it", (t) => {
+  const { lab, file } = onFile(t);
+  lab.execute({ commandId: newCommandId(), ...receipt }, 'coordinator');
+  const db = new DatabaseSync(file);
+  t.after(() => db.close());
+  // A command claimed but not yet committed, as `execute` leaves it before
+  // recording the subject.
+  db.exec(`INSERT INTO commands (commandId, actorId, commandType, fingerprint, receivedAt)
+    VALUES (X'01', 'coordinator', 'receiveSubmission', X'02', '${NOW}')`);
+  const subject = '{"submissionId":null,"sampleIds":[]}';
+
+  assert.throws(
+    () =>
+      db.exec(
+        `UPDATE commands SET subject='${subject}', actorId='manager' WHERE commandId=X'01'`,
+      ),
+    /Applied commands cannot be changed/,
+  );
+  db.exec(`UPDATE commands SET subject='${subject}' WHERE commandId=X'01'`);
+  assert.deepEqual(
+    {
+      ...db
+        .prepare("SELECT actorId, subject FROM commands WHERE commandId=X'01'")
+        .get(),
+    },
+    { actorId: 'coordinator', subject },
+  );
+  assert.throws(
+    () =>
+      db.exec(
+        `UPDATE commands SET subject='{"submissionId":"S-1","sampleIds":[]}' WHERE commandId=X'01'`,
+      ),
+    /Applied commands cannot be changed/,
+  );
 });
 
 test('each signing stores its Signed content: the Sample as saved and, for Approval, the Certificate issued', (t) => {

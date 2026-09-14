@@ -128,6 +128,32 @@ export type LaboratoryOptions = {
  * replay returns the same subjects. */
 type Subject = { submissionId: string | null; sampleIds: string[] };
 
+/**
+ * Keeps each applied command and command replay as recorded, since retry
+ * deduplication and replay attribution read them. Nothing deletes one: a
+ * rejected command releases its key by rolling back. The one update is
+ * `execute` recording a command's subject before COMMIT, once, with nothing
+ * else changed. A replacing insert deletes without firing delete triggers, so
+ * one over an existing command is ignored, which leaves the key claim's
+ * `ON CONFLICT DO NOTHING` as it was, and one over a replay is refused.
+ */
+export const commandProtection = `
+  CREATE TRIGGER IF NOT EXISTS commandsNoUpdate BEFORE UPDATE ON commands
+    WHEN NOT (OLD.subject IS NULL AND NEW.subject IS NOT NULL
+      AND NEW.commandId IS OLD.commandId AND NEW.actorId IS OLD.actorId
+      AND NEW.commandType IS OLD.commandType AND NEW.fingerprint IS OLD.fingerprint
+      AND NEW.receivedAt IS OLD.receivedAt)
+    BEGIN SELECT RAISE(ABORT, 'Applied commands cannot be changed.'); END;
+  CREATE TRIGGER IF NOT EXISTS commandsNoDelete BEFORE DELETE ON commands BEGIN SELECT RAISE(ABORT, 'Applied commands cannot be deleted.'); END;
+  CREATE TRIGGER IF NOT EXISTS commandsNoReplace BEFORE INSERT ON commands
+    WHEN EXISTS (SELECT 1 FROM commands WHERE commandId = NEW.commandId)
+    BEGIN SELECT RAISE(IGNORE); END;
+  CREATE TRIGGER IF NOT EXISTS commandReplaysNoUpdate BEFORE UPDATE ON commandReplays BEGIN SELECT RAISE(ABORT, 'Command replays cannot be changed.'); END;
+  CREATE TRIGGER IF NOT EXISTS commandReplaysNoDelete BEFORE DELETE ON commandReplays BEGIN SELECT RAISE(ABORT, 'Command replays cannot be deleted.'); END;
+  CREATE TRIGGER IF NOT EXISTS commandReplaysNoReplace BEFORE INSERT ON commandReplays
+    WHEN EXISTS (SELECT 1 FROM commandReplays WHERE id = NEW.id)
+    BEGIN SELECT RAISE(ABORT, 'Command replays cannot be changed.'); END;`;
+
 export class Laboratory {
   private db: DatabaseSync;
   private audit: AuditTrail;
@@ -154,7 +180,8 @@ export class Laboratory {
       CREATE TABLE IF NOT EXISTS samples (id TEXT PRIMARY KEY, document TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sequences (series TEXT NOT NULL, year INTEGER NOT NULL, value INTEGER NOT NULL, PRIMARY KEY (series, year)) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS commands (commandId BLOB PRIMARY KEY, actorId TEXT NOT NULL, commandType TEXT NOT NULL, fingerprint BLOB NOT NULL, receivedAt TEXT NOT NULL, subject TEXT) WITHOUT ROWID;
-      CREATE TABLE IF NOT EXISTS commandReplays (id INTEGER PRIMARY KEY, commandId BLOB NOT NULL REFERENCES commands(commandId), at TEXT NOT NULL, actorId TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS commandReplays (id INTEGER PRIMARY KEY, commandId BLOB NOT NULL REFERENCES commands(commandId), at TEXT NOT NULL, actorId TEXT NOT NULL);
+      ${commandProtection}`);
     this.acceptableIntakeStore = new AcceptableIntakeStore(this.db);
     this.certificateStore = new CertificateStore(this.db);
     this.signatureStore = new SignatureStore(this.db);

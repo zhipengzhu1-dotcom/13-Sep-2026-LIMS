@@ -27,7 +27,31 @@ export type Migration = {
 export const BASELINE_VERSION = 19;
 
 /** Benchline's migrations, oldest first. */
-export const migrations: readonly Migration[] = [];
+export const migrations: readonly Migration[] = [
+  {
+    version: 20,
+    change: 'Applied commands and command replays cannot be changed or deleted',
+    // Kept as applied, not read from the Laboratory, so a later change to its
+    // triggers cannot rewrite what this migration did.
+    apply: (db) =>
+      db.exec(`
+  CREATE TRIGGER IF NOT EXISTS commandsNoUpdate BEFORE UPDATE ON commands
+    WHEN NOT (OLD.subject IS NULL AND NEW.subject IS NOT NULL
+      AND NEW.commandId IS OLD.commandId AND NEW.actorId IS OLD.actorId
+      AND NEW.commandType IS OLD.commandType AND NEW.fingerprint IS OLD.fingerprint
+      AND NEW.receivedAt IS OLD.receivedAt)
+    BEGIN SELECT RAISE(ABORT, 'Applied commands cannot be changed.'); END;
+  CREATE TRIGGER IF NOT EXISTS commandsNoDelete BEFORE DELETE ON commands BEGIN SELECT RAISE(ABORT, 'Applied commands cannot be deleted.'); END;
+  CREATE TRIGGER IF NOT EXISTS commandsNoReplace BEFORE INSERT ON commands
+    WHEN EXISTS (SELECT 1 FROM commands WHERE commandId = NEW.commandId)
+    BEGIN SELECT RAISE(IGNORE); END;
+  CREATE TRIGGER IF NOT EXISTS commandReplaysNoUpdate BEFORE UPDATE ON commandReplays BEGIN SELECT RAISE(ABORT, 'Command replays cannot be changed.'); END;
+  CREATE TRIGGER IF NOT EXISTS commandReplaysNoDelete BEFORE DELETE ON commandReplays BEGIN SELECT RAISE(ABORT, 'Command replays cannot be deleted.'); END;
+  CREATE TRIGGER IF NOT EXISTS commandReplaysNoReplace BEFORE INSERT ON commandReplays
+    WHEN EXISTS (SELECT 1 FROM commandReplays WHERE id = NEW.id)
+    BEGIN SELECT RAISE(ABORT, 'Command replays cannot be changed.'); END;`),
+  },
+];
 
 function latestVersion(pending: readonly Migration[]) {
   return pending.at(-1)?.version ?? BASELINE_VERSION;

@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Laboratory } from '../src/laboratory/laboratory.ts';
 import { Accounts } from '../src/accounts/accounts.ts';
 import { demoAccounts } from '../src/accounts/demo-accounts.ts';
+import { newCommandId } from '../src/laboratory/contracts.ts';
 import { seed } from '../server/seed.ts';
 import {
   migrate,
@@ -179,14 +180,14 @@ test('a migration that loses records is refused and nothing is changed', (t) => 
     change: 'Withdrawn Samples are no longer kept',
     apply: (db) =>
       db.exec(`DELETE FROM samples WHERE id = (SELECT MIN(id) FROM samples);
-        DROP TABLE commandReplays;`),
+        DROP TABLE sequences;`),
   };
 
   assert.deepEqual(migrate(file, [tidy]), {
     outcome: 'refused',
     version: 19,
     reason:
-      'Migrating to version 20 would lose records: commandReplays (table removed), samples (1 row removed). Nothing was changed.',
+      'Migrating to version 20 would lose records: samples (1 row removed), sequences (table removed). Nothing was changed.',
   });
   assert.deepEqual(records(file), before);
 });
@@ -263,6 +264,115 @@ test('a migration that fails is refused and leaves the database as it was, earli
       'Tests record their controlled Method document',
     ],
   });
+});
+
+/** A version 19 database as the last build before migrations left it: its
+ * applied commands and command replays have no protection triggers. It holds
+ * the demo's records and one replayed command. */
+function databaseBeforeCommandProtection(t: TestContext) {
+  const file = seededDatabase(t);
+  const { lab, close } = open(file);
+  const retried = {
+    commandId: newCommandId(),
+    type: 'receiveSubmission',
+    clientId: 'northstar',
+    shippingCondition: 'ambient',
+    packageCondition: 'intact',
+    samples: [
+      {
+        product: 'Demo tablets 10 mg',
+        batch: 'B-001',
+        materialType: 'finished product',
+        quantity: { value: 60, unit: 'units' },
+        containers: { count: 2, type: 'bottle' },
+        conditionOnReceipt: 'Intact',
+        maximumDailyDose: 40,
+        methodIds: ['NIT-001-v1'],
+        dueDate: '2026-10-01',
+        priority: 'Routine',
+      },
+    ],
+  };
+  lab.execute(retried, 'coordinator');
+  assert.equal(lab.execute(retried, 'coordinator').outcome, 'replayed');
+  close();
+  const db = new DatabaseSync(file);
+  for (const { name } of db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name IN ('commands', 'commandReplays')",
+    )
+    .all() as { name: string }[])
+    db.exec(`DROP TRIGGER ${name}`);
+  db.close();
+  return file;
+}
+
+/** Applied commands and command replays, row for row. */
+function commandRecords(file: string) {
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    return {
+      commands: db.prepare('SELECT * FROM commands ORDER BY commandId').all(),
+      commandReplays: db
+        .prepare('SELECT * FROM commandReplays ORDER BY id')
+        .all(),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+test('migrating to version 20 keeps every applied command and command replay, and the database then refuses changing or deleting them', (t) => {
+  const file = databaseBeforeCommandProtection(t);
+  const before = records(file);
+  const commands = commandRecords(file);
+  assert.ok(commands.commands.length && commands.commandReplays.length);
+
+  const migration = migrate(file);
+  assert.equal(migration.outcome, 'migrated');
+  if (migration.outcome === 'migrated') {
+    assert.equal(migration.from, 19);
+    assert.equal(migration.to, 20);
+  }
+  assert.deepEqual(records(file), before);
+  assert.deepEqual(commandRecords(file), commands);
+
+  const db = new DatabaseSync(file);
+  t.after(() => db.close());
+  for (const [sql, refusal] of [
+    ...[
+      "actorId='manager'",
+      "fingerprint=X'00'",
+      "receivedAt='2020-01-01'",
+      "commandType='assign'",
+      "commandId=X'00'",
+      "subject='{}'",
+    ].map(
+      (change) =>
+        [
+          `UPDATE commands SET ${change}`,
+          /Applied commands cannot be changed/,
+        ] as const,
+    ),
+    ['DELETE FROM commands', /Applied commands cannot be deleted/],
+    [
+      "UPDATE commandReplays SET actorId='manager'",
+      /Command replays cannot be changed/,
+    ],
+    ['DELETE FROM commandReplays', /Command replays cannot be deleted/],
+  ] as const)
+    assert.throws(() => db.exec(sql), refusal, sql);
+  assert.deepEqual(commandRecords(file), commands);
+});
+
+test('a rehearsal of the Benchline migrations on a version 19 database passes', (t) => {
+  const source = databaseBeforeCommandProtection(t);
+  const rehearsal = rehearseMigration(
+    source,
+    join(folder(t), 'rehearsal.sqlite'),
+  );
+  assert.deepEqual(rehearsal.problems, []);
+  assert.equal(rehearsal.passed, true);
 });
 
 /** A version 19 database whose audit trail lacks its by-record index, its
