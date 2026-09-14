@@ -11,8 +11,17 @@ import {
 } from '../src/laboratory/contracts.ts';
 import { WorkflowError } from '../src/laboratory/workflow-error.ts';
 import {
+  concludeInvestigation,
+  enteredResultOn,
+  oosApprovalBlocker,
+  oosPublishBlocker,
+  oosRows,
+  openInvestigation,
+  recordClientNotification,
+  recordLabErrorCheck,
   recordResult,
   resultsView,
+  type Act,
   type RecordResultInput,
   type Refusal,
 } from '../src/laboratory/results.ts';
@@ -483,5 +492,578 @@ test('Result history lists every Result oldest first with its investigation', ()
   assert.throws(
     () => view.test('NIT-009-v1'),
     (e) => e instanceof WorkflowError && e.message === 'Test not found.',
+  );
+});
+
+// OOS investigation steps and blockers, driven through the real commands.
+
+const INVESTIGATION = 'OOS investigation OOS26-0001';
+const ID = 'OOS26-0001';
+const EARLIER = '2026-09-10T11:59:59.000Z';
+
+/** The writer a refusal test watches; commands otherwise get their own. */
+let watched: ReturnType<typeof recordingAudit> | null = null;
+
+/** Runs a command as `actor` with a recording writer; returns what it gave
+ * back and the entries it wrote. */
+function acted<T>(actor: string, command: (act: Act) => T) {
+  const audit = watched ?? recordingAudit();
+  const outcome = command({ actor, at: AT, audit });
+  return {
+    outcome,
+    changes: audit.entries.map((e) => [
+      `${e.recordType} ${e.recordId}`,
+      e.field,
+      e.oldValue,
+      e.newValue,
+      e.reason,
+    ]),
+  };
+}
+
+const open = (s: Sample, testId = 'NIT-001-v1', allocate = () => 1) =>
+  acted('manager', (act) => openInvestigation(s, { testId, allocate }, act));
+const check = (s: Sample, errorIdentified = true, investigationId = ID) =>
+  acted('analyst', (act) =>
+    recordLabErrorCheck(
+      s,
+      {
+        investigationId,
+        findings: 'Standard preparation log shows a dilution error.',
+        errorIdentified,
+      },
+      act,
+    ),
+  );
+const conclude = (
+  s: Sample,
+  outcome: 'Invalidated' | 'Confirmed',
+  assignableCause = '',
+  investigationId = ID,
+) =>
+  acted('manager', (act) =>
+    concludeInvestigation(
+      s,
+      { investigationId, outcome, assignableCause },
+      act,
+    ),
+  );
+const notify = (
+  s: Sample,
+  notifiedAt: () => string = () => AT,
+  investigationId = ID,
+) =>
+  acted('coordinator', (act) =>
+    recordClientNotification(
+      s,
+      { investigationId, contact: 'Priya Nair, QA (phone)', notifiedAt },
+      act,
+    ),
+  );
+
+type Stage =
+  | 'empty'
+  | 'complying'
+  | 'uninvestigated'
+  | 'open'
+  | 'checked'
+  | 'invalidated'
+  | 'retested'
+  | 'retested over its Limit'
+  | 'confirmed'
+  | 'notified';
+
+/** A one-Test Sample brought to a stage of its OOS investigation through the
+ * module's own commands. */
+function staged(stage: Stage): Sample {
+  const s = sampleOf();
+  if (stage === 'empty') return s;
+  if (stage === 'complying') {
+    record(s);
+    return s;
+  }
+  record(s, { value: 30 });
+  if (stage === 'uninvestigated') return s;
+  open(s);
+  if (stage === 'open') return s;
+  const invalidated = ['invalidated', 'retested', 'retested over its Limit'];
+  check(s, invalidated.includes(stage));
+  if (stage === 'checked') return s;
+  if (invalidated.includes(stage)) {
+    conclude(s, 'Invalidated', 'Standard diluted twice.');
+    if (stage === 'retested') record(s);
+    if (stage === 'retested over its Limit') record(s, { value: 31 });
+    return s;
+  }
+  conclude(s, 'Confirmed');
+  if (stage === 'notified') notify(s);
+  return s;
+}
+
+/** The handler's check of the notification time, which the module must ask
+ * only once its own rules pass. */
+const tooEarly = () => {
+  throw new Error('The notification time was asked before the rules.');
+};
+
+type RefusedStep = {
+  name: string;
+  stage: Stage;
+  command: (s: Sample, allocate: () => number) => unknown;
+  reason: string;
+  /** The question answering for the same rule, and the refusal it gives
+   * (null when the rule is checked on the command's input only). */
+  question?: (s: Sample) => Refusal | null;
+  refusal?: Refusal;
+};
+
+const notComplying =
+  'Only a current Result that does not comply with its Limit needs an OOS investigation.';
+
+const refusedSteps: RefusedStep[] = [
+  {
+    name: 'opening on a complying Result',
+    stage: 'complying',
+    command: (s, allocate) => open(s, 'NIT-001-v1', allocate),
+    reason: notComplying,
+  },
+  {
+    name: 'opening on a Test with no Result',
+    stage: 'empty',
+    command: (s, allocate) => open(s, 'NIT-001-v1', allocate),
+    reason: notComplying,
+  },
+  {
+    name: 'opening on an Invalidated result',
+    stage: 'invalidated',
+    command: (s, allocate) => open(s, 'NIT-001-v1', allocate),
+    reason: notComplying,
+  },
+  {
+    name: 'opening on an already investigated Result',
+    stage: 'confirmed',
+    command: (s, allocate) => open(s, 'NIT-001-v1', allocate),
+    reason: 'This Result already has OOS investigation OOS26-0001.',
+  },
+  {
+    name: 'opening on a Test the Sample does not have',
+    stage: 'uninvestigated',
+    command: (s, allocate) => open(s, 'NIT-009-v1', allocate),
+    reason: 'Test not found.',
+  },
+  {
+    name: 'a second Laboratory error check',
+    stage: 'checked',
+    command: (s) => check(s, false),
+    reason:
+      'The laboratory error check is already recorded for this investigation.',
+  },
+  {
+    name: 'a Laboratory error check on a closed investigation',
+    stage: 'confirmed',
+    command: (s) => check(s),
+    reason: 'OOS investigation OOS26-0001 is already closed.',
+  },
+  {
+    name: 'a Laboratory error check on an unknown investigation',
+    stage: 'open',
+    command: (s) => check(s, true, 'OOS26-0099'),
+    reason: 'OOS investigation not found.',
+  },
+  {
+    name: 'concluding before the Laboratory error check',
+    stage: 'open',
+    command: (s) => conclude(s, 'Confirmed'),
+    reason:
+      'The assigned analyst must record the laboratory error check before the investigation is concluded.',
+    question: (s) =>
+      resultsView(s).investigation(ID).concludeBlocker('Confirmed'),
+    refusal: {
+      code: 'check pending',
+      reason:
+        'The assigned analyst must record the laboratory error check before the investigation is concluded.',
+      investigationId: ID,
+    },
+  },
+  {
+    name: 'concluding a closed investigation',
+    stage: 'invalidated',
+    command: (s) => conclude(s, 'Invalidated', 'Late cause'),
+    reason: 'OOS investigation OOS26-0001 is already closed.',
+    question: (s) =>
+      resultsView(s).investigation(ID).concludeBlocker('Invalidated'),
+    refusal: {
+      code: 'investigation closed',
+      reason: 'OOS investigation OOS26-0001 is already closed.',
+      investigationId: ID,
+    },
+  },
+  {
+    name: 'concluding an unknown investigation',
+    stage: 'checked',
+    command: (s) => conclude(s, 'Confirmed', '', 'OOS26-0099'),
+    reason: 'OOS investigation not found.',
+  },
+  ...['', 'no'].map((cause): RefusedStep => ({
+    name: `invalidating with the assignable cause "${cause}"`,
+    stage: 'checked',
+    command: (s) => conclude(s, 'Invalidated', cause),
+    reason: 'Give the assignable cause for invalidating the Result.',
+    question: (s) =>
+      resultsView(s).investigation(ID).concludeBlocker('Invalidated'),
+  })),
+  {
+    name: 'confirming with an assignable cause',
+    stage: 'checked',
+    command: (s) => conclude(s, 'Confirmed', 'Some cause'),
+    reason:
+      'A confirmed OOS has no assignable cause. Choose Invalidated to record one.',
+    question: (s) =>
+      resultsView(s).investigation(ID).concludeBlocker('Confirmed'),
+  },
+  {
+    name: 'Client notification while the investigation is open',
+    stage: 'checked',
+    command: (s) => notify(s, tooEarly),
+    reason: 'Client notification is recorded only for a confirmed OOS.',
+  },
+  {
+    name: 'Client notification for an Invalidated OOS',
+    stage: 'invalidated',
+    command: (s) => notify(s, tooEarly),
+    reason: 'Client notification is recorded only for a confirmed OOS.',
+  },
+  {
+    name: 'a second Client notification',
+    stage: 'notified',
+    command: (s) => notify(s, tooEarly),
+    reason: 'The Client notification for OOS26-0001 is already recorded.',
+  },
+  {
+    name: 'a Client notification before the investigation was closed',
+    stage: 'confirmed',
+    command: (s) => notify(s, () => EARLIER),
+    reason:
+      'The Client cannot have been informed of a confirmed OOS before the investigation was concluded.',
+  },
+  {
+    name: 'a Client notification for an unknown investigation',
+    stage: 'confirmed',
+    command: (s) => notify(s, tooEarly, 'OOS26-0099'),
+    reason: 'OOS investigation not found.',
+  },
+];
+
+for (const c of refusedSteps)
+  test(`OOS investigation refuses ${c.name}, writing, allocating and changing nothing`, () => {
+    const s = staged(c.stage);
+    if (c.question) assert.deepEqual(c.question(s), c.refusal ?? null);
+    if (c.refusal) assert.equal(c.refusal.reason, c.reason);
+    let allocated = 0;
+    const before = structuredClone(s);
+    const audit = recordingAudit();
+    watched = audit;
+    try {
+      assert.throws(
+        () => c.command(s, () => ++allocated),
+        (e) => e instanceof WorkflowError && e.message === c.reason,
+      );
+    } finally {
+      watched = null;
+    }
+    assert.deepEqual(audit.entries, []);
+    assert.equal(allocated, 0, 'no investigation number consumed');
+    assert.deepEqual(s, before);
+  });
+
+test('openInvestigation on a current OOS Result links both ways and audits each field', () => {
+  const s = staged('uninvestigated');
+  let allocated = 0;
+  const { outcome: investigation, changes } = open(s, 'NIT-001-v1', () => {
+    allocated++;
+    return 12;
+  });
+  assert.equal(allocated, 1);
+  assert.deepEqual(investigation, {
+    id: 'OOS26-0012',
+    testId: 'NIT-001-v1',
+    resultSequence: 1,
+    status: 'Open',
+    openedBy: 'manager',
+    openedAt: AT,
+    labErrorCheck: null,
+    outcome: null,
+    assignableCause: null,
+    closedBy: null,
+    closedAt: null,
+    clientNotification: null,
+  });
+  const record = 'OOS investigation OOS26-0012';
+  assert.deepEqual(changes, [
+    [record, 'testId', null, 'NIT-001-v1', null],
+    [record, 'resultSequence', null, 1, null],
+    [record, 'status', null, 'Open', null],
+    [record, 'openedBy', null, 'manager', null],
+    [record, 'openedAt', null, AT, null],
+    [RECORD, 'result.investigationId', null, 'OOS26-0012', null],
+  ]);
+  const view = resultsView(s);
+  const opened = view.investigation('OOS26-0012');
+  assert.equal(opened.state, 'open');
+  assert.equal(opened.result.investigationId, 'OOS26-0012');
+  assert.equal(opened.test.id, 'NIT-001-v1');
+  assert.equal(view.test('NIT-001-v1').history[0].investigation, investigation);
+  assert.deepEqual(s.investigations, [investigation]);
+  assert.throws(
+    () => view.investigation('OOS26-0099'),
+    (e) =>
+      e instanceof WorkflowError &&
+      e.message === 'OOS investigation not found.',
+  );
+});
+
+test('recordLabErrorCheck audits the findings, the flag, who and when', () => {
+  const s = staged('open');
+  const { changes } = check(s);
+  assert.deepEqual(changes, [
+    [
+      INVESTIGATION,
+      'labErrorCheck.findings',
+      null,
+      'Standard preparation log shows a dilution error.',
+      null,
+    ],
+    [INVESTIGATION, 'labErrorCheck.errorIdentified', null, true, null],
+    [INVESTIGATION, 'labErrorCheck.by', null, 'analyst', null],
+    [INVESTIGATION, 'labErrorCheck.at', null, AT, null],
+  ]);
+  const view = resultsView(s).investigation(ID);
+  assert.equal(view.state, 'open', 'a check does not close the investigation');
+  assert.equal(view.concludeBlocker('Invalidated'), null);
+  assert.equal(view.concludeBlocker('Confirmed'), null);
+});
+
+test('concluding Invalidated keeps the Result on record, marked by its investigation, and requires a Retest', () => {
+  const s = staged('checked');
+  const cause = 'Standard diluted twice.';
+  const { changes } = conclude(s, 'Invalidated', cause);
+  assert.deepEqual(changes, [
+    [INVESTIGATION, 'outcome', null, 'Invalidated', null],
+    [INVESTIGATION, 'assignableCause', null, cause, null],
+    [INVESTIGATION, 'status', 'Open', 'Closed', null],
+    [INVESTIGATION, 'closedBy', null, 'manager', null],
+    [INVESTIGATION, 'closedAt', null, AT, null],
+    [RECORD, 'result.status', 'current', 'invalidated', cause],
+  ]);
+  const view = resultsView(s);
+  assert.equal(view.investigation(ID).state, 'invalidated');
+  const t = view.test('NIT-001-v1');
+  assert.equal(t.current, undefined);
+  assert.equal(t.retestRequired, true);
+  assert.deepEqual(
+    t.history.map((h) => [
+      h.result.status,
+      h.result.value,
+      h.investigation?.id,
+      h.investigation?.assignableCause,
+    ]),
+    [['invalidated', 30, ID, cause]],
+  );
+});
+
+test('concluding Confirmed writes no assignable cause and leaves the Result current', () => {
+  const s = staged('checked');
+  const { changes } = conclude(s, 'Confirmed');
+  assert.deepEqual(changes, [
+    [INVESTIGATION, 'outcome', null, 'Confirmed', null],
+    [INVESTIGATION, 'status', 'Open', 'Closed', null],
+    [INVESTIGATION, 'closedBy', null, 'manager', null],
+    [INVESTIGATION, 'closedAt', null, AT, null],
+  ]);
+  const view = resultsView(s);
+  assert.equal(view.investigation(ID).state, 'confirmed');
+  assert.equal(view.test('NIT-001-v1').current?.investigationId, ID);
+  assert.equal(view.test('NIT-001-v1').retestRequired, false);
+});
+
+test('recordClientNotification audits the contact and time, and stores who recorded it', () => {
+  const s = staged('confirmed');
+  let asked = 0;
+  const { changes } = notify(s, () => {
+    asked++;
+    return AT;
+  });
+  assert.equal(asked, 1);
+  assert.deepEqual(changes, [
+    [
+      INVESTIGATION,
+      'clientNotification.contact',
+      null,
+      'Priya Nair, QA (phone)',
+      null,
+    ],
+    [INVESTIGATION, 'clientNotification.notifiedAt', null, AT, null],
+  ]);
+  assert.deepEqual(s.investigations[0].clientNotification, {
+    contact: 'Priya Nair, QA (phone)',
+    notifiedAt: AT,
+    recordedBy: 'coordinator',
+    recordedAt: AT,
+  });
+});
+
+const uninvestigatedBlocker: Refusal = {
+  code: 'OOS uninvestigated',
+  reason:
+    'The Impurity A (NIT-001) Result does not comply with its Limit. An OOS investigation must be opened and closed before Approval.',
+  investigationId: null,
+};
+const openBlocker: Refusal = {
+  code: 'investigation open',
+  reason:
+    'OOS investigation OOS26-0001 is open. Approval waits until it is closed.',
+  investigationId: ID,
+};
+
+const approvalBlockers: [Stage, Refusal | null][] = [
+  ['empty', null],
+  ['complying', null],
+  ['uninvestigated', uninvestigatedBlocker],
+  ['open', openBlocker],
+  ['checked', openBlocker],
+  [
+    'invalidated',
+    {
+      code: 'retest required',
+      reason:
+        'A retest Result is required on Impurity A (NIT-001) before Approval.',
+      investigationId: ID,
+    },
+  ],
+  ['retested', null],
+  ['retested over its Limit', uninvestigatedBlocker],
+  ['confirmed', null],
+  ['notified', null],
+];
+
+for (const [stage, blocker] of approvalBlockers)
+  test(`the Approval blocker for a Sample ${stage}`, () => {
+    const s = staged(stage);
+    assert.deepEqual(resultsView(s).approvalBlocker, blocker);
+    assert.equal(oosApprovalBlocker(s), blocker?.reason ?? null);
+  });
+
+const publishBlockers: [Stage, Refusal | null][] = [
+  ['uninvestigated', null],
+  ['open', null],
+  ['invalidated', null],
+  ['retested', null],
+  [
+    'confirmed',
+    {
+      code: 'notification pending',
+      reason:
+        'OOS investigation OOS26-0001 confirmed an OOS. Record that the Client was informed before publishing.',
+      investigationId: ID,
+    },
+  ],
+  ['notified', null],
+];
+
+for (const [stage, blocker] of publishBlockers)
+  test(`the Publish blocker for a Sample ${stage}`, () => {
+    const s = staged(stage);
+    assert.deepEqual(resultsView(s).publishBlocker, blocker);
+    assert.equal(oosPublishBlocker(s), blocker?.reason ?? null);
+  });
+
+const retests: [Stage, boolean, { id: string; outcome: string }[]][] = [
+  ['empty', false, []],
+  ['complying', false, []],
+  ['uninvestigated', false, []],
+  ['open', false, []],
+  ['invalidated', true, [{ id: ID, outcome: 'Invalidated' }]],
+  ['retested', false, [{ id: ID, outcome: 'Invalidated' }]],
+  ['confirmed', false, [{ id: ID, outcome: 'Confirmed' }]],
+];
+
+for (const [stage, required, entries] of retests)
+  test(`retest required and Certificate investigations for a Sample ${stage}`, () => {
+    const t = resultsView(staged(stage)).test('NIT-001-v1');
+    assert.equal(t.retestRequired, required);
+    assert.deepEqual(t.certificateInvestigations, entries);
+  });
+
+test('Bench work lists who entered, corrected or retested each Result, of every status', () => {
+  const s = sampleOf();
+  const as = (actor: string, fields: Partial<RecordResultInput>) =>
+    recordResult(s, input(fields), { actor, at: AT, audit: recordingAudit() });
+  as('analyst', {});
+  as('analyst-2', { value: 3, reason: 'Re-integrated' });
+  as('analyst-2', { value: 30, reason: 'Dilution factor' });
+  open(s);
+  check(s);
+  conclude(s, 'Invalidated', 'Standard diluted twice.');
+  as('admin', { value: 2.5 });
+  const testId = 'NIT-001-v1';
+  assert.deepEqual(resultsView(s).benchWork, [
+    { person: 'analyst', act: 'entered', testId, resultSequence: 1 },
+    { person: 'analyst-2', act: 'corrected', testId, resultSequence: 2 },
+    { person: 'analyst-2', act: 'corrected', testId, resultSequence: 3 },
+    { person: 'admin', act: 'retested', testId, resultSequence: 4 },
+  ]);
+  for (const [person, did] of [
+    ['analyst', true],
+    ['analyst-2', true],
+    ['admin', true],
+    ['manager', false],
+    ['coordinator', false],
+  ] as const)
+    assert.equal(enteredResultOn(s, person), did, person);
+});
+
+test('OOS rows list investigations and uninvestigated OOS Results, those needing action first', () => {
+  const dated = (s: Sample, id: string, day: string) => {
+    s.id = id;
+    const at = `2026-09-${day}T00:00:00.000Z`;
+    for (const i of s.investigations) i.openedAt = at;
+    for (const t of s.tests) for (const r of t.results) r.enteredAt = at;
+    return s;
+  };
+  const closed = dated(staged('confirmed'), '26-00001', '01');
+  const opened = dated(staged('open'), '26-00002', '03');
+  const required = dated(staged('uninvestigated'), '26-00003', '05');
+  const olderOpen = dated(staged('checked'), '26-00004', '02');
+  const none = dated(staged('complying'), '26-00005', '01');
+  assert.deepEqual(
+    oosRows([closed, opened, required, olderOpen, none]).map((r) => [
+      r.sample.id,
+      r.investigation?.status,
+    ]),
+    [
+      ['26-00003', undefined],
+      ['26-00004', 'Open'],
+      ['26-00002', 'Open'],
+      ['26-00001', 'Closed'],
+    ],
+  );
+  assert.deepEqual(resultsView(opened).oosRows, oosRows([opened]));
+  assert.deepEqual(resultsView(none).oosRows, []);
+  assert.deepEqual(
+    resultsView(staged('retested')).oosRows.map((r) => [
+      r.result.sequence,
+      r.investigation?.outcome,
+    ]),
+    [[1, 'Invalidated']],
+    'a complying Retest is not listed; its Invalidated result stays',
+  );
+});
+
+test('an investigation whose Result cannot be found is a programming error, not a refusal', () => {
+  const s = staged('open');
+  s.investigations[0].resultSequence = 9;
+  assert.throws(
+    () => resultsView(s).investigation(ID),
+    (e) => e instanceof Error && !(e instanceof WorkflowError),
   );
 });

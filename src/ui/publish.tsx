@@ -2,10 +2,10 @@ import { useState } from 'react';
 import { type Certificate } from '../laboratory/certificate';
 import {
   issueChannels,
-  oosPublishBlocker,
   type Snapshot,
   type Sample,
 } from '../laboratory/contracts';
+import { resultsView } from '../laboratory/results';
 import { localDateTime } from './receiving';
 import { type Execute } from './shared';
 
@@ -33,7 +33,7 @@ export function PublishForm({
   const [channel, setChannel] =
     useState<(typeof issueChannels)[number]>('email');
   // The OOS gate, as the core enforces it.
-  const blocker = oosPublishBlocker(s);
+  const blocker = resultsView(s).publishBlocker?.reason ?? null;
   const version = data.certificates
     .filter((c) => c.sampleId === s.id)
     .at(-1)?.version;

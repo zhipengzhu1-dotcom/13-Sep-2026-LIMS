@@ -1,5 +1,5 @@
 import { decisionRule, type ConformityStatement } from './limits.ts';
-import type { OosOutcome } from './investigations.ts';
+import { resultsView, type OosOutcome } from './results.ts';
 import {
   isFinishedProduct,
   stabilityConditionLabels,
@@ -240,8 +240,8 @@ export function certificateContent({
         instructedAt: d.instruction.instructedAt,
       },
     })),
-    results: sample.tests.map((test): CertificateResult => {
-      const r = test.results.find((x) => x.status === 'current');
+    results: resultsView(sample).tests.map((view): CertificateResult => {
+      const { test, current: r } = view;
       if (!r)
         throw new Error(`Test ${test.id} has no current Result to certify.`);
       return {
@@ -266,11 +266,7 @@ export function certificateContent({
           illustrative: r.limit.illustrative,
         },
         conformity: r.conformity,
-        investigations: sample.investigations.flatMap((i) =>
-          i.testId === test.id && i.status === 'Closed' && i.outcome
-            ? [{ id: i.id, outcome: i.outcome }]
-            : [],
-        ),
+        investigations: view.certificateInvestigations,
       };
     }),
     decisionRule: finished ? decisionRule : rawMaterialDecisionRule,
