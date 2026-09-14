@@ -20,6 +20,8 @@ export type Authentication = {
   accounts: Accounts;
   sessions: Sessions;
   mode: Mode;
+  /** The running version, shown in the workspace (see `runningVersion`). */
+  version: string;
 };
 
 /** Ends idle sessions, recording each expiry as an Access event. */
@@ -35,7 +37,7 @@ export function expireSessions(lab: Laboratory, sessions: Sessions) {
 
 export function api(
   lab: Laboratory,
-  { accounts, sessions, mode }: Authentication,
+  { accounts, sessions, mode, version }: Authentication,
 ) {
   const secure = mode === 'production';
   return async (req: IncomingMessage, res: ServerResponse) => {
@@ -121,7 +123,7 @@ export function api(
       };
 
       // Public, so the sign-in screen lists demo accounts only in the demo.
-      if (route === 'GET /api/instance') return send(200, { mode });
+      if (route === 'GET /api/instance') return send(200, { mode, version });
       if (route === 'GET /api/session')
         return send(200, { user: currentUser() });
       // The Admin's account screen, before Go-live only (ADR-0011); in

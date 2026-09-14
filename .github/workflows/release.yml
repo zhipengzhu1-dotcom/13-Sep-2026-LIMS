@@ -1,0 +1,93 @@
+# The automated test record of a release: on a release tag, runs `npm run
+# check` on the tagged commit and keeps the full log, with its SHA-256, as a
+# workflow artifact and, when the check passes, on the tag's GitHub Release.
+# See docs/releases.md. It tests only: it deploys nothing and holds no secrets.
+name: Release test record
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  test-record:
+    runs-on: ubuntu-24.04
+    steps:
+      # No git credentials stay behind, so nothing npm ci installs can move a
+      # tag; only the Release step below is given the token.
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Run npm run check on the tagged commit and log it
+        id: check
+        shell: bash
+        run: |
+          # A tag with a slash is refused below, but still names its log.
+          log="benchline-${GITHUB_REF_NAME//\//-}-test-log-run$GITHUB_RUN_ID-attempt$GITHUB_RUN_ATTEMPT.txt"
+          echo "log=$log" >> "$GITHUB_OUTPUT"
+          utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+          {
+            echo "Benchline automated test record"
+            echo "Tag: $GITHUB_REF_NAME"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (attempt $GITHUB_RUN_ATTEMPT)"
+            echo "Started by: $GITHUB_ACTOR"
+            echo "Runner: ${ImageOS:-unknown image} ${ImageVersion:-}, $(uname -srm)"
+            echo "Node: $(node --version), npm: $(npm --version)"
+            echo "Started (UTC): $(utc)"
+          } | tee "$log"
+          # Every step's output goes into the log, and the first failing step
+          # ends the run with its status.
+          step() {
+            echo; echo "\$ $*"
+            "$@"
+          }
+          set +e
+          {
+            step npm ci &&
+            step npm run release-tag -- "$GITHUB_REF_NAME" &&
+            step npm run check
+          } 2>&1 | tee -a "$log"
+          status=${PIPESTATUS[0]}
+          set -e
+          {
+            echo
+            echo "Finished (UTC): $(utc)"
+            echo "Exit status: $status"
+          } | tee -a "$log"
+          sha256sum "$log" > "$log.sha256"
+          cat "$log.sha256"
+          exit "$status"
+
+      - name: Keep the log as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchline-${{ github.ref_name }}-test-log-attempt${{ github.run_attempt }}
+          path: benchline-*-test-log-*.txt*
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Attach the log to the tag's GitHub Release
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOG: ${{ steps.check.outputs.log }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            prerelease=()
+            [[ "$GITHUB_REF_NAME" == *-rc* ]] && prerelease=(--prerelease)
+            gh release create "$GITHUB_REF_NAME" --verify-tag "${prerelease[@]}" \
+              --title "Benchline $GITHUB_REF_NAME" \
+              --notes "Automated test record attached. Not validation on its own: see docs/releases.md."
+          fi
+          # A rerun adds its own log beside the earlier ones; none is replaced.
+          gh release upload "$GITHUB_REF_NAME" "$LOG" "$LOG.sha256"

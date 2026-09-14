@@ -70,10 +70,15 @@ export function App() {
   const [user, setUser] = useState<SessionUser | null | undefined>(undefined);
   const [signInMessage, setSignInMessage] = useState('');
   const [mode, setMode] = useState<InstanceMode>(null);
+  // The running version with its commit, so users can tell which build runs.
+  const [version, setVersion] = useState('');
   useEffect(() => {
     fetch('/api/instance')
       .then(async (response) => {
-        if (response.ok) setMode((await response.json()).mode);
+        if (!response.ok) return;
+        const instance = await response.json();
+        setMode(instance.mode);
+        setVersion(instance.version);
       })
       .catch(() => {});
   }, []);
@@ -890,6 +895,13 @@ export function App() {
                 Fictional data. Not validated for regulated laboratory records.
               </span>
             </>
+          )}
+          {version && (
+            // The commit is shortened to 12 characters to fit; the start-up
+            // log keeps it in full for the deployment record.
+            <span>
+              Version {version.replace(/\b([0-9a-f]{12})[0-9a-f]{28}\b/, '$1')}
+            </span>
           )}
           <span className="spacer" />
           {isQueue && data && (

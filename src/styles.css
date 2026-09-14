@@ -1470,6 +1470,12 @@ body.resizing {
 .statusbar .spacer {
   flex: 1;
 }
+/* Keyboard hints give way first when the bar is full; the version, mode and
+ * counts stay whole. */
+.statusbar .hints {
+  min-width: 0;
+  overflow: hidden;
+}
 .demo {
   font-weight: 700;
   color: var(--returned);

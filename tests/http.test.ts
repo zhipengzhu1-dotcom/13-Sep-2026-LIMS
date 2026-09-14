@@ -52,7 +52,12 @@ async function serve(t: TestContext, mode: Mode = 'demo') {
     people: () => accounts.people(),
   });
   const server = createServer(
-    api(lab, { accounts, sessions: new Sessions(() => clock.now), mode }),
+    api(lab, {
+      accounts,
+      sessions: new Sessions(() => clock.now),
+      mode,
+      version: '1.0.0-rc1',
+    }),
   );
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
@@ -585,6 +590,7 @@ test('in production the Accounts screen is refused, even to the Admin, and the s
   const { url, post, signIn } = await serve(t, 'production');
   assert.deepEqual(await (await fetch(url + '/api/instance')).json(), {
     mode: 'production',
+    version: '1.0.0-rc1',
   });
   const signedIn = await post('/api/sign-in', {
     username: 'admin',
@@ -630,6 +636,7 @@ test('the demo reports its mode and keeps a session cookie without Secure', asyn
   const { url, post } = await serve(t);
   assert.deepEqual(await (await fetch(url + '/api/instance')).json(), {
     mode: 'demo',
+    version: '1.0.0-rc1',
   });
   const signedIn = await post('/api/sign-in', {
     username: 'admin',

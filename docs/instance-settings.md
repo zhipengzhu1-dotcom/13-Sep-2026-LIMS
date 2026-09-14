@@ -39,5 +39,5 @@ A failed check exits with an error after it is recorded. Where backups are kept,
 ## Installation checks
 
 - Benchline listens only on 127.0.0.1. The reverse proxy terminates TLS and passes on the `Host` header, since same-origin writes are checked against `https://<Host>`.
-- The printed settings match the approved release record.
+- The printed version is the approved release's version and commit, without `not the release` (see `docs/releases.md`), and the printed settings match the approved release record.
 - A test lockout notice reaches both the System administrator and the Quality lead.

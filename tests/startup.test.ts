@@ -33,12 +33,13 @@ const lockoutNotice = {
   qualityLead: 'quality@lab.example',
 };
 
-test('the effective settings are printed at start-up for the installation record, never the mail password', () => {
+test('the release version and effective settings are printed at start-up for the installation record, never the mail password', () => {
   const ready = readSettings(production);
   assert.equal(ready.outcome, 'ready');
   assert.equal(
-    describeSettings(ready.settings),
+    describeSettings(ready.settings, '1.0.0-rc1'),
     [
+      'Version: 1.0.0-rc1',
       'Mode: production',
       'Database: /srv/benchline/production.sqlite',
       'Port: 5173 (127.0.0.1 only)',
@@ -48,8 +49,9 @@ test('the effective settings are printed at start-up for the installation record
   const demo = readSettings({ BENCHLINE_MODE: 'demo' });
   assert.equal(demo.outcome, 'ready');
   assert.equal(
-    describeSettings(demo.settings),
+    describeSettings(demo.settings, '1.0.0'),
     [
+      'Version: 1.0.0',
       'Mode: demo',
       'Database: data/prototype.sqlite',
       'Port: 5173 (127.0.0.1 only)',

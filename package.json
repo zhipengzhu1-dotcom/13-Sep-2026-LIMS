@@ -13,6 +13,7 @@
     "unlock": "tsx server/unlock.ts",
     "system-administrator": "tsx server/system-administrator.ts",
     "rehearse-migration": "tsx server/rehearse-migration.ts",
+    "release-tag": "tsx server/release-tag.ts",
     "test": "tsx --test tests/*.test.ts",
     "check": "npm run build && npm test",
     "format": "prettier --write src server tests docs *.md *.json *.ts index.html",

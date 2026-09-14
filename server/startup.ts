@@ -250,10 +250,12 @@ function demoAccountsIn(file: string): string[] {
   }
 }
 
-/** The effective settings, printed at start-up so the installation record
- * can show them. The SMTP URL is printed without its user and password. */
-export function describeSettings(settings: Settings): string {
+/** The running version and effective settings, printed at start-up so the
+ * installation record can show them. The SMTP URL is printed without its user
+ * and password. */
+export function describeSettings(settings: Settings, version: string): string {
   const lines = [
+    `Version: ${version}`,
     `Mode: ${settings.mode}`,
     `Database: ${settings.database}`,
     `Port: ${settings.port} (127.0.0.1 only)`,

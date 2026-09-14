@@ -4,6 +4,7 @@ import { resolve, extname, sep } from 'node:path';
 import { api, expireSessions } from './http.ts';
 import { Sessions } from './sessions.ts';
 import { describeSettings, openInstance, readSettings } from './startup.ts';
+import { currentCheckout, packageVersion, runningVersion } from './release.ts';
 
 /** A refused start is written to standard error, which the service manager
  * on the lab server keeps in its log. */
@@ -18,7 +19,8 @@ const { settings } = read;
 const instance = openInstance(settings);
 if (instance.outcome === 'refused') refuse(instance.reason);
 const { lab, accounts, migration, close } = instance;
-console.log(describeSettings(settings));
+const version = runningVersion(packageVersion(), currentCheckout());
+console.log(describeSettings(settings, version));
 if (migration.outcome === 'created')
   console.log(`Created a new, empty database at ${settings.database}`);
 if (migration.outcome === 'migrated')
@@ -26,7 +28,12 @@ if (migration.outcome === 'migrated')
     `Database migrated from schema version ${migration.from} to ${migration.to}: ${migration.applied.join('; ')}`,
   );
 const sessions = new Sessions();
-const handleApi = api(lab, { accounts, sessions, mode: settings.mode });
+const handleApi = api(lab, {
+  accounts,
+  sessions,
+  mode: settings.mode,
+  version,
+});
 // An abandoned session is recorded as expired soon after it expires, not only
 // when the next request arrives.
 const sweep = setInterval(() => expireSessions(lab, sessions), 60_000);
