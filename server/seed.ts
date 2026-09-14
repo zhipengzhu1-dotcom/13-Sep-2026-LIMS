@@ -510,6 +510,7 @@ export function seed(lab: Laboratory) {
             investigationId,
             outcome: 'Confirmed',
             assignableCause: '',
+            causationConfirmed: false,
           },
           'manager',
         );
