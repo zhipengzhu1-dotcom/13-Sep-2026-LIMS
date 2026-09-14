@@ -13,8 +13,17 @@ import type { OosInvestigation } from './investigations.ts';
 
 /** Lab users as the workspace shows them. Sign-in accounts (with password
  * hashes, server side only) are seeded from this list in src/accounts. */
-export const roles = ['coordinator', 'analyst', 'manager'] as const;
+export const roles = ['coordinator', 'analyst', 'manager', 'admin'] as const;
 export type Role = (typeof roles)[number];
+/**
+ * The one place a role grants permission. An Admin acts in every role
+ * (ADR-0004), still as themselves: their own account on the audit trail,
+ * their own password and name on a signature, and bound by separation of
+ * duties like anyone else. The core and the workspace both ask this.
+ */
+export function actsAs(person: { role: string } | undefined, role: Role) {
+  return person?.role === role || person?.role === 'admin';
+}
 /** A lab user as the core and the workspace know them. */
 export type Person = {
   readonly id: string;
@@ -26,6 +35,7 @@ export const people = [
   { id: 'analyst', name: 'Alex Chen', role: 'analyst' },
   { id: 'analyst-2', name: 'Sam Rivera', role: 'analyst' },
   { id: 'manager', name: 'Taylor Brooks', role: 'manager' },
+  { id: 'admin', name: 'Jordan Park', role: 'admin' },
 ] as const satisfies readonly Person[];
 export type Actor = Person;
 

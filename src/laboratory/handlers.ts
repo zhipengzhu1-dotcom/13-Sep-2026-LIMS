@@ -1,4 +1,5 @@
 import {
+  actsAs,
   analytes,
   clients,
   conformity,
@@ -454,7 +455,7 @@ export const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
         'Return the Sample before changing its assignment.',
       );
     const analyst = people.find(
-      (p) => p.id === command.assignee && p.role === 'analyst',
+      (p) => p.id === command.assignee && actsAs(p, 'analyst'),
     );
     if (!analyst) throw new WorkflowError('Select an analyst.');
     if (sample.assignee === analyst.id)

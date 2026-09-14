@@ -89,6 +89,10 @@ _Avoid_: Receiver, sample custodian
 The person who gives Approval or returns a Sample to its Analyst with a comment; never for Results they entered themselves.
 _Avoid_: Reviewer, approver, QA
 
+**Admin**:
+The person who may act in every role — as Coordinator, Analyst (when a Sample is assigned to them) and Manager — for a lab too small to staff each role separately; every act is still their own, signed with their own password, and they never give Approval to a Sample on which they entered, corrected or retested a Result.
+_Avoid_: Super admin, superuser, root
+
 **Approval**:
 Management's single electronically signed sign-off that a Sample's Results are correct and may be published; there is no separate peer review step.
 _Avoid_: Review, release, sign-off

@@ -8,8 +8,21 @@ import { closed, type View } from './shared';
  * only ever acts on Samples awaiting approval. No one can act outside their
  * queue (the server enforces this — see `requireRole` and
  * `requireAssignedAnalyst` in handlers.ts), so there is no reason to show
- * them a queue they cannot use. */
+ * them a queue they cannot use. An Admin acts in every role (ADR-0004), so
+ * sees every view. */
 export function viewsForRole(role: string | undefined): View[] {
+  if (role === 'admin')
+    return [
+      'Receiving',
+      'Holds',
+      'Samples',
+      'Publish queue',
+      'My work',
+      'Approval queue',
+      'OOS investigations',
+      'Methods',
+      'Audit trail',
+    ];
   if (role === 'analyst') return ['My work', 'Methods', 'Audit trail'];
   if (role === 'manager')
     return ['Approval queue', 'OOS investigations', 'Methods', 'Audit trail'];

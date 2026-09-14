@@ -629,3 +629,74 @@ test("an approved Sample's Certificate is retrieved by signed-in users", async (
   // No route replaces or adds a Certificate.
   assert.equal((await post(`${path}/1`, {}, manager)).status, 404);
 });
+
+test('an Admin signs in and acts in every role over HTTP, as themselves and within separation of duties', async (t) => {
+  const { lab, url, post, signIn, upload } = await serve(t);
+  const response = await post('/api/sign-in', {
+    username: 'admin',
+    password: 'admin-demo',
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).user, {
+    id: 'admin',
+    name: 'Jordan Park',
+    role: 'admin',
+  });
+  const admin = await signIn('admin', 'admin-demo');
+
+  const received = await post('/api/commands', receipt(), admin);
+  assert.equal(received.status, 200);
+  let sample = (await received.json()).samples[0];
+  assert.equal(sample.receivedBy, 'admin');
+  const act = async (command: object, status = 200) => {
+    const r = await post(
+      '/api/commands',
+      {
+        commandId: newCommandId(),
+        sampleId: sample.id,
+        revision: sample.revision,
+        ...command,
+      },
+      admin,
+    );
+    const body = await r.json();
+    assert.equal(r.status, status, JSON.stringify(body));
+    if (r.status === 200) sample = body.samples[0];
+    return body;
+  };
+  await act({ type: 'assign', assignee: 'admin' });
+  const stored = await upload(
+    'sheet.csv',
+    'text/csv',
+    Buffer.from('a,b\n1,2\n'),
+    admin,
+  );
+  assert.equal(stored.status, 201);
+  const { attachment } = await stored.json();
+  await act({
+    type: 'enterResult',
+    testId: 'NIT-001-v1',
+    value: 0.02,
+    instrumentReading: 0.2,
+    sequenceId: 'SEQ-0001',
+    attachmentId: attachment.id,
+    reason: '',
+  });
+  const wrong = await act(
+    { type: 'submitForApproval', password: 'coordinator-demo' },
+    403,
+  );
+  assert.match(wrong.error, /password is incorrect/);
+  await act({ type: 'submitForApproval', password: 'admin-demo' });
+  assert.equal(sample.status, 'Awaiting approval');
+  const refused = await act({ type: 'approve', password: 'admin-demo' }, 403);
+  assert.match(refused.error, /cannot approve a Sample on which they entered/);
+  assert.equal(lab.snapshot().samples[0].status, 'Awaiting approval');
+
+  const workspace = await (
+    await fetch(url + '/api/workspace', { headers: admin })
+  ).json();
+  assert.ok(
+    workspace.audit.every((e: { actor: string }) => e.actor === 'admin'),
+  );
+});

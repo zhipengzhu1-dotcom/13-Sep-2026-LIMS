@@ -3652,3 +3652,140 @@ test('a Manager never approves a Sample on which they entered or corrected a Res
     ],
   );
 });
+
+test('an Admin acts in every role as themselves, and is refused Approval of a Sample on which they entered a Result', (t) => {
+  const lab = memory(t);
+  const trailOf = (s: Sample) =>
+    lab.snapshot().audit.filter((e) => e.sampleId === s.id);
+
+  // As Coordinator: receipt, a Receipt deviation and the Client's instruction.
+  let s = run(lab, receipt, 'admin');
+  assert.equal(s.receivedBy, 'admin');
+  s = run(
+    lab,
+    { type: 'recordReceiptDeviation', ...target(s), ...deviation },
+    'admin',
+  );
+  assert.equal(s.status, 'On hold');
+  s = run(lab, instruction(s, 'proceed'), 'admin');
+  assert.equal(s.status, 'Received');
+
+  // An Admin can be assigned as the Analyst, and then enters the Results.
+  s = run(lab, { type: 'assign', ...target(s), assignee: 'admin' }, 'admin');
+  assert.equal(s.assignee, 'admin');
+  const sheet = lab.storeAttachment(
+    {
+      filename: 'admin-sheet.csv',
+      contentType: 'text/csv',
+      content: Buffer.from('reading,result\n1.25,2.5\n'),
+    },
+    'admin',
+  );
+  assert.equal(sheet.uploadedBy, 'admin');
+  for (const x of s.tests)
+    s = run(lab, { ...result(s, x.id, 2.5), attachmentId: sheet.id }, 'admin');
+  assert.ok(s.tests.every((x) => currentResult(x)?.enteredBy === 'admin'));
+
+  // Signing needs the Admin's own password, not anyone else's.
+  const submit = { type: 'submitForApproval', ...target(s) };
+  assert.throws(
+    () => run(lab, { ...submit, password: 'manager-demo' }, 'admin'),
+    /password is incorrect/,
+  );
+  s = run(lab, submit, 'admin');
+  assert.equal(s.status, 'Awaiting approval');
+
+  // Separation of duties (ADR-0003, ADR-0004) binds the Admin too.
+  const before = lab.snapshot();
+  assert.throws(
+    () => run(lab, { type: 'approve', ...target(s) }, 'admin'),
+    (e: Error & { status: number }) =>
+      e.status === 403 &&
+      /cannot approve a Sample on which they entered or corrected a Result/.test(
+        e.message,
+      ),
+  );
+  assert.deepEqual(lab.snapshot(), before, 'nothing applied or audited');
+
+  // As Manager: return; then a Manager who entered nothing approves.
+  s = run(lab, { type: 'return', ...target(s), comment: 'Recheck' }, 'admin');
+  assert.equal(s.status, 'Returned');
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'admin');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  // As Coordinator again: Publish, then start an Amendment.
+  s = run(lab, publish(s), 'admin');
+  assert.equal(s.status, 'Published');
+  assert.equal(lab.certificate(s.id).publication?.publishedBy, 'admin');
+  s = run(lab, startAmendment(s), 'admin');
+  assert.equal(s.status, 'Amendment in progress');
+  assert.deepEqual(
+    lab
+      .certificate(s.id)
+      .content.signatures.map((x) => [x.meaning, x.signerId, x.printedName]),
+    [
+      ['performed by', 'admin', 'Jordan Park'],
+      ['approved by', 'manager', 'Taylor Brooks'],
+    ],
+  );
+  assert.ok(
+    trailOf(s)
+      .filter((e) => e.commandType !== 'approve')
+      .every((e) => e.actor === 'admin'),
+    'every act is attributed to the Admin’s own account',
+  );
+
+  // An OOS Sample tested by an Analyst: the Admin investigates as Manager,
+  // approves with their own signature and informs the Client as Coordinator.
+  let oos = outOfSpecification(lab);
+  oos = run(lab, openOos(oos), 'admin');
+  const id = oos.investigations[0].id;
+  assert.throws(
+    () => run(lab, labErrorCheck(oos, id), 'admin'),
+    /assigned analyst/,
+    'the laboratory error check stays with the assigned Analyst',
+  );
+  oos = run(
+    lab,
+    { ...labErrorCheck(oos, id), errorIdentified: false },
+    'analyst',
+  );
+  oos = run(lab, conclude(oos, id, 'Confirmed'), 'admin');
+  assert.throws(
+    () =>
+      run(lab, { type: 'approve', ...target(oos), password: 'admin' }, 'admin'),
+    /password is incorrect/,
+  );
+  oos = run(lab, { type: 'approve', ...target(oos) }, 'admin');
+  assert.equal(oos.status, 'Approved');
+  assert.deepEqual(lab.certificate(oos.id).content.signatures.at(-1), {
+    meaning: 'approved by',
+    signerId: 'admin',
+    printedName: 'Jordan Park',
+    signedAt: NOW,
+  });
+  oos = run(lab, notifyClient(oos, id), 'admin');
+  assert.equal(run(lab, publish(oos), 'admin').status, 'Published');
+});
+
+test('an Admin is not a role anyone else acquires: the other roles are still refused outside their own', (t) => {
+  const lab = memory(t);
+  for (const actor of ['analyst', 'manager'])
+    assert.throws(() => run(lab, receipt, actor), /coordinator role/);
+  let s = run(lab, receipt, 'coordinator');
+  // Only an Analyst or an Admin can be assigned.
+  for (const assignee of ['coordinator', 'manager'])
+    assert.throws(
+      () => run(lab, { type: 'assign', ...target(s), assignee }, 'coordinator'),
+      /Select an analyst/,
+    );
+  s = run(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'analyst' },
+    'coordinator',
+  );
+  // Assigned to someone else, an Admin enters no Result on the Sample.
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 1), 'admin'),
+    /assigned analyst/,
+  );
+});

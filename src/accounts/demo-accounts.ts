@@ -13,6 +13,7 @@ import type { SeedAccount } from './accounts.ts';
  * | analyst       | analyst-demo        | Alex Chen     | analyst     |
  * | analyst-2     | analyst-2-demo      | Sam Rivera    | analyst     |
  * | manager       | manager-demo        | Taylor Brooks | manager     |
+ * | admin         | admin-demo          | Jordan Park   | admin       |
  */
 export const demoAccounts: readonly SeedAccount[] = people.map((person) => ({
   ...person,

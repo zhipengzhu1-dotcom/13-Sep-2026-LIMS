@@ -6,6 +6,7 @@ import React, {
   useState,
 } from 'react';
 import {
+  actsAs,
   currentResult,
   materialTypes,
   newCommandId,
@@ -313,7 +314,7 @@ export function App() {
         setSelected(null);
       } else if (e.key === 'r' && !k.busy) {
         refresh();
-      } else if (e.key === 'n' && k.person?.role === 'coordinator') {
+      } else if (e.key === 'n' && actsAs(k.person, 'coordinator')) {
         setError('');
         setIntake(true);
       } else if (
@@ -456,7 +457,7 @@ export function App() {
             <button className="btn" disabled={busy} onClick={refresh}>
               Refresh
             </button>
-            {person?.role === 'coordinator' && (
+            {actsAs(person, 'coordinator') && (
               <button
                 className="btn primary"
                 disabled={!data}
@@ -822,7 +823,7 @@ export function App() {
               <kbd>j</kbd>
               <kbd>k</kbd> move <kbd>/</kbd> search <kbd>Esc</kbd> close{' '}
               <kbd>r</kbd> refresh
-              {person?.role === 'coordinator' && (
+              {actsAs(person, 'coordinator') && (
                 <>
                   {' '}
                   <kbd>n</kbd> receive
@@ -860,7 +861,7 @@ export function App() {
         >
           <Intake
             data={data}
-            disabled={busy || person?.role !== 'coordinator'}
+            disabled={busy || !actsAs(person, 'coordinator')}
             error={error}
             onSubmit={async (c) => {
               if (await execute(c)) setIntake(false);
@@ -955,7 +956,7 @@ export function SignIn({
         <p className="sign-in-note">
           Prototype demo accounts (password is the username followed by{' '}
           <code>-demo</code>): <code>coordinator</code>, <code>analyst</code>,{' '}
-          <code>analyst-2</code>, <code>manager</code>.
+          <code>analyst-2</code>, <code>manager</code>, <code>admin</code>.
         </p>
       </form>
     </main>

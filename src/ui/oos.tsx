@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  actsAs,
   currentResult,
   investigationOf,
   oosRows,
@@ -76,10 +77,10 @@ export function Investigations({
   if (!rows.length) return null;
   const person = data.people.find((p) => p.id === actor)!;
   const manager =
-    person.role === 'manager' && !['Approved', 'Published'].includes(s.status);
+    actsAs(person, 'manager') && !['Approved', 'Published'].includes(s.status);
   // Recording that the Client was informed stays open until Publishing.
   const coordinator =
-    person.role === 'coordinator' &&
+    actsAs(person, 'coordinator') &&
     !['Published', 'Withdrawn'].includes(s.status);
   const target = { sampleId: s.id, revision: s.revision };
   return (

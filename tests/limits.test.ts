@@ -441,3 +441,14 @@ test('a finished product Result with no Acceptable intake in force is refused an
   );
   assert.deepEqual(lab.snapshot(), before);
 });
+
+test('an Admin appends an Acceptable intake entry as themselves', (t) => {
+  const { lab } = clocked(t);
+  const revised = entry('impurity-a', 18, '2026-10-01');
+  assert.equal(append(lab, revised, 'admin').outcome, 'applied');
+  assert.deepEqual(lab.snapshot().acceptableIntakes.at(-1), {
+    ...revised,
+    id: 5,
+  });
+  assert.ok(lab.auditTrail().every((e) => e.actor === 'admin'));
+});

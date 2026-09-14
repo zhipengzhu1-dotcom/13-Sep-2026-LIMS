@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { type Certificate } from '../laboratory/certificate';
 import { amendmentOf, changeSummary } from '../laboratory/amendments';
 import {
+  actsAs,
   auditsSample,
   currentResult,
   enteredResultOn,
@@ -57,19 +58,19 @@ export function SamplePanel({
     s.assignee === actor &&
     ['In progress', 'Returned', 'Amendment in progress'].includes(s.status);
   const canDecide =
-    person.role === 'manager' && s.status === 'Awaiting approval';
+    actsAs(person, 'manager') && s.status === 'Awaiting approval';
   // Separation of duties (ADR-0003): the core refuses this Approval too.
   const ownResults = enteredResultOn(s, actor);
   // The OOS gate, as the core enforces it.
   const oosBlocker = oosApprovalBlocker(s);
   const canAssign =
-    person.role === 'coordinator' &&
+    actsAs(person, 'coordinator') &&
     !['Approved', 'Published', 'Awaiting approval', ...heldStatuses].includes(
       s.status,
     );
-  const canPublish = person.role === 'coordinator' && s.status === 'Approved';
+  const canPublish = actsAs(person, 'coordinator') && s.status === 'Approved';
   const canAmend =
-    (person.role === 'coordinator' || person.role === 'manager') &&
+    (actsAs(person, 'coordinator') || actsAs(person, 'manager')) &&
     s.status === 'Published';
   const history = data.audit.filter((e) => auditsSample(e, s));
   const recorded = s.tests.filter((t) => currentResult(t)).length;
@@ -158,7 +159,7 @@ export function SamplePanel({
                       Unassigned
                     </option>
                     {data.people
-                      .filter((p) => p.role === 'analyst')
+                      .filter((p) => actsAs(p, 'analyst'))
                       .map((p) => (
                         <option key={p.id} value={p.id}>
                           {p.name}
@@ -235,7 +236,7 @@ export function SamplePanel({
             <ReceiptDeviations
               sample={s}
               data={data}
-              canAct={person.role === 'coordinator'}
+              canAct={actsAs(person, 'coordinator')}
               busy={busy}
               execute={execute}
             />
