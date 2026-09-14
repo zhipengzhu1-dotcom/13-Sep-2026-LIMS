@@ -367,6 +367,8 @@ test('a finished product Result links the Limit in force and keeps it after a ne
         'Integration corrected',
       ],
       ['result.limit.value', 26.5, 18, 'Integration corrected'],
+      // The value re-entered unchanged is on the trail too.
+      ['result.value', 20, 20, 'Integration corrected'],
     ].sort(),
   );
 });

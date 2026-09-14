@@ -1,4 +1,5 @@
-import type { AuditEntry, AuditValue, Sample } from './contracts.ts';
+import type { AuditEntry, AuditValue, Result, Sample } from './contracts.ts';
+import { resultsView } from './results.ts';
 
 /**
  * Amendments of published Certificates of Analysis. Pure and browser-safe: the
@@ -51,20 +52,41 @@ export function amendmentOf(
  * reported content is named: a Retest's link to the OOS investigation it
  * follows (`result.retestAfter`) is on the audit trail but is no change to
  * the report, while the Retest's value is. */
-const summarised: readonly { field: string; label: string; unit?: string }[] = [
-  { field: 'result.value', label: 'Result', unit: 'test' },
-  { field: 'result.qualifier', label: 'qualifier' },
-  { field: 'result.limit.value', label: 'Limit', unit: 'ng/day' },
-  { field: 'result.conformity', label: 'Conformity statement' },
+const summarised: readonly {
+  field: string;
+  label: string;
+  unit?: string;
+  /** The field's value on a Result, as the audit trail writes it. */
+  of: (r: Result) => AuditValue;
+}[] = [
+  { field: 'result.value', label: 'Result', unit: 'test', of: (r) => r.value },
+  { field: 'result.qualifier', label: 'qualifier', of: (r) => r.qualifier },
+  {
+    field: 'result.limit.value',
+    label: 'Limit',
+    unit: 'ng/day',
+    of: (r) => r.limit?.value ?? null,
+  },
+  {
+    field: 'result.conformity',
+    label: 'Conformity statement',
+    of: (r) => r.conformity,
+  },
   {
     field: 'result.instrumentReading',
     label: 'instrument reading',
     unit: 'ng/mL',
+    of: (r) => r.instrumentReading,
   },
-  { field: 'result.sequenceId', label: 'sequence ID' },
+  { field: 'result.sequenceId', label: 'sequence ID', of: (r) => r.sequenceId },
   // A worksheet is named by an internal ID, so the summary says only that
   // it was replaced; the audit trail keeps both IDs.
-  { field: 'result.attachmentId', label: 'worksheet', unit: 'replaced' },
+  {
+    field: 'result.attachmentId',
+    label: 'worksheet',
+    unit: 'replaced',
+    of: (r) => r.attachmentId,
+  },
 ];
 
 const shown = (value: AuditValue) => (value === null ? '—' : String(value));
@@ -94,10 +116,24 @@ export function changeSummary(
       (e) => e.recordId === `${sample.id}/${test.id}`,
     );
     if (!entries.length) return [];
-    const changes = summarised.flatMap(({ field, label, unit }) => {
+    // A Retest is a new Result, so its entries have no old values: what it
+    // replaced on the report is the Invalidated result it follows.
+    const invalidatedBefore = (entry: AuditEntry) => {
+      const link = entries.find(
+        (e) =>
+          e.commandId === entry.commandId &&
+          e.field === 'result.retestAfter' &&
+          e.newValue !== null,
+      );
+      return link
+        ? resultsView(sample).investigation(String(link.newValue)).result
+        : undefined;
+    };
+    const changes = summarised.flatMap(({ field, label, unit, of }) => {
       const own = entries.filter((e) => e.field === field);
       if (!own.length) return [];
-      const from = own[0].oldValue;
+      const invalidated = invalidatedBefore(own[0]);
+      const from = invalidated ? of(invalidated) : own[0].oldValue;
       const to = own.at(-1)!.newValue;
       if (from === to) return [];
       if (unit === 'replaced') return [`${label} replaced`];

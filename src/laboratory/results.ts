@@ -83,6 +83,7 @@ export type RefusalCode =
   | 'OOS uninvestigated'
   | 'confirmed OOS'
   | 'retest required'
+  | 'worksheet reused'
   | 'no laboratory error'
   | 'notification pending'
   | 'separation of duties';
@@ -147,6 +148,13 @@ export type TestResults = {
    * Result to correct, so the command records a Retest instead.
    */
   correctionBlocker(options: { hasCertificate: boolean }): Refusal | null;
+  /**
+   * Why `worksheet` cannot be the calculation worksheet of the Retest due now,
+   * or null: it is the worksheet of the Invalidated result the Retest follows.
+   * A Retest is calculated again, on its own worksheet. Null when no Retest
+   * is due.
+   */
+  retestBlocker(worksheet: Pick<Attachment, 'id'>): Refusal | null;
 };
 
 /** Where an investigation stands. */
@@ -175,7 +183,7 @@ export type InvestigationResults = {
 export type BenchWorkEntry =
   | {
       person: string;
-      act: 'entered' | 'corrected' | 'retested';
+      act: 'entered' | 'corrected' | 'retested' | 'corrected a Retest';
       testId: string;
       resultSequence: number;
     }
@@ -381,6 +389,16 @@ export function resultsView(sample: Sample): SampleResults {
         };
       return null;
     },
+    retestBlocker(worksheet) {
+      const due = this.retestDue;
+      if (due?.invalidated.attachmentId !== worksheet.id) return null;
+      const id = due.investigation.id;
+      return {
+        code: 'worksheet reused',
+        reason: `This calculation worksheet is Result #${due.invalidated.sequence}'s, which OOS investigation ${id} Invalidated. A Retest needs its own calculation worksheet.`,
+        investigationId: id,
+      };
+    },
   });
 
   const investigationResults = (
@@ -509,7 +527,8 @@ export function resultsView(sample: Sample): SampleResults {
       return sample.tests.flatMap((test) => [
         ...test.results.map((result, i): BenchWorkEntry => {
           // A Result replaced the one before it: a superseded one by
-          // correction, an invalidated one by Retest.
+          // correction, an invalidated one by Retest. A correction of a
+          // Retest keeps its link, so it is still the Retest's work.
           const before = test.results[i - 1];
           return {
             person: result.enteredBy,
@@ -517,7 +536,9 @@ export function resultsView(sample: Sample): SampleResults {
               ? 'entered'
               : before.status === 'invalidated'
                 ? 'retested'
-                : 'corrected',
+                : result.retestAfter
+                  ? 'corrected a Retest'
+                  : 'corrected',
             testId: test.id,
             resultSequence: result.sequence,
           };
@@ -594,7 +615,9 @@ export function separationOfDutiesRefusal(
   const did =
     entry.act === 'retested'
       ? `retested ${label}`
-      : `${entry.act} a Result on ${label}`;
+      : entry.act === 'corrected a Retest'
+        ? `corrected a Retest on ${label}`
+        : `${entry.act} a Result on ${label}`;
   return {
     code: 'separation of duties',
     reason: `You ${did}, ${then}`,
@@ -645,7 +668,12 @@ export function recordResult(
     );
   // A Retest follows the investigation that Invalidated the last Result, and
   // needs no reason of its own: that investigation's assignable cause stands.
+  // It is calculated again, so never on the Invalidated result's worksheet.
   const due = previous ? undefined : view.retestDue;
+  if (due) {
+    const reused = view.retestBlocker(input.worksheet);
+    if (reused) throw new WorkflowError(reused.reason);
+  }
   const kind: RecordedKind = previous
     ? 'correction'
     : due
@@ -669,16 +697,18 @@ export function recordResult(
     limit,
     conformity: conformity({ value: input.value, qualifier }, test, limit),
     investigationId: null,
-    retestAfter: due ? due.investigation.id : null,
+    // A correction of a Retest is still that Retest, so it keeps the link.
+    retestAfter: due ? due.investigation.id : (previous?.retestAfter ?? null),
   };
   // The actor, time and reason are the entry's own columns, and the sequence
   // and status only say which Result is current, so only the Result's content
-  // is compared, field by field, with the Result it replaces: the current one
-  // for a correction, the Invalidated result for a Retest. The Retest link is
-  // compared like any field, so it is on the trail; an Amendment's change
-  // summary leaves it out because it names only reported fields. The Limit is a copy
-  // of reference data, so the trail names its entry and value rather than
-  // every field of the source it was published in.
+  // is compared, field by field: with the current Result a correction
+  // supersedes, or with nothing for a first entry or a Retest, which is a new
+  // Result (the Invalidated result stays on record, unchanged). The Retest
+  // link is compared like any field, so it is on the trail; an Amendment's
+  // change summary leaves it out because it names only reported fields. The
+  // Limit is a copy of reference data, so the trail names its entry and value
+  // rather than every field of the source it was published in.
   const audited = (r: Result) => ({
     result: {
       ...r,
@@ -687,26 +717,21 @@ export function recordResult(
   });
   const record = auditRecord.test(sample, test);
   const reason = input.reason;
-  const replaced = previous ?? due?.invalidated;
-  const changed = audit.compare(
-    record,
-    replaced ? audited(replaced) : null,
-    audited(next),
-    {
-      reason,
-      omit: [
-        'result.sequence',
-        'result.status',
-        'result.enteredBy',
-        'result.enteredAt',
-        'result.reason',
-        'result.investigationId',
-      ],
-    },
-  );
-  // Re-entering an unchanged value is still an act the trail must show.
-  if (!changed)
-    audit.change(record, 'result.value', replaced!.value, next.value, reason);
+  // Re-entering an unchanged value is still an act the trail must show,
+  // whatever else the correction changed.
+  if (previous?.value === next.value)
+    audit.change(record, 'result.value', previous.value, next.value, reason);
+  audit.compare(record, previous ? audited(previous) : null, audited(next), {
+    reason,
+    omit: [
+      'result.sequence',
+      'result.status',
+      'result.enteredBy',
+      'result.enteredAt',
+      'result.reason',
+      'result.investigationId',
+    ],
+  });
   if (previous) previous.status = 'superseded';
   test.results.push(next);
   return kind;

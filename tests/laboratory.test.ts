@@ -87,6 +87,17 @@ function worksheet(lab: Laboratory) {
     );
   return worksheets.get(lab)!;
 }
+/** A new calculation worksheet, for a Retest, which is calculated again. */
+function retestWorksheet(lab: Laboratory) {
+  return lab.storeAttachment(
+    {
+      filename: 'retest worksheet.csv',
+      contentType: 'text/csv',
+      content: Buffer.from('reading,result\n1.25,12.4\n'),
+    },
+    'analyst',
+  ).id;
+}
 
 /** Mints a fresh key per call — a distinct laboratory act. Tests that exercise
  * replay pass their own commandId instead. */
@@ -2435,8 +2446,25 @@ test('Invalidated: the Result stays on record with its cause and reference, and 
     'manager',
   );
   // The retest is a new Result on the same Test; no correction reason is
-  // needed because nothing current is being replaced.
-  s = run(lab, result(s, 'NIT-001-v1', 12.4), 'analyst');
+  // needed because nothing current is being replaced. It is calculated
+  // again, so the Invalidated result's worksheet is refused.
+  const before = lab.snapshot();
+  assert.throws(
+    () => run(lab, result(s, 'NIT-001-v1', 12.4), 'analyst'),
+    (e: Error & { status: number }) =>
+      e.status === 400 &&
+      e.message ===
+        "This calculation worksheet is Result #1's, which OOS investigation OOS26-0001 Invalidated. A Retest needs its own calculation worksheet.",
+  );
+  assert.deepEqual(lab.snapshot(), before, 'the refusal writes nothing');
+  s = run(
+    lab,
+    {
+      ...result(s, 'NIT-001-v1', 12.4),
+      attachmentId: retestWorksheet(lab),
+    },
+    'analyst',
+  );
   assert.deepEqual(
     s.tests[0].results.map((r) => [
       r.sequence,
@@ -3396,7 +3424,11 @@ test('Client notification is recorded only for a confirmed OOS', (t) => {
     { type: 'return', ...target(s), comment: 'Retest NIT-001 per OOS26-0001.' },
     'manager',
   );
-  s = run(lab, result(s, 'NIT-001-v1', 2.5), 'analyst');
+  s = run(
+    lab,
+    { ...result(s, 'NIT-001-v1', 2.5), attachmentId: retestWorksheet(lab) },
+    'analyst',
+  );
   s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
   assert.equal(
@@ -3843,7 +3875,11 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
     conclude(s, 'OOS26-0002', 'Invalidated', 'Dilution error in the standard.'),
     'manager',
   );
-  s = run(lab, result(s, 'NIT-001-v1', 2.5), 'analyst');
+  s = run(
+    lab,
+    { ...result(s, 'NIT-001-v1', 2.5), attachmentId: retestWorksheet(lab) },
+    'analyst',
+  );
   s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
   s = run(lab, { type: 'approve', ...target(s) }, 'manager');
 
@@ -3910,7 +3946,7 @@ test('an Amendment corrects a confirmed OOS Result with a reason, keeping its in
   // but is no change to report.
   assert.equal(
     v2.content.amendment!.changeSummary,
-    'Impurity A (NIT-001 v1): Result 30 → 2.5 ng/day, qualifier quantified → < LOQ, Conformity statement Does not comply → Complies (reason: "Recalculated with the dilution factor on the worksheet.")',
+    'Impurity A (NIT-001 v1): Result 30 → 2.5 ng/day, qualifier quantified → < LOQ, Conformity statement Does not comply → Complies, worksheet replaced (reason: "Recalculated with the dilution factor on the worksheet.")',
   );
   assert.deepEqual(
     lab
