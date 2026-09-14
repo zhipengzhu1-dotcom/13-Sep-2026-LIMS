@@ -156,5 +156,5 @@ A password the System administrator sets for an account, given to its user in pe
 _Avoid_: Temporary password, default password, reset password
 
 **Access event**:
-An audit trail entry about an account rather than a record: a sign-in, sign-out, session expiry, Failed attempt, lockout, unlock or password change.
+An audit trail entry about an account rather than a record: a sign-in, sign-out, session expiry, Failed attempt, lockout, lockout notice, unlock or password change, and, before Go-live, an account the Admin added or changed (a printed name, role, or deactivation) (ADR-0011).
 _Avoid_: Login event, security log entry

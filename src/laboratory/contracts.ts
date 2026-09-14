@@ -40,13 +40,16 @@ export type Person = {
   readonly id: string;
   readonly name: string;
   readonly role: Role;
+  /** A deactivated person stays listed, so the record still names them, but
+   * can no longer act. */
+  readonly active: boolean;
 };
 export const people = [
-  { id: 'coordinator', name: 'Morgan Lee', role: 'coordinator' },
-  { id: 'analyst', name: 'Alex Chen', role: 'analyst' },
-  { id: 'analyst-2', name: 'Sam Rivera', role: 'analyst' },
-  { id: 'manager', name: 'Taylor Brooks', role: 'manager' },
-  { id: 'admin', name: 'Jordan Park', role: 'admin' },
+  { id: 'coordinator', name: 'Morgan Lee', role: 'coordinator', active: true },
+  { id: 'analyst', name: 'Alex Chen', role: 'analyst', active: true },
+  { id: 'analyst-2', name: 'Sam Rivera', role: 'analyst', active: true },
+  { id: 'manager', name: 'Taylor Brooks', role: 'manager', active: true },
+  { id: 'admin', name: 'Jordan Park', role: 'admin', active: true },
 ] as const satisfies readonly Person[];
 export type Actor = Person;
 
@@ -417,6 +420,33 @@ export type AccessEvent =
       reason: string;
     }
   | { type: 'lockout'; username: string; consecutive: number }
+  | { type: 'passwordSet'; by: string; username: string }
+  | {
+      type: 'unlock';
+      by: string;
+      username: string;
+      /** The consecutive Failed attempts the unlock cleared. */
+      clearedFailedAttempts: number;
+    }
+  | {
+      type: 'accountChanged';
+      /** The Admin who changed it. */
+      by: string;
+      username: string;
+      changes: {
+        field: 'name' | 'role' | 'active';
+        from: string | boolean;
+        to: string | boolean;
+      }[];
+    }
+  | {
+      type: 'accountAdded';
+      /** The Admin who added it. */
+      by: string;
+      username: string;
+      name: string;
+      role: Role;
+    }
   | {
       type: 'lockoutNotice';
       username: string;

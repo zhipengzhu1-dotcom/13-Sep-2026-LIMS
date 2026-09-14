@@ -22,6 +22,8 @@ export function viewsForRole(role: string | undefined): View[] {
       'OOS investigations',
       'Methods',
       'Audit trail',
+      // Before Go-live only (ADR-0011).
+      'Accounts',
     ];
   if (role === 'analyst') return ['My work', 'Methods', 'Audit trail'];
   if (role === 'manager')

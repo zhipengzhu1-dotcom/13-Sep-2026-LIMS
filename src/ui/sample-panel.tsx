@@ -169,7 +169,11 @@ export function SamplePanel({
                       Unassigned
                     </option>
                     {data.people
-                      .filter((p) => actsAs(p, 'analyst'))
+                      .filter(
+                        (p) =>
+                          actsAs(p, 'analyst') &&
+                          (p.active || p.id === s.assignee),
+                      )
                       .map((p) => (
                         <option key={p.id} value={p.id}>
                           {p.name}

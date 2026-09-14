@@ -17,7 +17,8 @@ export type View =
   | 'Approval queue'
   | 'OOS investigations'
   | 'Methods'
-  | 'Audit trail';
+  | 'Audit trail'
+  | 'Accounts';
 
 export const QUEUES: View[] = [
   'Receiving',
@@ -143,6 +144,12 @@ export function Icon({ name }: { name: string }) {
       <>
         <path d="M3 12a9 9 0 1 0 3-7L3 8m0-5v5h5" />
         <path d="M12 7v5l3 2" />
+      </>
+    ),
+    Accounts: (
+      <>
+        <circle cx="9" cy="8" r="3.5" />
+        <path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7m2.5 8.5a6.5 6.5 0 0 0-3-5.5" />
       </>
     ),
   };

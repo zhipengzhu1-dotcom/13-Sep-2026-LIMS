@@ -19,6 +19,7 @@ import {
 } from '../laboratory/contracts';
 import { oosRows, resultsView } from '../laboratory/results';
 import { LabAuditTrail } from './audit-trail';
+import { AccountsScreen } from './accounts';
 import { OosTable } from './oos';
 import { Intake } from './receiving';
 import {
@@ -136,6 +137,22 @@ export function App() {
   function refresh() {
     setError('');
     reload().catch((e) => setError(e.message));
+  }
+  /** An account change may be the signed-in user's own name, role or active
+   * flag, so the session user is read again with the workspace. */
+  function accountsChanged() {
+    fetch('/api/session')
+      .then(async (response) => {
+        if (response.status === 401)
+          return sessionEnded('Your session has ended. Sign in to continue.');
+        if (!response.ok) return;
+        const next: SessionUser = (await response.json()).user;
+        setUser(next);
+        if (!viewsForRole(next.role).includes(view))
+          navigate(defaultViewForRole(next.role));
+      })
+      .catch(() => {});
+    refresh();
   }
   function signedIn(next: SessionUser) {
     setUser(next);
@@ -816,6 +833,8 @@ export function App() {
             </p>
             <AcceptableIntakeTable data={data} />
           </div>
+        ) : view === 'Accounts' ? (
+          <AccountsScreen onChanged={accountsChanged} />
         ) : (
           <LabAuditTrail data={data} />
         )}

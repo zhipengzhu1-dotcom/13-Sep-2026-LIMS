@@ -32,8 +32,12 @@ const accounts = new Accounts(database, {
   },
 });
 accounts.seed(demoAccounts);
-// The core verifies Electronic signatures against these accounts' hashes.
-const lab = new Laboratory(database, { credentials: accounts });
+// The core verifies Electronic signatures against these accounts' hashes and
+// takes its users from them, so a user the Admin adds can act at once.
+const lab = new Laboratory(database, {
+  credentials: accounts,
+  people: () => accounts.people(),
+});
 seed(lab);
 const sessions = new Sessions();
 const handleApi = api(lab, { accounts, sessions });

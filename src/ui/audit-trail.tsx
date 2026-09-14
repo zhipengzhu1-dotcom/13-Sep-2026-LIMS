@@ -35,6 +35,10 @@ export const COMMAND_LABELS: Record<string, string> = {
   failedAttempt: 'Failed attempt',
   lockout: 'Account locked',
   lockoutNotice: 'Lockout notice',
+  accountAdded: 'Account added',
+  accountChanged: 'Account changed',
+  passwordSet: 'Password changed',
+  unlock: 'Account unlocked',
 };
 
 /** The lab-wide audit trail, narrowed to a period of UTC calendar days and

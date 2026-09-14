@@ -69,6 +69,9 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
 
       if (route === 'GET /api/session')
         return send(200, { user: currentUser() });
+      // The Admin's account screen, before Go-live only (ADR-0011).
+      if (route === 'GET /api/accounts')
+        return send(200, { accounts: accounts.accountsFor(currentUser().id) });
       if (route === 'GET /api/workspace') {
         currentUser();
         return send(200, lab.snapshot());
@@ -94,6 +97,7 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
           'POST /api/sign-in',
           'POST /api/sign-out',
           'POST /api/commands',
+          'POST /api/accounts',
         ].includes(route)
       )
         return send(404, { error: 'Not found' });
@@ -143,6 +147,13 @@ export function api(lab: Laboratory, { accounts, sessions }: Authentication) {
         );
       }
       const user = currentUser();
+      if (route === 'POST /api/accounts') {
+        const listed = accounts.administer(input, user.id, lab);
+        // A deactivated user is signed out everywhere at once.
+        for (const account of listed)
+          if (!account.active) sessions.endAll(account.id);
+        return send(200, { accounts: listed });
+      }
       // The outcome carries whether this applied or replayed; the client must
       // be able to tell an "already recorded" from a fresh save.
       try {

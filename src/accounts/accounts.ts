@@ -3,6 +3,13 @@ import type {
   AccessEventLog,
   SignerCredentials,
 } from '../laboratory/laboratory.ts';
+import type { Person, Role } from '../laboratory/contracts.ts';
+import { WorkflowError } from '../laboratory/workflow-error.ts';
+import {
+  accountCommandSchema,
+  type AccountCommand,
+  type AccountSummary,
+} from './account-contracts.ts';
 import {
   hashPassword,
   verifyPassword,
@@ -45,8 +52,8 @@ export type AccountsOptions = {
 /**
  * Lab user accounts: ID (also the sign-in username), printed name, role,
  * active flag and a salted scrypt password hash, with each typed username's
- * consecutive Failed attempts and whether it is locked. Accounts are seeded;
- * there is no account administration in this release.
+ * consecutive Failed attempts and whether it is locked. Accounts are seeded,
+ * and before Go-live the Admin manages them (ADR-0011).
  */
 export class Accounts implements SignerCredentials {
   private db: DatabaseSync;
@@ -86,6 +93,196 @@ export class Accounts implements SignerCredentials {
     for (const a of accounts)
       if (!this.credentials(a.id))
         insert.run(a.id, a.name, a.role, hashPassword(a.password));
+  }
+
+  /** Every user, in the order they were added, deactivated ones included so
+   * the record still names who did what. */
+  people(): Person[] {
+    return (
+      this.db
+        .prepare('SELECT id, name, role, active FROM users ORDER BY rowid')
+        .all() as { id: string; name: string; role: Role; active: number }[]
+    ).map(({ id, name, role, active }) => ({
+      id,
+      name,
+      role,
+      active: Boolean(active),
+    }));
+  }
+
+  /** Every account with its status, for the Admin alone. */
+  accountsFor(by: string): AccountSummary[] {
+    this.requireAdmin(by);
+    return this.list();
+  }
+
+  private requireAdmin(by: string) {
+    if (this.find(by)?.role !== 'admin')
+      throw new WorkflowError('Only the Admin manages accounts.', 403);
+  }
+
+  /** Every account with its status. */
+  private list(): AccountSummary[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT u.id, u.name, u.role, u.active,
+             COALESCE(a.locked, 0) AS locked,
+             COALESCE(a.failedAttempts, 0) AS failedAttempts
+           FROM users u LEFT JOIN accessState a ON a.username = u.id
+           ORDER BY u.rowid`,
+        )
+        .all() as {
+        id: string;
+        name: string;
+        role: Role;
+        active: number;
+        locked: number;
+        failedAttempts: number;
+      }[]
+    ).map((row) => ({
+      id: row.id,
+      name: row.name,
+      role: row.role,
+      active: Boolean(row.active),
+      locked: Boolean(row.locked),
+      failedAttempts: Number(row.failedAttempts),
+    }));
+  }
+
+  /**
+   * An account change by the Admin, recorded through `log` as an Access
+   * event. Before Go-live only (ADR-0007); returns every account afterwards.
+   */
+  administer(
+    input: unknown,
+    by: string,
+    log: AccessEventLog,
+  ): AccountSummary[] {
+    this.requireAdmin(by);
+    const parsed = accountCommandSchema.safeParse(input);
+    if (!parsed.success)
+      throw new WorkflowError(
+        parsed.error.issues.map((issue) => issue.message).join(' '),
+      );
+    const command = parsed.data;
+    switch (command.type) {
+      case 'addAccount':
+        this.addAccount(command, by, log);
+        break;
+      case 'updateAccount':
+        this.updateAccount(command, by, log);
+        break;
+      case 'setPassword':
+        this.setPassword(command, by, log);
+        break;
+      case 'unlockAccount':
+        this.unlockAccount(command, by, log);
+    }
+    return this.list();
+  }
+
+  /** The account a change names, or a refusal naming the username. */
+  private account(username: string): AccountSummary {
+    const account = this.list().find((a) => a.id === username);
+    if (!account)
+      throw new WorkflowError(`There is no account ${username}.`, 404);
+    return account;
+  }
+
+  /** A new password the Admin typed, usable at the next sign-in. */
+  private setPassword(
+    { username, password }: Extract<AccountCommand, { type: 'setPassword' }>,
+    by: string,
+    log: AccessEventLog,
+  ) {
+    this.account(username);
+    this.db
+      .prepare('UPDATE users SET passwordHash = ? WHERE id = ?')
+      .run(hashPassword(password), username);
+    log.recordAccessEvent({ type: 'passwordSet', by, username });
+  }
+
+  /** Lets a Locked account back in. Its Failed attempts and lockout stay in
+   * the audit trail; only the count is cleared. */
+  private unlockAccount(
+    { username }: Extract<AccountCommand, { type: 'unlockAccount' }>,
+    by: string,
+    log: AccessEventLog,
+  ) {
+    const account = this.account(username);
+    if (!account.locked)
+      throw new WorkflowError(`${account.name} is not locked.`, 409);
+    this.db
+      .prepare(
+        'UPDATE accessState SET locked = 0, failedAttempts = 0 WHERE username = ?',
+      )
+      .run(username);
+    log.recordAccessEvent({
+      type: 'unlock',
+      by,
+      username,
+      clearedFailedAttempts: account.failedAttempts,
+    });
+  }
+
+  private addAccount(
+    {
+      username,
+      name,
+      role,
+      password,
+    }: Extract<AccountCommand, { type: 'addAccount' }>,
+    by: string,
+    log: AccessEventLog,
+  ) {
+    // A username is never reused, deactivated or not.
+    if (this.credentials(username))
+      throw new WorkflowError(
+        `The username ${username} is already taken.`,
+        409,
+      );
+    this.db
+      .prepare(
+        'INSERT INTO users (id, name, role, active, passwordHash) VALUES (?, ?, ?, 1, ?)',
+      )
+      .run(username, name, role, hashPassword(password));
+    // Failed attempts typed under this username before it was an account
+    // stay in the audit trail; the new account starts unlocked.
+    this.db.prepare('DELETE FROM accessState WHERE username = ?').run(username);
+    log.recordAccessEvent({ type: 'accountAdded', by, username, name, role });
+  }
+
+  /** Changes a printed name or role, or deactivates or reactivates, never
+   * leaving Benchline without an Admin who can act. */
+  private updateAccount(
+    { username, ...next }: Extract<AccountCommand, { type: 'updateAccount' }>,
+    by: string,
+    log: AccessEventLog,
+  ) {
+    const accounts = this.list();
+    const current = this.account(username);
+    const after = {
+      name: next.name ?? current.name,
+      role: next.role ?? current.role,
+      active: next.active ?? current.active,
+    };
+    const changes = (['name', 'role', 'active'] as const)
+      .filter((field) => after[field] !== current[field])
+      .map((field) => ({ field, from: current[field], to: after[field] }));
+    if (!changes.length) throw new WorkflowError('Nothing to change.');
+    const admins = accounts
+      .map((a) => (a.id === username ? { ...a, ...after } : a))
+      .filter((a) => a.role === 'admin' && a.active && !a.locked);
+    if (!admins.length)
+      throw new WorkflowError(
+        'Benchline needs at least one active Admin, so this change was not saved.',
+        409,
+      );
+    this.db
+      .prepare('UPDATE users SET name = ?, role = ?, active = ? WHERE id = ?')
+      .run(after.name, after.role, after.active ? 1 : 0, username);
+    log.recordAccessEvent({ type: 'accountChanged', by, username, changes });
   }
 
   /** An active user by ID who is not locked, or null. Every session of a

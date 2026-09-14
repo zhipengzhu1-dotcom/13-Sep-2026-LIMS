@@ -2277,3 +2277,77 @@ body.resizing {
     box-shadow: none;
   }
 }
+
+/* ---------- accounts (Admin, before Go-live only) ---------- */
+.accounts-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+.accounts > .flash.inline {
+  margin-block: var(--space-2);
+}
+.account-status {
+  display: inline-block;
+  margin-right: var(--space-1);
+  padding: 1px var(--space-2);
+  border-radius: 999px;
+  background: var(--received-wash);
+  color: var(--received);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.account-status.locked {
+  background: var(--alert-wash);
+  color: var(--alert);
+  font-weight: 600;
+}
+.row-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+.account-form-row > td {
+  background: var(--sunk);
+}
+.account-form {
+  max-width: 640px;
+  margin-block: var(--space-2);
+}
+.account-form h2 {
+  margin: 0 0 var(--space-2);
+  font-size: 15px;
+}
+.account-form small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.password-field {
+  display: flex;
+  gap: var(--space-1);
+}
+.password-field input {
+  flex: 1;
+  min-width: 0;
+}
+.account-form .field {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+}
+@media (max-width: 640px) {
+  /* The actions wrap under each other rather than running off the screen. */
+  .accounts-table td.nowrap {
+    white-space: normal;
+  }
+  .accounts-table .row-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .accounts .fields {
+    grid-template-columns: 1fr;
+  }
+}

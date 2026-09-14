@@ -111,6 +111,11 @@ Still bound by:
 - Separation of duties: cannot approve a Sample on which the Admin entered,
   corrected or retested a Result.
 - Results only on Samples assigned to the Admin.
+- Accounts screen (before Go-live only, ADR-0011): add users, change a
+  printed name or role, deactivate or reactivate, set a password and unlock a
+  Locked account. Every change is an Access event in the audit trail; no
+  password is shown or recorded. Usernames are never reused, and Benchline
+  always keeps at least one active Admin.
 
 
 LOCKED STATES (apply to everyone, including the Admin)

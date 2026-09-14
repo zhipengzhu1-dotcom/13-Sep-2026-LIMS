@@ -121,9 +121,10 @@ export type LaboratoryOptions = {
   credentials?: SignerCredentials | null;
   /** The Method reference data in force; defaults to the seeded Methods. */
   methods?: readonly Method[];
-  /** The user directory in force; defaults to the seeded people. A person's
-   * role may change over time, while the record keeps what they did. */
-  people?: readonly Person[];
+  /** The user directory in force, or where to read it on each use; defaults
+   * to the seeded people. A person's role may change over time, while the
+   * record keeps what they did. */
+  people?: readonly Person[] | (() => readonly Person[]);
 };
 
 /** The Submission and Samples a command acted on, kept with its key so a
@@ -142,12 +143,14 @@ export class Laboratory {
   private credentials: SignerCredentials | null;
   /** Seeded Method reference data; replaceable so rules over it can be exercised. */
   private methods: readonly Method[];
-  private people: readonly Person[];
+  /** The user directory in force, read on each use. */
+  private people: () => readonly Person[];
   constructor(path: string, options: LaboratoryOptions = {}) {
     this.clock = options.clock ?? (() => new Date().toISOString());
     this.credentials = options.credentials ?? null;
     this.methods = options.methods ?? methods;
-    this.people = options.people ?? people;
+    const directory = options.people ?? people;
+    this.people = typeof directory === 'function' ? directory : () => directory;
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, document TEXT NOT NULL);
@@ -181,8 +184,10 @@ export class Laboratory {
    * stored which file, when, and its SHA-256.
    */
   storeAttachment(upload: Upload, actorId: string): Attachment {
-    const actor = this.people.find((p) => p.id === actorId);
+    const actor = this.people().find((p) => p.id === actorId);
     if (!actor) throw new WorkflowError('Unknown user.', 403);
+    if (!actor.active)
+      throw new WorkflowError('This account is deactivated.', 403);
     requireRole(actor, 'analyst');
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -225,11 +230,14 @@ export class Laboratory {
         id: event.username,
         sampleId: null,
       } as const;
-      const byUser = ['signIn', 'signOut', 'failedAttempt'].includes(
-        event.type,
-      );
+      const actor =
+        'by' in event
+          ? event.by
+          : ['signIn', 'signOut', 'failedAttempt'].includes(event.type)
+            ? event.username
+            : BENCHLINE;
       const audit = this.audit.writer({
-        actor: byUser ? event.username : BENCHLINE,
+        actor,
         at: this.clock(),
         commandType: event.type,
         commandId: newCommandId(),
@@ -269,6 +277,28 @@ export class Laboratory {
             `${event.consecutive} consecutive Failed attempts`,
           );
           break;
+        case 'passwordSet':
+          // The fact of the change only; never the password.
+          audit.change(account, 'password', null, 'changed');
+          break;
+        case 'unlock':
+          audit.change(account, 'locked', true, false);
+          audit.change(
+            account,
+            'consecutiveFailedAttempts',
+            event.clearedFailedAttempts,
+            0,
+          );
+          break;
+        case 'accountChanged':
+          for (const { field, from, to } of event.changes)
+            audit.change(account, field, from, to);
+          break;
+        case 'accountAdded':
+          audit.change(account, 'name', null, event.name);
+          audit.change(account, 'role', null, event.role);
+          audit.change(account, 'active', null, true);
+          break;
         case 'lockoutNotice':
           audit.change(
             account,
@@ -297,7 +327,7 @@ export class Laboratory {
       audit: this.audit.entries(),
       signatures: this.signatureStore.list(),
       attachments: this.attachments.list(),
-      people: this.people,
+      people: this.people(),
       clients,
       analytes,
       methods: this.methods,
@@ -363,8 +393,10 @@ export class Laboratory {
    * audit entries together. Nothing below this method may call BEGIN.
    */
   execute(input: unknown, actorId: string): CommandOutcome {
-    const actor = this.people.find((p) => p.id === actorId);
+    const actor = this.people().find((p) => p.id === actorId);
     if (!actor) throw new WorkflowError('Unknown user.', 403);
+    if (!actor.active)
+      throw new WorkflowError('This account is deactivated.', 403);
     const parsed = commandSchema.safeParse(input);
     if (!parsed.success)
       throw new WorkflowError(
@@ -397,7 +429,7 @@ export class Laboratory {
       let issued = null as Certificate | null;
       const context: Context = {
         at,
-        people: this.people,
+        people: this.people(),
         history: (sample) => this.audit.entries(sample),
         allocate: (series) => this.allocate(series, at),
         audit,

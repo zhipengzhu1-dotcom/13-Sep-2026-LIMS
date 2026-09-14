@@ -37,7 +37,10 @@ const receipt = () => ({
 async function serve(t: TestContext) {
   const accounts = new Accounts(':memory:');
   accounts.seed(demoAccounts);
-  const lab = new Laboratory(':memory:', { credentials: accounts });
+  const lab = new Laboratory(':memory:', {
+    credentials: accounts,
+    people: () => accounts.people(),
+  });
   const clock = { now: Date.parse('2026-09-13T09:00:00Z') };
   const server = createServer(
     api(lab, { accounts, sessions: new Sessions(() => clock.now) }),
@@ -382,6 +385,101 @@ test('a lock from Failed attempts at sign-in ends the sessions already open', as
       .map(([act]) => act)
       .filter((act) => act !== 'failedAttempt'),
     ['signIn', 'lockout', 'lockoutNotice'],
+  );
+});
+
+test('only the Admin manages accounts over HTTP, and a deactivated user is signed out', async (t) => {
+  const { url, post, signIn } = await serve(t);
+  const admin = await signIn('admin', 'admin-demo');
+  const analyst = await signIn('analyst', 'analyst-demo');
+  const accountsOf = (session: Record<string, string>) =>
+    fetch(url + '/api/accounts', { headers: session });
+
+  assert.equal((await fetch(url + '/api/accounts')).status, 401);
+  assert.equal((await accountsOf(analyst)).status, 403);
+  const refused = await post(
+    '/api/accounts',
+    { type: 'unlockAccount', username: 'manager' },
+    analyst,
+  );
+  assert.equal(refused.status, 403);
+  assert.deepEqual(await refused.json(), {
+    error: 'Only the Admin manages accounts.',
+  });
+  assert.equal(
+    (
+      await post(
+        '/api/accounts',
+        { type: 'unlockAccount', username: 'manager' },
+        { ...admin, Origin: 'https://untrusted.example' },
+      )
+    ).status,
+    403,
+  );
+
+  const listing = await (await accountsOf(admin)).text();
+  assert.deepEqual(
+    JSON.parse(listing).accounts.map((a: { id: string }) => a.id),
+    ['coordinator', 'analyst', 'analyst-2', 'manager', 'admin'],
+  );
+  assert.ok(!listing.includes('scrypt'), 'no password hash is listed');
+
+  const added = await post(
+    '/api/accounts',
+    {
+      type: 'addAccount',
+      username: 'analyst-3',
+      name: 'Robin Diaz',
+      role: 'analyst',
+      password: 'robin-password',
+    },
+    admin,
+  );
+  assert.equal(added.status, 200);
+  assert.equal((await added.json()).accounts.at(-1).name, 'Robin Diaz');
+  const workspace = await (
+    await fetch(url + '/api/workspace', { headers: admin })
+  ).json();
+  assert.deepEqual(workspace.people.at(-1), {
+    id: 'analyst-3',
+    name: 'Robin Diaz',
+    role: 'analyst',
+    active: true,
+  });
+  const duplicate = await post(
+    '/api/accounts',
+    {
+      type: 'addAccount',
+      username: 'analyst-3',
+      name: 'Someone Else',
+      role: 'analyst',
+      password: 'another-pass',
+    },
+    admin,
+  );
+  assert.equal(duplicate.status, 409);
+  assert.deepEqual(await duplicate.json(), {
+    error: 'The username analyst-3 is already taken.',
+  });
+
+  const deactivated = await post(
+    '/api/accounts',
+    { type: 'updateAccount', username: 'analyst', active: false },
+    admin,
+  );
+  assert.equal(deactivated.status, 200);
+  assert.equal(
+    (await fetch(url + '/api/session', { headers: analyst })).status,
+    401,
+  );
+  assert.equal(
+    (
+      await post('/api/sign-in', {
+        username: 'analyst',
+        password: 'analyst-demo',
+      })
+    ).status,
+    401,
   );
 });
 
