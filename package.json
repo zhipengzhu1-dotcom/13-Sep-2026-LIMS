@@ -20,7 +20,9 @@
     "format:check": "prettier --check src server tests docs *.md *.json *.ts index.html"
   },
   "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
     "nodemailer": "^10.0.9",
+    "pdf-lib": "^1.17.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "zod": "^4.1.5"

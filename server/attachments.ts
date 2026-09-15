@@ -102,15 +102,21 @@ function sendAttachment(res: ServerResponse, lab: Laboratory, id: string) {
   const stored = lab.readAttachment(id);
   if (!stored) throw new HttpError(404, 'Attachment not found.');
   const { attachment, content } = stored;
-  const fallback = attachment.filename.replace(/[^\w.\- ]/g, '_');
   res.writeHead(200, {
     'Content-Type': attachment.contentType,
     'Content-Length': String(content.byteLength),
-    'Content-Disposition': `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`,
+    'Content-Disposition': downloadDisposition(attachment.filename),
     'Repr-Digest': `sha-256=:${Buffer.from(attachment.sha256, 'hex').toString('base64')}:`,
     'X-Content-Type-Options': 'nosniff',
     'Content-Security-Policy': 'sandbox',
     'Cache-Control': 'no-store',
   });
   res.end(content);
+}
+
+/** A Content-Disposition that downloads a file under its name: an ASCII
+ * fallback, and the UTF-8 name as well (RFC 6266). */
+export function downloadDisposition(filename: string) {
+  const fallback = filename.replace(/[^\w.\- ]/g, '_');
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }

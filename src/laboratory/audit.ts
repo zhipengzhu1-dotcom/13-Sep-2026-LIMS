@@ -21,6 +21,13 @@ type Row = Omit<AuditEntry, 'oldValue' | 'newValue'> & {
   newValue: string;
 };
 
+/** A stored row as an entry, its values read back from JSON. */
+const entryOf = (row: Row): AuditEntry => ({
+  ...row,
+  oldValue: JSON.parse(row.oldValue),
+  newValue: JSON.parse(row.newValue),
+});
+
 /**
  * The append-only audit trail (ADR-0001). The application only ever inserts
  * into it; the database refuses updates and deletes as a second line of
@@ -85,11 +92,20 @@ export class AuditTrail {
             .all(sample.id, sample.submissionId)
         : this.db.prepare('SELECT * FROM audit ORDER BY sequence DESC').all()
     ) as Row[];
-    return rows.map((row) => ({
-      ...row,
-      oldValue: JSON.parse(row.oldValue),
-      newValue: JSON.parse(row.newValue),
-    }));
+    return rows.map(entryOf);
+  }
+
+  /** Every entry on the records of one type with the given IDs, oldest
+   * first. */
+  recordEntries(type: AuditRecordType, ids: readonly string[]): AuditEntry[] {
+    if (!ids.length) return [];
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM audit WHERE recordType = ? AND recordId IN (${ids.map(() => '?').join(', ')})
+         ORDER BY sequence`,
+      )
+      .all(type, ...ids) as Row[];
+    return rows.map(entryOf);
   }
 
   /** The value the newest entry gave a record's field, or undefined when no

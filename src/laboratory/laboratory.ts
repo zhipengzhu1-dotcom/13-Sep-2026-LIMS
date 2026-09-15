@@ -6,6 +6,7 @@ import {
   commandSchema,
   commandsNeedingValidSignatures,
   invalidSignatureRefusal,
+  laboratoryTimeZone,
   limitInForce,
   type AcceptableIntake,
   type Person,
@@ -56,7 +57,23 @@ import {
   type Series,
 } from './handlers.ts';
 
+import {
+  recordCopyFilename,
+  recordCopyHashes,
+  recordCopyNotices,
+  type RecordCopy,
+} from './record-copy.ts';
+import { recordArchive } from './record-copy-archive.ts';
+
 export { WorkflowError } from './workflow-error.ts';
+
+/** A Record copy as downloaded: the ZIP, its filename, and the SHA-256 of
+ * the manifest inside it. */
+export type RecordCopyDownload = {
+  filename: string;
+  content: Uint8Array;
+  manifestSha256: string;
+};
 
 /**
  * Verifies a signer's password against their stored hash. The accounts store
@@ -239,10 +256,7 @@ export class Laboratory {
    * stored which file, when, and its SHA-256.
    */
   storeAttachment(upload: Upload, actorId: string): Attachment {
-    const actor = this.people().find((p) => p.id === actorId);
-    if (!actor) throw new WorkflowError('Unknown user.', 403);
-    if (!actor.active)
-      throw new WorkflowError('This account is deactivated.', 403);
+    const actor = this.activeActor(actorId);
     refuseQualityLead(actor);
     requireRole(actor, 'analyst');
     this.db.exec('BEGIN IMMEDIATE');
@@ -456,6 +470,122 @@ export class Laboratory {
     return this.attachments.read(id);
   }
 
+  /**
+   * A Record copy of one Sample: its complete record as a ZIP, for inspection
+   * and true copies. Anyone who can see the Sample may make one, the Quality
+   * lead included, since it changes nothing on the record.
+   */
+  async exportRecord(
+    sampleId: string,
+    actorId: string,
+  ): Promise<RecordCopyDownload> {
+    const actor = this.activeActor(actorId);
+    // A command applied while the archive is built would leave the copy
+    // behind the history its entry joins, so the record is gathered again
+    // until nothing changed in between (ADR-0013).
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const sample = this.load(sampleId);
+      const copy = this.recordCopy(sample, actor);
+      const archive = await recordArchive(copy.record, copy.worksheets);
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const latest = this.audit.entries(this.load(sampleId))[0]?.sequence;
+        if (latest !== copy.historyThrough) {
+          this.db.exec('ROLLBACK');
+          continue;
+        }
+        // Recorded once the archive exists, and before it is handed over: a
+        // copy whose entry cannot be written is never served.
+        this.audit
+          .writer({
+            actor: actor.id,
+            at: this.clock(),
+            commandType: 'exportRecordCopy',
+            commandId: newCommandId(),
+          })
+          .change(
+            auditRecord.sample(sample),
+            'recordCopy.manifestSha256',
+            null,
+            archive.manifestSha256,
+          );
+        this.db.exec('COMMIT');
+      } catch (error) {
+        if (this.db.isTransaction) this.db.exec('ROLLBACK');
+        throw error;
+      }
+      return { filename: recordCopyFilename(sample.id), ...archive };
+    }
+    throw new WorkflowError(
+      'This Sample kept changing while its Record copy was being made. Try again.',
+      409,
+    );
+  }
+
+  /** A Sample's record as a Record copy holds it, with the worksheets' bytes
+   * and the newest entry of the Sample's own history it includes. */
+  private recordCopy(sample: Sample, actor: Actor) {
+    // Every worksheet any Result ever referenced, superseded and
+    // Invalidated ones included, in the order they were first referenced.
+    const worksheets = [
+      ...new Set(
+        sample.tests.flatMap((t) => t.results.map((r) => r.attachmentId)),
+      ),
+    ].map((id) => {
+      const stored = this.attachments.read(id);
+      if (!stored) throw new Error(`Attachment ${id} not found.`);
+      return stored;
+    });
+    const history = this.audit.entries(sample);
+    const entries = [
+      ...history,
+      ...this.audit.recordEntries(
+        'Attachment',
+        worksheets.map((w) => w.attachment.id),
+      ),
+    ].sort((a, b) => a.sequence - b.sequence);
+    const signatures = this.signatureStore.stored(sample.id);
+    const named = new Set([
+      ...entries.map((e) => e.actor),
+      ...worksheets.map((w) => w.attachment.uploadedBy),
+      ...signatures.map((x) => x.signerId),
+      actor.id,
+    ]);
+    const submission = this.find<Submission>(
+      'submissions',
+      sample.submissionId,
+    )!;
+    const record: RecordCopy = {
+      exportedAt: this.clock(),
+      exportedBy: actor.id,
+      ...recordCopyNotices(sample, submission),
+      times: `Instants are ISO 8601 in UTC. Analysis dates are calendar days in the laboratory's time zone, ${laboratoryTimeZone}.`,
+      sample,
+      submission,
+      worksheets: worksheets.map((w) => w.attachment),
+      signatures,
+      certificates: this.certificateStore.stored(sample.id),
+      auditTrail: {
+        throughSequence: entries.at(-1)?.sequence ?? 0,
+        entries,
+      },
+      people: this.people()
+        .filter((p) => named.has(p.id))
+        .map(({ id, name, role }) => ({ id, name, role })),
+      hashes: recordCopyHashes,
+    };
+    return { record, worksheets, historyThrough: history[0]?.sequence };
+  }
+
+  /** The account acting, refused when it is unknown or deactivated. */
+  private activeActor(actorId: string): Actor {
+    const actor = this.people().find((p) => p.id === actorId);
+    if (!actor) throw new WorkflowError('Unknown user.', 403);
+    if (!actor.active)
+      throw new WorkflowError('This account is deactivated.', 403);
+    return actor;
+  }
+
   snapshot(): Snapshot {
     return {
       submissions: this.documents('submissions'),
@@ -529,10 +659,7 @@ export class Laboratory {
    * audit entries together. Nothing below this method may call BEGIN.
    */
   execute(input: unknown, actorId: string): CommandOutcome {
-    const actor = this.people().find((p) => p.id === actorId);
-    if (!actor) throw new WorkflowError('Unknown user.', 403);
-    if (!actor.active)
-      throw new WorkflowError('This account is deactivated.', 403);
+    const actor = this.activeActor(actorId);
     // Before the command is read or a password verified, so the Quality lead
     // neither changes nor signs anything, in any state of the record.
     refuseQualityLead(actor);

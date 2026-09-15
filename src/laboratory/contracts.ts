@@ -562,7 +562,10 @@ export type AuditedAct =
   | 'methodInForce'
   | 'methodWithdrawn'
   | 'backup'
-  | 'restore';
+  | 'restore'
+  /** Making a Record copy of a Sample, which changes nothing on it
+   * (ADR-0013). */
+  | 'exportRecordCopy';
 
 /** How the audit trail names each act, on screen and on the System
  * administrator's printouts. */
@@ -599,6 +602,7 @@ export const auditedActLabels: Record<AuditedAct, string> = {
   methodWithdrawn: 'Method withdrawn',
   backup: 'Backup taken',
   restore: 'Restored from backup',
+  exportRecordCopy: 'Record copy exported',
 };
 /** A single field's value as the audit trail keeps it. */
 export type AuditValue = string | number | boolean | null;

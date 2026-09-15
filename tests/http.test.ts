@@ -1154,6 +1154,53 @@ test("an approved Sample's Certificate is retrieved by signed-in users", async (
   assert.equal((await post(`${path}/1`, {}, manager)).status, 404);
 });
 
+test('a signed-in user, the Quality lead included, downloads a Record copy of a Sample as a ZIP', async (t) => {
+  const { lab, url, post, signIn } = await serve(t);
+  const coordinator = await signIn('coordinator', 'coordinator-demo');
+  const qualityLead = await signIn('quality-lead', 'quality-lead-demo');
+  const received = await post('/api/commands', receipt(), coordinator);
+  const [sample] = (await received.json()).samples;
+  const path = `/api/samples/${sample.id}/record-copy`;
+
+  const response = await post(path, {}, qualityLead);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'application/zip');
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(
+    response.headers.get('content-disposition'),
+    `attachment; filename="Sample ${sample.id} record copy.zip"; filename*=UTF-8''Sample%20${sample.id}%20record%20copy.zip`,
+  );
+  const body = new Uint8Array(await response.arrayBuffer());
+  assert.deepEqual([...body.subarray(0, 4)], [0x50, 0x4b, 0x03, 0x04]);
+  const [entry] = lab.auditTrail(sample.id);
+  assert.equal(entry.commandType, 'exportRecordCopy');
+  assert.equal(entry.actor, 'quality-lead');
+  assert.equal(
+    response.headers.get('benchline-manifest-sha256'),
+    entry.newValue,
+  );
+
+  const entries = lab.auditTrail().length;
+  assert.equal((await post(path, {})).status, 401);
+  assert.equal(
+    (
+      await post(
+        path,
+        {},
+        { ...qualityLead, Origin: 'http://elsewhere.example' },
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await post('/api/samples/26-99999/record-copy', {}, qualityLead)).status,
+    404,
+  );
+  assert.equal((await fetch(url + path, { headers: qualityLead })).status, 404);
+  assert.equal(lab.auditTrail().length, entries);
+});
+
 test('an Admin signs in and acts in every role over HTTP, as themselves and within separation of duties', async (t) => {
   const { lab, url, post, signIn, upload } = await serve(t);
   const response = await post('/api/sign-in', {

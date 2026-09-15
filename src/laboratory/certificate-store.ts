@@ -6,6 +6,7 @@ import type {
   CertificateSummary,
   Publication,
 } from './certificate.ts';
+import type { RecordCertificate } from './record-copy.ts';
 
 /**
  * Locked Certificate of Analysis versions and their publications. Both are
@@ -40,6 +41,18 @@ export class CertificateStore {
     return this.rows(sampleId, true).map(({ content, ...summary }) => ({
       ...summary,
       content: JSON.parse(content!),
+    }));
+  }
+
+  /** Every version of one Sample, oldest first, its content as the stored
+   * text with whether that text still matches its SHA-256. For a Record
+   * copy, so the hash can be recomputed from the copy alone. */
+  stored(sampleId: string): RecordCertificate[] {
+    return this.rows(sampleId, true).map(({ content, ...summary }) => ({
+      ...summary,
+      content: content!,
+      verified:
+        createHash('sha256').update(content!).digest('hex') === summary.sha256,
     }));
   }
 

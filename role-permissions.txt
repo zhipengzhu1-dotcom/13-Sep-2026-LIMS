@@ -19,6 +19,9 @@ EVERY SIGNED-IN USER
 - Can view all Samples, the Samples' Results and history, Certificates of
   Analysis (every version), Methods & Limits and the Audit trail.
 - Can download worksheet attachments.
+- Can export a Record copy of any Sample (ZIP: PDF, JSON, worksheets,
+  SHA-256 manifest). The Quality lead can too. Each copy is recorded in the
+  Sample's audit trail with the manifest's SHA-256 (ADR-0013).
 - Cannot edit or delete audit trail entries, Certificates, Acceptable intake
   entries or attachments. Nobody can; the application has no way to do it.
 

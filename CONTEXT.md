@@ -144,6 +144,10 @@ _Avoid_: CoA (in prose), report, results sheet
 Delivering an approved Sample's Certificate of Analysis to the Client and recording how and when; it never changes the Certificate's date of issue.
 _Avoid_: Release, send out
 
+**Record copy**:
+One Sample's complete record exported as a ZIP for inspection and true copies: a PDF for reading, the same record as JSON with each Electronic signature's Signed content and hash, every calculation worksheet as stored, and a manifest of their SHA-256. Anyone who can see the Sample may make one, the Quality lead included; each copy is recorded in the Sample's audit trail with the manifest's SHA-256, so a copy can be checked against Benchline (ADR-0013).
+_Avoid_: Export (as a noun), dump, backup, printout
+
 **Amendment**:
 A new version of a published Certificate of Analysis, corrected by the Analyst with a reason, re-approved by a Manager and published by the Coordinator; it is marked Amended, states the version it replaces (the Published version the Amendment started from), and the superseded version stays on file.
 _Avoid_: Correction, reissue, revision

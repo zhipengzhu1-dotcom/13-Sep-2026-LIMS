@@ -11,7 +11,7 @@ import {
   type Sessions,
 } from './sessions.ts';
 import { HttpError } from './http-error.ts';
-import { handleAttachments } from './attachments.ts';
+import { downloadDisposition, handleAttachments } from './attachments.ts';
 import { capabilities, type Mode } from './startup.ts';
 
 const MAX_BODY_BYTES = 32768;
@@ -165,7 +165,14 @@ export function api(
               certificate: lab.certificate(sampleId, Number(certificates[2])),
             });
       }
+      // POST /api/samples/:sampleId/record-copy makes a Record copy, which
+      // writes its audit entry, so it is a write like any other (ADR-0013).
+      const recordCopy =
+        req.method === 'POST'
+          ? path.match(/^\/api\/samples\/([^/]+)\/record-copy$/)
+          : null;
       if (
+        !recordCopy &&
         ![
           'POST /api/sign-in',
           'POST /api/password',
@@ -234,6 +241,21 @@ export function api(
         );
       }
       const user = currentUser();
+      if (recordCopy) {
+        const copy = await lab.exportRecord(
+          decodeURIComponent(recordCopy[1]),
+          user.id,
+        );
+        res.writeHead(200, {
+          'Content-Type': 'application/zip',
+          'Content-Length': String(copy.content.byteLength),
+          'Content-Disposition': downloadDisposition(copy.filename),
+          'Benchline-Manifest-Sha256': copy.manifestSha256,
+          'X-Content-Type-Options': 'nosniff',
+          'Cache-Control': 'no-store',
+        });
+        return res.end(copy.content);
+      }
       // The signed-in user's own password, never an account the browser
       // names; the change ends their other sessions (§11.300(c)).
       if (route === 'POST /api/own-password') {

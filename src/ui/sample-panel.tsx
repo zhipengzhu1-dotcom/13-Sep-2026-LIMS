@@ -19,6 +19,7 @@ import {
   type Signature,
   type SigningCommandType,
 } from '../laboratory/contracts';
+import { recordCopyFilename } from '../laboratory/record-copy';
 import { resultsView } from '../laboratory/results';
 import { AuditTable } from './audit-trail';
 import { CertificateVersions } from './certificate-view';
@@ -107,6 +108,7 @@ export function SamplePanel({
           <span className="sample-id">{s.id}</span>
           <Status sample={s} />
           {s.priority === 'Urgent' && <span className="urgent">Urgent</span>}
+          <RecordCopyButton sampleId={s.id} />
           <button
             className="icon-btn close-panel"
             aria-label="Close sample"
@@ -458,6 +460,61 @@ export function SamplePanel({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Downloads a Record copy of the Sample: its complete record as a ZIP, which
+ * the server records in the Sample's history. Offered to everyone who can
+ * see the Sample, the Quality lead included (ADR-0013).
+ */
+export function RecordCopyButton({ sampleId }: { sampleId: string }) {
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => setError(''), [sampleId]);
+  return (
+    <span className="record-copy">
+      <button
+        className="btn sm"
+        disabled={exporting}
+        aria-busy={exporting || undefined}
+        onClick={async () => {
+          setExporting(true);
+          setError('');
+          try {
+            const response = await fetch(
+              `/api/samples/${encodeURIComponent(sampleId)}/record-copy`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}',
+              },
+            );
+            if (!response.ok)
+              throw new Error(
+                (await response.json().catch(() => null))?.error ??
+                  'The Record copy could not be made.',
+              );
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(await response.blob());
+            link.download = recordCopyFilename(sampleId);
+            link.click();
+            URL.revokeObjectURL(link.href);
+          } catch (e) {
+            setError((e as Error).message);
+          } finally {
+            setExporting(false);
+          }
+        }}
+      >
+        {exporting ? 'Exporting…' : 'Export record copy'}
+      </button>
+      {error && (
+        <span role="alert" className="flash inline error">
+          {error}
+        </span>
+      )}
+    </span>
   );
 }
 

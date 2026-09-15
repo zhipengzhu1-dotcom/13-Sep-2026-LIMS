@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import type { Signature, SignedContent } from './contracts.ts';
+import type { RecordSignature } from './record-copy.ts';
 
 /** A signature row as stored; `key` is the signed command's key in hex. */
 type Row = {
@@ -128,6 +129,31 @@ export class SignatureStore {
           revision: -1,
         },
         valid: command !== null && matches(row),
+      };
+    });
+  }
+
+  /** One Sample's signatures oldest first, each exactly as stored, text
+   * fields unparsed, with whether it verifies against its hash. For a
+   * Record copy, so the hash can be recomputed from the copy alone. */
+  stored(sampleId: string): RecordSignature[] {
+    return (
+      this.db
+        .prepare(`${columns} WHERE sampleId=? ORDER BY signedAt, id`)
+        .all(sampleId) as Row[]
+    ).map((row) => {
+      const { key, ...fields } = row;
+      const statement = parseStored<SignedContent>(
+        row.signedContent,
+      )?.reviewStatement;
+      return {
+        commandId: key.replace(
+          /^(.{8})(.{4})(.{4})(.{4})(.{12})$/,
+          '$1-$2-$3-$4-$5',
+        ),
+        ...fields,
+        ...(typeof statement === 'string' && { reviewStatement: statement }),
+        verified: matches(row),
       };
     });
   }
