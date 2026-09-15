@@ -88,9 +88,10 @@ const NOW = '2026-09-10T12:00:00.000Z';
  * Laboratory opened. */
 const byUsers = (entries: AuditEntry[]) =>
   entries.filter((e) => e.recordType !== 'Method');
-/** What an Approval signature attests was reviewed, as issue #31 words it. */
+/** What an Approval signature attests was reviewed, as issue #31 words it
+ * and #70 extends it to Not reported Tests. */
 const reviewStatement =
-  "The Results, their calculation worksheets, the original instrument data, any OOS investigations and the Sample's audit trail were reviewed.";
+  "The Results, their calculation worksheets, the original instrument data, any OOS investigations, any Not reported Tests and their Nonconforming work Forms, and the Sample's audit trail were reviewed.";
 const target = (s: Sample) => ({ sampleId: s.id, revision: s.revision });
 /** The text of the OOS rule blocking Approval or Publishing, or null. */
 const approvalBlockerReason = (s: Sample) =>
@@ -2837,6 +2838,40 @@ test('an Approval signed before the review statement existed still verifies, wit
   assert.equal('reviewStatement' in signature, false);
 });
 
+test('an Approval signed with the review statement from before Not reported Tests still verifies, showing the statement it was signed with', (t) => {
+  const lab = memory(t);
+  const sample = submitted(lab);
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  const store = new SignatureStore(db);
+  const earlier =
+    "The Results, their calculation worksheets, the original instrument data, any OOS investigations and the Sample's audit trail were reviewed.";
+  store.record(
+    {
+      sampleId: sample.id,
+      signerId: 'manager',
+      printedName: 'Taylor Brooks',
+      signedAt: NOW,
+      meaning: 'approved by',
+      command: {
+        commandId: '00000000-0000-4000-8000-000000000070',
+        type: 'approve',
+        sampleId: sample.id,
+        revision: sample.revision,
+      },
+    },
+    {
+      sample,
+      certificate: { version: 1, sha256: 'a'.repeat(64) },
+      reviewStatement: earlier,
+    },
+    Uint8Array.from(Buffer.from('00000000000040008000000000000070', 'hex')),
+  );
+  const [signature] = store.list();
+  assert.equal(signature.valid, true);
+  assert.equal(signature.reviewStatement, earlier);
+});
+
 test('a signature altered in the database reads as invalid, without hiding it or the rest of the record', (t) => {
   const { lab, file } = onFile(t);
   let s = submitted(lab);
@@ -3134,6 +3169,424 @@ const conclude = (
   outcome,
   assignableCause,
   causationConfirmed,
+});
+
+const FORM = 'NCW-26-014';
+const closeTest = (s: Sample, testId = 'NIT-001-v1', fields: object = {}) => ({
+  type: 'closeTestAsNotReported',
+  ...target(s),
+  testId,
+  reason: 'Retest maximum reached',
+  formReference: FORM,
+  ...fields,
+});
+const reopenTest = (
+  s: Sample,
+  testId = 'NIT-001-v1',
+  reason = 'Retained material found in the second store.',
+) => ({ type: 'reopenNotReportedTest', ...target(s), testId, reason });
+
+/** Opens, checks and concludes Invalidated an investigation on the Test's
+ * current Result, which is over its Limit. */
+function invalidated(
+  lab: Laboratory,
+  s: Sample,
+  investigationId = 'OOS26-0001',
+  testId = 'NIT-001-v1',
+) {
+  s = run(lab, openOos(s, testId), 'manager');
+  s = run(lab, labErrorCheck(s, investigationId), 'analyst');
+  return run(
+    lab,
+    conclude(s, investigationId, 'Invalidated', 'Standard diluted twice.'),
+    'manager',
+  );
+}
+
+test('a Manager closes a Test whose Result was Invalidated as not reported, audited with reason and Form, and may then give Approval', (t) => {
+  const lab = memory(t);
+  let s = invalidated(lab, outOfSpecification(lab));
+  assert.equal(s.status, 'Awaiting approval');
+  const { outcome, changes } = audited(lab, closeTest(s), 'manager');
+  s = outcome.samples[0];
+  assert.deepEqual(changes, [
+    [
+      `Test ${s.id}/NIT-001-v1`,
+      'notReported.reason',
+      null,
+      'Retest maximum reached',
+      null,
+    ],
+    [`Test ${s.id}/NIT-001-v1`, 'notReported.formReference', null, FORM, null],
+  ]);
+  const entry = lab
+    .auditTrail(s.id)
+    .find((e) => e.field === 'notReported.formReference')!;
+  assert.deepEqual(
+    [entry.actor, entry.at, entry.commandType],
+    ['manager', NOW, 'closeTestAsNotReported'],
+  );
+  assert.deepEqual(s.tests[0].notReported, {
+    reason: 'Retest maximum reached',
+    formReference: FORM,
+    by: 'manager',
+    at: NOW,
+  });
+  // Closing is not Bench work: the Manager who opened, concluded and closed
+  // gives Approval.
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  assert.equal(s.status, 'Approved');
+  assert.deepEqual(
+    lab.snapshot().signatures.at(-1)?.reviewStatement,
+    reviewStatement,
+  );
+  // No Confirmed OOS, so nothing waits for a Client notification.
+  s = run(lab, publish(s), 'coordinator');
+  assert.equal(s.status, 'Published');
+});
+
+test('closing as not reported is refused a Test with a current Result, a Confirmed OOS, no Result, an open investigation or one already closed, and bad input', (t) => {
+  const lab = memory(t);
+  const label = 'Impurity A (NIT-001 v1)';
+  /** Refuses the close with exactly `message`, saving and auditing nothing. */
+  const refused = (command: object, message: string) => {
+    const before = lab.snapshot();
+    assert.throws(
+      () => run(lab, command, 'manager'),
+      (e: Error) => e.message === message,
+      message,
+    );
+    assert.deepEqual(lab.snapshot(), before, message);
+  };
+  refused(
+    closeTest(assigned(lab)),
+    `No Result was entered on ${label}, so it cannot be closed as not reported.`,
+  );
+  let s = outOfSpecification(lab);
+  refused(
+    closeTest(s, 'NIT-003-v1'),
+    'Impurity B (NIT-003 v1) reports a current Result, so it cannot be closed as not reported.',
+  );
+  refused(
+    closeTest(s),
+    `${label} reports a current Result, so it cannot be closed as not reported.`,
+  );
+  s = run(lab, openOos(s), 'manager');
+  refused(
+    closeTest(s),
+    `OOS investigation OOS26-0001 is open on ${label}, so it cannot be closed as not reported.`,
+  );
+  s = run(
+    lab,
+    {
+      ...labErrorCheck(s, 'OOS26-0001'),
+      findings: 'No laboratory error found.',
+      errorIdentified: false,
+    },
+    'analyst',
+  );
+  s = run(lab, conclude(s, 'OOS26-0001', 'Confirmed'), 'manager');
+  refused(
+    closeTest(s),
+    `The ${label} Result is a confirmed OOS (OOS26-0001), so the Test cannot be closed as not reported.`,
+  );
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  refused(closeTest(s), 'Approved samples are locked.');
+  s = invalidated(lab, outOfSpecification(lab), 'OOS26-0002');
+  refused(
+    closeTest(s, 'NIT-001-v1', { reason: 'Analyst on leave' }),
+    'reason: Choose why the Test is not reported: Retest maximum reached or No retained material.',
+  );
+  refused(
+    closeTest(s, 'NIT-001-v1', { formReference: ' ' }),
+    'formReference: Cite the Nonconforming work Form for the Test not reported.',
+  );
+  s = run(lab, closeTest(s), 'manager');
+  refused(closeTest(s), `${label} is already a Not reported Test.`);
+});
+
+test('only a Manager, or an Admin as one, closes or reopens a Not reported Test', (t) => {
+  const lab = memory(t);
+  let s = invalidated(lab, outOfSpecification(lab));
+  for (const actor of ['coordinator', 'analyst'])
+    assert.throws(
+      () => run(lab, closeTest(s), actor),
+      /requires the manager role/,
+      actor,
+    );
+  s = run(lab, closeTest(s), 'admin');
+  for (const actor of ['coordinator', 'analyst'])
+    assert.throws(
+      () => run(lab, reopenTest(s), actor),
+      /requires the manager role/,
+      actor,
+    );
+  s = run(lab, reopenTest(s), 'admin');
+  assert.equal(s.tests[0].notReported, null);
+});
+
+test('a Test is closed as not reported while In progress, Returned or in an Amendment, and never On hold, Approved, Published or Withdrawn', (t) => {
+  const lab = memory(t);
+  // In progress: the investigation runs before submission.
+  let s = assigned(lab);
+  s = run(lab, result(s, 'NIT-001-v1', 30), 'analyst');
+  s = invalidated(lab, s);
+  assert.equal(s.status, 'In progress');
+  assert.equal(run(lab, closeTest(s), 'manager').tests[0].notReported?.at, NOW);
+  // Returned.
+  s = invalidated(lab, outOfSpecification(lab), 'OOS26-0002');
+  s = run(lab, { type: 'return', ...target(s), comment: 'Retest.' }, 'manager');
+  assert.equal(s.status, 'Returned');
+  s = run(lab, closeTest(s), 'manager');
+  assert.equal(s.tests[0].notReported?.reason, 'Retest maximum reached');
+  // On hold and Withdrawn.
+  const onHold = held(lab);
+  assert.throws(
+    () => run(lab, closeTest(onHold), 'manager'),
+    /on hold for a Receipt deviation/,
+  );
+  const withdrawn = run(lab, instruction(held(lab), 'withdraw'), 'coordinator');
+  assert.throws(
+    () => run(lab, closeTest(withdrawn), 'manager'),
+    /The Client withdrew this Sample/,
+  );
+  // Approved, Published, and in an Amendment.
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  assert.throws(
+    () => run(lab, reopenTest(s), 'manager'),
+    /Approved samples are locked/,
+  );
+  s = run(lab, publish(s), 'coordinator');
+  assert.throws(
+    () => run(lab, reopenTest(s), 'manager'),
+    /Published Samples are locked/,
+  );
+  assert.throws(
+    () => run(lab, closeTest(s, 'NIT-003-v1'), 'manager'),
+    /Published Samples are locked/,
+  );
+});
+
+test('an Admin who entered a Result and then closed a Test as not reported is still refused Approval for that Bench work', (t) => {
+  const lab = memory(t);
+  let s = run(lab, receipt, 'coordinator');
+  s = run(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'admin' },
+    'coordinator',
+  );
+  s = run(lab, result(s, 'NIT-001-v1', 30), 'admin');
+  s = run(lab, result(s, 'NIT-003-v1', 2.5), 'admin');
+  s = run(lab, openOos(s), 'manager');
+  s = run(lab, labErrorCheck(s, 'OOS26-0001'), 'admin');
+  s = run(
+    lab,
+    conclude(s, 'OOS26-0001', 'Invalidated', 'Standard diluted twice.'),
+    'manager',
+  );
+  s = run(lab, closeTest(s), 'admin');
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'admin');
+  assert.throws(
+    () => run(lab, { type: 'approve', ...target(s) }, 'admin'),
+    (e: Error & { status: number }) =>
+      e.status === 403 &&
+      e.message ===
+        'You entered a Result on Impurity A (NIT-001 v1), so another Manager must give Approval.',
+  );
+  // The Manager who concluded, but did no Bench work, gives Approval.
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  assert.equal(s.status, 'Approved');
+});
+
+test('no Result is entered on a Not reported Test until a Manager reopens it with a reason, and then a Retest is', (t) => {
+  const lab = memory(t);
+  let s = invalidated(lab, outOfSpecification(lab));
+  s = run(lab, { type: 'return', ...target(s), comment: 'Retest.' }, 'manager');
+  s = run(lab, closeTest(s), 'manager');
+  const retest = () => ({
+    ...result(s, 'NIT-001-v1', 12.4),
+    attachmentId: retestWorksheet(lab),
+  });
+  const attempt = retest();
+  const before = lab.snapshot();
+  assert.throws(
+    () => run(lab, attempt, 'analyst'),
+    (e: Error) =>
+      e.message ===
+      'Impurity A (NIT-001 v1) is a Not reported Test, so no Result can be entered on it. A Manager must reopen it first.',
+  );
+  assert.deepEqual(lab.snapshot(), before);
+  assert.throws(
+    () => run(lab, reopenTest(s, 'NIT-001-v1', 'no'), 'manager'),
+    /Give a reason for reopening the Not reported Test/,
+  );
+  const reason = 'Retained material found in the second store.';
+  const { outcome, changes } = audited(lab, reopenTest(s), 'manager');
+  s = outcome.samples[0];
+  assert.deepEqual(changes, [
+    [
+      `Test ${s.id}/NIT-001-v1`,
+      'notReported.reason',
+      'Retest maximum reached',
+      null,
+      reason,
+    ],
+    [
+      `Test ${s.id}/NIT-001-v1`,
+      'notReported.formReference',
+      FORM,
+      null,
+      reason,
+    ],
+  ]);
+  assert.throws(
+    () => run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst'),
+    /Enter a Result for every Test/,
+    'a Retest is due again',
+  );
+  s = run(lab, retest(), 'analyst');
+  assert.equal(s.tests[0].results[1].retestAfter, 'OOS26-0001');
+});
+
+test('the Analyst submits and signs a Sample whose every Test is not reported, and its Certificate says so, row by row', (t) => {
+  const lab = memory(t);
+  let s = assigned(lab);
+  s = run(lab, result(s, 'NIT-001-v1', 30), 'analyst');
+  s = run(lab, result(s, 'NIT-003-v1', 120), 'analyst');
+  s = invalidated(lab, s);
+  s = invalidated(lab, s, 'OOS26-0002', 'NIT-003-v1');
+  assert.throws(
+    () => run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst'),
+    /Enter a Result for every Test/,
+  );
+  s = run(lab, closeTest(s), 'manager');
+  s = run(
+    lab,
+    closeTest(s, 'NIT-003-v1', { reason: 'No retained material' }),
+    'manager',
+  );
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  assert.equal(lab.snapshot().signatures.at(-1)?.meaning, 'performed by');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  const { content } = lab.certificate(s.id);
+  const day = laboratoryDay(s.receivedAt);
+  assert.deepEqual(content.results, [
+    {
+      testId: 'NIT-001-v1',
+      analyte: 'Impurity A',
+      methodCode: 'NIT-001',
+      methodVersion: 1,
+      technique: 'LC-MS/MS',
+      analysedOn: day,
+      unit: 'ng/day',
+      lod: 1,
+      loq: 3,
+      notReported: 'Retest maximum reached',
+      investigations: [
+        {
+          id: 'OOS26-0001',
+          outcome: 'Invalidated',
+          result: { value: 30, qualifier: 'quantified', unit: 'ng/day' },
+        },
+      ],
+    },
+    {
+      testId: 'NIT-003-v1',
+      analyte: 'Impurity B',
+      methodCode: 'NIT-003',
+      methodVersion: 1,
+      technique: 'LC-MS/MS',
+      analysedOn: day,
+      unit: 'ng/day',
+      lod: 1,
+      loq: 3,
+      notReported: 'No retained material',
+      investigations: [
+        {
+          id: 'OOS26-0002',
+          outcome: 'Invalidated',
+          result: { value: 120, qualifier: 'quantified', unit: 'ng/day' },
+        },
+      ],
+    },
+  ]);
+  assert.ok(
+    !JSON.stringify(content).includes(FORM),
+    'the Form reference is not on the Certificate',
+  );
+  const document = renderCertificate(content);
+  const table = document.sections.find((x) => x.kind === 'table');
+  assert.deepEqual(table?.kind === 'table' && table.rows, [
+    [
+      'Impurity A',
+      'NIT-001 v1 (LC-MS/MS)',
+      day,
+      'Not reported: Retest maximum reached',
+      'ng/day',
+      '—',
+      '—',
+      ['OOS26-0001, Invalidated, for Result 30 ng/day'],
+    ],
+    [
+      'Impurity B',
+      'NIT-003 v1 (LC-MS/MS)',
+      day,
+      'Not reported: No retained material',
+      'ng/day',
+      '—',
+      '—',
+      ['OOS26-0002, Invalidated, for Result 120 ng/day'],
+    ],
+  ]);
+  assert.deepEqual(table?.kind === 'table' && table.notes, []);
+});
+
+test('in an Amendment, closing a Test as not reported is the change submitted and named, and a Test approved not reported is never reopened', (t) => {
+  const lab = memory(t);
+  let s = invalidated(lab, outOfSpecification(lab));
+  s = run(lab, closeTest(s), 'manager');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  s = run(lab, publish(s), 'coordinator');
+  s = run(lab, startAmendment(s), 'manager');
+  // Approved not reported in version 1, so it stays not reported.
+  assert.throws(
+    () => run(lab, reopenTest(s), 'manager'),
+    (e: Error) =>
+      e.message ===
+      'Impurity A (NIT-001 v1) was not reported on an approved Certificate of Analysis, so it cannot be reopened.',
+  );
+  // The other Test's Result is found over its Limit and Invalidated in the
+  // Amendment; closing it is the Amendment's change.
+  s = run(
+    lab,
+    result(s, 'NIT-003-v1', 110, 'Recalculated from the raw data.'),
+    'analyst',
+  );
+  s = invalidated(lab, s, 'OOS26-0002', 'NIT-003-v1');
+  s = run(
+    lab,
+    closeTest(s, 'NIT-003-v1', { reason: 'No retained material' }),
+    'manager',
+  );
+  // Reopened and closed again within the Amendment, before its Approval.
+  s = run(lab, reopenTest(s, 'NIT-003-v1'), 'manager');
+  s = run(
+    lab,
+    closeTest(s, 'NIT-003-v1', { reason: 'No retained material' }),
+    'manager',
+  );
+  s = run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst');
+  s = run(lab, { type: 'approve', ...target(s) }, 'manager');
+  const v2 = lab.certificate(s.id, 2).content;
+  assert.equal(
+    v2.amendment?.changeSummary,
+    'Impurity B (NIT-003 v1): Result 2.5 → 110 ng/day, qualifier < LOQ → quantified, Conformity statement Complies → Does not comply (reason: "Recalculated from the raw data."); not reported, no retained material',
+  );
+  assert.deepEqual(
+    v2.results.map((r) => r.notReported),
+    ['Retest maximum reached', 'No retained material'],
+  );
 });
 
 test('a Result over its Limit is flagged and blocks Approval until an investigation is opened and closed', (t) => {
@@ -4857,7 +5310,7 @@ test('an Amendment corrects a Published Certificate and issues version n+1 marke
   );
   assert.throws(
     () => run(lab, { type: 'submitForApproval', ...target(s) }, 'analyst'),
-    /Correct at least one Result, with a reason, before submitting the Amendment/,
+    /Correct at least one Result, with a reason, or close a Test as not reported before submitting the Amendment/,
   );
   assert.throws(
     () => run(lab, result(s, 'NIT-001-v1', 3.1), 'analyst'),
@@ -5576,6 +6029,8 @@ test("the Quality lead is refused every command, whatever the Sample's state, an
     openOosInvestigation: (s) => openOos(s),
     recordLabErrorCheck: (s) => labErrorCheck(s, 'OOS-26-0001'),
     concludeOosInvestigation: (s) => conclude(s, 'OOS-26-0001', 'Confirmed'),
+    closeTestAsNotReported: (s) => closeTest(s),
+    reopenNotReportedTest: (s) => reopenTest(s),
     recordReceiptDeviation: (s) => ({
       type: 'recordReceiptDeviation',
       ...target(s),

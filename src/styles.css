@@ -1946,6 +1946,32 @@ body.resizing {
   font-weight: 600;
   color: var(--alert);
 }
+/* A Not reported Test: closed without a Result, so its state stands where
+ * the value would. */
+.not-reported {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--received);
+}
+/* The two reasons sit in a row in the inline close form. */
+.entry .not-reported-reason {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.entry .not-reported-reason label {
+  display: flex;
+  color: var(--ink);
+}
+/* The entry row sizes its text inputs; a radio keeps its own size. */
+.entry .not-reported-reason input {
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: 0;
+}
 .result-status.invalidated {
   color: var(--alert);
 }

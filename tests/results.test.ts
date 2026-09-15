@@ -15,6 +15,7 @@ import { WorkflowError } from '../src/laboratory/workflow-error.ts';
 import { changeSummary } from '../src/laboratory/amendments.ts';
 import type { AuditEntry } from '../src/laboratory/contracts.ts';
 import {
+  closeAsNotReported,
   concludeInvestigation,
   didBenchWork,
   oosRows,
@@ -22,6 +23,7 @@ import {
   recordClientNotification,
   recordLabErrorCheck,
   recordResult,
+  reopenNotReported,
   resultsView,
   retestLabel,
   separationOfDutiesRefusal,
@@ -920,6 +922,26 @@ const conclude = (
       act,
     ),
   );
+const FORM = 'NCW-26-014';
+/** Closes the Test as a Not reported Test, as the Manager. */
+const close = (
+  s: Sample,
+  reason: string = 'Retest maximum reached',
+  formReference = FORM,
+) =>
+  acted('manager', (act) =>
+    closeAsNotReported(s, { testId: 'NIT-001-v1', reason, formReference }, act),
+  );
+/** Reopens the Not reported Test, as the Manager, given the Sample's
+ * history so far. */
+const reopen = (
+  s: Sample,
+  reason = 'Retained material found in the second store.',
+  history: AuditEntry[] = [],
+) =>
+  acted('manager', (act) =>
+    reopenNotReported(s, { testId: 'NIT-001-v1', reason, history }, act),
+  );
 const SENT =
   'OOS26-0001 data, worksheet ATT-1 and the Laboratory error check findings, by email.';
 const notify = (
@@ -949,6 +971,7 @@ type Stage =
   | 'retest corrected'
   | 'invalidated again'
   | 'retested again'
+  | 'not reported'
   | 'confirmed'
   | 'notified'
   | 'confirmed and amended'
@@ -976,12 +999,17 @@ function staged(stage: Stage): Sample {
     'retest corrected',
     'invalidated again',
     'retested again',
+    'not reported',
   ];
   check(s, stage === 'error identified' || invalidated.includes(stage));
   if (stage === 'checked' || stage === 'error identified') return s;
   if (invalidated.includes(stage)) {
     conclude(s, 'Invalidated', 'Standard diluted twice.');
     if (stage === 'invalidated') return s;
+    if (stage === 'not reported') {
+      close(s);
+      return s;
+    }
     // Each Retest is calculated on its own worksheet.
     if (stage === 'retested' || stage === 'retest corrected')
       record(s, { worksheet: worksheets['ATT-2'] });
@@ -1509,6 +1537,7 @@ const approvalBlockers: [Stage, Refusal | null][] = [
   ],
   ['retested', null],
   ['retested over its Limit', uninvestigatedBlocker],
+  ['not reported', null],
   ['confirmed', null],
   ['notified', null],
 ];
@@ -1572,6 +1601,9 @@ const retests: [Stage, boolean, ReturnType<typeof decided>[]][] = [
     false,
     [decided(ID, 'Invalidated', 30), decided(SECOND, 'Invalidated', 31)],
   ],
+  // Closed without a Retest: nothing is due, and the Invalidated result is
+  // still listed.
+  ['not reported', false, [decided(ID, 'Invalidated', 30)]],
   ['confirmed', false, [decided(ID, 'Confirmed', 30)]],
   ['notified', false, [decided(ID, 'Confirmed', 30)]],
   // The Amendment keeps the confirmed investigation against the superseded
@@ -2047,6 +2079,321 @@ test('an investigation whose Result cannot be found is a programming error, not 
   );
 });
 
+// Not reported Tests: closed by the Manager without a Retest, and reopened.
+
+test('closing a Test whose Result was Invalidated makes it a Not reported Test, audited with its reason and Form, and nothing stays due', () => {
+  const s = staged('invalidated');
+  assert.equal(
+    resultsView(s).test('NIT-001-v1').closeBlocker,
+    null,
+    'the question allows it',
+  );
+  const { changes } = close(s, 'No retained material');
+  assert.deepEqual(changes, [
+    [RECORD, 'notReported.reason', null, 'No retained material', null],
+    [RECORD, 'notReported.formReference', null, FORM, null],
+  ]);
+  const t = resultsView(s).test('NIT-001-v1');
+  assert.deepEqual(t.notReported, {
+    reason: 'No retained material',
+    formReference: FORM,
+    by: 'manager',
+    at: AT,
+  });
+  assert.equal(t.retestRequired, false);
+  assert.equal(resultsView(s).approvalBlocker, null);
+  // The Invalidated result and its investigation stay on record.
+  assert.deepEqual(
+    t.history.map((h) => [
+      h.result.status,
+      h.result.value,
+      h.investigation?.id,
+    ]),
+    [['invalidated', 30, ID]],
+  );
+});
+
+test('a Test whose Retest was Invalidated in turn can be closed as not reported', () => {
+  const s = staged('invalidated again');
+  close(s);
+  const t = resultsView(s).test('NIT-001-v1');
+  assert.equal(t.notReported?.reason, 'Retest maximum reached');
+  assert.equal(t.retestRequired, false);
+});
+
+const notReportedLabel = 'Impurity A (NIT-001 v1)';
+
+type RefusedClose = {
+  name: string;
+  stage: Stage;
+  reason?: string;
+  formReference?: string;
+  /** The close blocker's refusal; absent when the input alone is refused. */
+  refusal?: Refusal;
+  message: string;
+};
+
+const refusedCloses: RefusedClose[] = [
+  {
+    name: 'a Test with a current complying Result',
+    stage: 'complying',
+    refusal: {
+      code: 'result current',
+      reason: `${notReportedLabel} reports a current Result, so it cannot be closed as not reported.`,
+      investigationId: null,
+    },
+    message: `${notReportedLabel} reports a current Result, so it cannot be closed as not reported.`,
+  },
+  {
+    name: 'a Test whose current Result is out of specification and uninvestigated',
+    stage: 'uninvestigated',
+    refusal: {
+      code: 'result current',
+      reason: `${notReportedLabel} reports a current Result, so it cannot be closed as not reported.`,
+      investigationId: null,
+    },
+    message: `${notReportedLabel} reports a current Result, so it cannot be closed as not reported.`,
+  },
+  {
+    name: 'a Test whose Retest is current',
+    stage: 'retested',
+    refusal: {
+      code: 'result current',
+      reason: `${notReportedLabel} reports a current Result, so it cannot be closed as not reported.`,
+      investigationId: null,
+    },
+    message: `${notReportedLabel} reports a current Result, so it cannot be closed as not reported.`,
+  },
+  {
+    name: 'a Test whose current Result is a confirmed OOS',
+    stage: 'confirmed',
+    refusal: {
+      code: 'confirmed OOS',
+      reason: `The ${notReportedLabel} Result is a confirmed OOS (${ID}), so the Test cannot be closed as not reported.`,
+      investigationId: ID,
+    },
+    message: `The ${notReportedLabel} Result is a confirmed OOS (${ID}), so the Test cannot be closed as not reported.`,
+  },
+  {
+    name: 'a Test with an open investigation',
+    stage: 'checked',
+    refusal: {
+      code: 'investigation open',
+      reason: `OOS investigation ${ID} is open on ${notReportedLabel}, so it cannot be closed as not reported.`,
+      investigationId: ID,
+    },
+    message: `OOS investigation ${ID} is open on ${notReportedLabel}, so it cannot be closed as not reported.`,
+  },
+  {
+    name: 'a Test that never had a Result',
+    stage: 'empty',
+    refusal: {
+      code: 'no result',
+      reason: `No Result was entered on ${notReportedLabel}, so it cannot be closed as not reported.`,
+      investigationId: null,
+    },
+    message: `No Result was entered on ${notReportedLabel}, so it cannot be closed as not reported.`,
+  },
+  {
+    name: 'a Test already not reported',
+    stage: 'not reported',
+    refusal: {
+      code: 'not reported',
+      reason: `${notReportedLabel} is already a Not reported Test.`,
+      investigationId: null,
+    },
+    message: `${notReportedLabel} is already a Not reported Test.`,
+  },
+  {
+    name: 'a reason other than the two allowed',
+    stage: 'invalidated',
+    reason: 'Analyst on leave',
+    message:
+      'Choose why the Test is not reported: Retest maximum reached or No retained material.',
+  },
+  {
+    name: 'a missing Nonconforming work Form reference',
+    stage: 'invalidated',
+    formReference: '  ',
+    message: 'Cite the Nonconforming work Form for the Test not reported.',
+  },
+];
+
+for (const c of refusedCloses)
+  test(`closing as not reported refuses ${c.name}, writing and changing nothing`, () => {
+    const s = staged(c.stage);
+    assert.deepEqual(
+      resultsView(s).test('NIT-001-v1').closeBlocker,
+      c.refusal ?? null,
+    );
+    const before = structuredClone(s);
+    const audit = recordingAudit();
+    watched = audit;
+    try {
+      assert.throws(
+        () => close(s, c.reason, c.formReference),
+        (e) => e instanceof WorkflowError && e.message === c.message,
+      );
+    } finally {
+      watched = null;
+    }
+    assert.deepEqual(audit.entries, []);
+    assert.deepEqual(s, before);
+  });
+
+test('no Result, not even a Retest, is recorded on a Not reported Test', () => {
+  const s = staged('not reported');
+  const refusal: Refusal = {
+    code: 'not reported',
+    reason: `${notReportedLabel} is a Not reported Test, so no Result can be entered on it. A Manager must reopen it first.`,
+    investigationId: null,
+  };
+  assert.deepEqual(resultsView(s).test('NIT-001-v1').entryBlocker, refusal);
+  const before = structuredClone(s);
+  assert.throws(
+    () => record(s, { worksheet: worksheets['ATT-2'] }),
+    (e) => e instanceof WorkflowError && e.message === refusal.reason,
+  );
+  assert.deepEqual(s, before);
+  assert.equal(
+    resultsView(staged('invalidated')).test('NIT-001-v1').entryBlocker,
+    null,
+  );
+});
+
+test('reopening a Not reported Test audits its reason, clears the close and makes a Retest due again', () => {
+  const s = staged('not reported');
+  const reason = 'Retained material found in the second store.';
+  const { changes } = reopen(s, reason);
+  assert.deepEqual(changes, [
+    [RECORD, 'notReported.reason', 'Retest maximum reached', null, reason],
+    [RECORD, 'notReported.formReference', FORM, null, reason],
+  ]);
+  const t = resultsView(s).test('NIT-001-v1');
+  assert.equal(t.notReported, null);
+  assert.equal(t.retestRequired, true);
+  assert.equal(t.retestDue?.investigation.id, ID);
+  assert.equal(
+    record(s, { value: 12, worksheet: worksheets['ATT-2'] }).kind,
+    'retest',
+  );
+});
+
+/** The history of a Sample whose Test was closed as not reported, then
+ * approved: the close's entries, then Approval's status entry. */
+const closedThenApproved = (s: Sample): AuditEntry[] => {
+  const entry = (
+    sequence: number,
+    fields: Pick<
+      AuditEntry,
+      | 'recordType'
+      | 'recordId'
+      | 'field'
+      | 'oldValue'
+      | 'newValue'
+      | 'commandType'
+    >,
+  ): AuditEntry => ({
+    sequence,
+    sampleId: s.id,
+    reason: null,
+    actor: 'manager',
+    at: AT,
+    commandId: `C${sequence}`,
+    ...fields,
+  });
+  return [
+    entry(1, {
+      recordType: 'Test',
+      recordId: `${s.id}/NIT-001-v1`,
+      field: 'notReported.reason',
+      oldValue: null,
+      newValue: 'Retest maximum reached',
+      commandType: 'closeTestAsNotReported',
+    }),
+    entry(2, {
+      recordType: 'Sample',
+      recordId: s.id,
+      field: 'status',
+      oldValue: 'Awaiting approval',
+      newValue: 'Approved',
+      commandType: 'approve',
+    }),
+  ];
+};
+
+const refusedReopens: {
+  name: string;
+  stage: Stage;
+  reason?: string;
+  history?: (s: Sample) => AuditEntry[];
+  refusal?: Refusal;
+  message: string;
+}[] = [
+  {
+    name: 'a Test that is not a Not reported Test',
+    stage: 'invalidated',
+    refusal: {
+      code: 'not closed',
+      reason: `${notReportedLabel} is not a Not reported Test.`,
+      investigationId: null,
+    },
+    message: `${notReportedLabel} is not a Not reported Test.`,
+  },
+  {
+    name: 'a Test not reported on an approved Certificate',
+    stage: 'not reported',
+    history: closedThenApproved,
+    refusal: {
+      code: 'approved',
+      reason: `${notReportedLabel} was not reported on an approved Certificate of Analysis, so it cannot be reopened.`,
+      investigationId: null,
+    },
+    message: `${notReportedLabel} was not reported on an approved Certificate of Analysis, so it cannot be reopened.`,
+  },
+  {
+    name: 'a missing reason',
+    stage: 'not reported',
+    reason: ' no',
+    message: 'Give a reason for reopening the Not reported Test.',
+  },
+];
+
+for (const c of refusedReopens)
+  test(`reopening refuses ${c.name}, writing and changing nothing`, () => {
+    const s = staged(c.stage);
+    const history = c.history?.(s) ?? [];
+    assert.deepEqual(
+      resultsView(s).test('NIT-001-v1').reopenBlocker(history),
+      c.refusal ?? null,
+    );
+    const before = structuredClone(s);
+    const audit = recordingAudit();
+    watched = audit;
+    try {
+      assert.throws(
+        () => reopen(s, c.reason, history),
+        (e) => e instanceof WorkflowError && e.message === c.message,
+      );
+    } finally {
+      watched = null;
+    }
+    assert.deepEqual(audit.entries, []);
+    assert.deepEqual(s, before);
+  });
+
+test('a Test closed again after an Approval it was reopened before is judged by its latest close', () => {
+  const s = staged('not reported');
+  const history = closedThenApproved(s);
+  // Closed again after that Approval, in an Amendment: its own close.
+  history.push({
+    ...history[0],
+    sequence: 3,
+    commandId: 'C3',
+  });
+  assert.equal(resultsView(s).test('NIT-001-v1').reopenBlocker(history), null);
+});
+
 // The Amendment change summary of a Retest, from the entries its commands
 // wrote. Only Result entries after the start belong to the Amendment.
 
@@ -2083,8 +2430,90 @@ function amendmentHistory(s: Sample) {
           commandId,
         });
     },
+    /** Closes the Test as not reported, or reopens it, as the Manager. */
+    manage(act: 'close' | 'reopen', reason?: string) {
+      const commandId = `C${history.length + 1}`;
+      const audit = recordingAudit();
+      const by = { actor: 'manager', at: AT, audit };
+      if (act === 'close')
+        closeAsNotReported(
+          s,
+          {
+            testId: 'NIT-001-v1',
+            reason: reason ?? 'Retest maximum reached',
+            formReference: FORM,
+          },
+          by,
+        );
+      else
+        reopenNotReported(
+          s,
+          {
+            testId: 'NIT-001-v1',
+            reason: reason ?? 'Material found.',
+            history,
+          },
+          by,
+        );
+      for (const change of audit.entries)
+        history.push({
+          ...change,
+          sequence: history.length + 1,
+          actor: 'manager',
+          at: AT,
+          commandType:
+            act === 'close'
+              ? 'closeTestAsNotReported'
+              : 'reopenNotReportedTest',
+          commandId,
+        });
+    },
   };
 }
+
+test('an Amendment change summary names a Test closed as not reported, with its reason', () => {
+  const s = sampleOf();
+  record(s, { value: 30 });
+  const amendment = amendmentHistory(s);
+  open(s, 'NIT-001-v1', () => 2);
+  check(s, true, SECOND);
+  conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
+  amendment.manage('close', 'No retained material');
+  assert.equal(
+    changeSummary(s, amendment.history),
+    'Impurity A (NIT-001 v1): not reported, no retained material',
+  );
+});
+
+test('an Amendment change summary names a Retest and then the Test closed as not reported', () => {
+  const s = sampleOf();
+  record(s, { value: 30 });
+  const amendment = amendmentHistory(s);
+  open(s, 'NIT-001-v1', () => 2);
+  check(s, true, SECOND);
+  conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
+  amendment.enter({ value: 31, worksheet: worksheets['ATT-2'] });
+  open(s, 'NIT-001-v1', () => 3);
+  check(s, true, 'OOS26-0003');
+  conclude(s, 'Invalidated', 'Column overloaded.', 'OOS26-0003');
+  amendment.manage('close');
+  assert.equal(
+    changeSummary(s, amendment.history),
+    'Impurity A (NIT-001 v1): Result 30 → 31 ng/day, worksheet replaced (Retest after OOS26-0002, Invalidated: Standard diluted twice.); not reported, retest maximum reached',
+  );
+});
+
+test('an Amendment change summary leaves out a Test closed and reopened within the Amendment', () => {
+  const s = sampleOf();
+  record(s, { value: 30 });
+  const amendment = amendmentHistory(s);
+  open(s, 'NIT-001-v1', () => 2);
+  check(s, true, SECOND);
+  conclude(s, 'Invalidated', 'Standard diluted twice.', SECOND);
+  amendment.manage('close');
+  amendment.manage('reopen');
+  assert.equal(changeSummary(s, amendment.history), null);
+});
 
 test('an Amendment change summary gives a Retest the investigation it follows as its reason', () => {
   const s = sampleOf();

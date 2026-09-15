@@ -41,11 +41,13 @@ import { amendmentOf, changeSummary, replacedVersion } from './amendments.ts';
 import { type Upload } from './attachments.ts';
 import { WorkflowError, requireRole } from './workflow-error.ts';
 import {
+  closeAsNotReported,
   concludeInvestigation,
   openInvestigation,
   recordClientNotification,
   recordLabErrorCheck,
   recordResult,
+  reopenNotReported,
   resultsView,
 } from './results.ts';
 
@@ -510,18 +512,19 @@ export const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
 
   submitForApproval(_command, actor, sample, { audit, certificates, history }) {
     requireAssignedAnalyst(actor, sample);
-    if (sample.tests.some((t) => !currentResult(t)))
+    // A Not reported Test is done: the Manager closed it without a Result.
+    if (resultsView(sample).tests.some((t) => !t.current && !t.notReported))
       throw new WorkflowError(
         'Enter a Result for every Test before submitting.',
       );
     // A Sample with a Certificate is back at the bench only in an Amendment,
-    // which exists to correct a Result.
+    // which exists to correct a Result or close a Test as not reported.
     if (
       certificates(sample.id).length &&
       !changeSummary(sample, history(sample))
     )
       throw new WorkflowError(
-        'Correct at least one Result, with a reason, before submitting the Amendment.',
+        'Correct at least one Result, with a reason, or close a Test as not reported before submitting the Amendment.',
       );
     audit.set(
       auditRecord.sample(sample),
@@ -690,6 +693,36 @@ export const sampleHandlers: { [T in SampleCommandType]: SampleHandler<T> } = {
         outcome: command.outcome,
         assignableCause: command.assignableCause,
         causationConfirmed: command.causationConfirmed,
+      },
+      { actor: actor.id, at, audit },
+    );
+  },
+
+  closeTestAsNotReported(command, actor, sample, { at, audit }) {
+    requireRole(actor, 'manager');
+    // Wherever the Manager may conclude an investigation; Approved, Published
+    // and Withdrawn are refused in execute.
+    requireNotHeld(sample);
+    closeAsNotReported(
+      sample,
+      {
+        testId: command.testId,
+        reason: command.reason,
+        formReference: command.formReference,
+      },
+      { actor: actor.id, at, audit },
+    );
+  },
+
+  reopenNotReportedTest(command, actor, sample, { at, audit, history }) {
+    requireRole(actor, 'manager');
+    requireNotHeld(sample);
+    reopenNotReported(
+      sample,
+      {
+        testId: command.testId,
+        reason: command.reason,
+        history: history(sample),
       },
       { actor: actor.id, at, audit },
     );

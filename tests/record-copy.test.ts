@@ -495,7 +495,7 @@ test('the PDF prints the whole record: who made the copy, receipt, every Result 
         'Approved by',
         'Taylor Brooks',
         '2026-09-10 12:00:00 UTC',
-        "The Results, their calculation worksheets, the original instrument data, any OOS investigations and the Sample's audit trail were reviewed.",
+        "The Results, their calculation worksheets, the original instrument data, any OOS investigations, any Not reported Tests and their Nonconforming work Forms, and the Sample's audit trail were reviewed.",
         'Verified',
       ],
     ],
@@ -645,6 +645,140 @@ test('the PDF prints an Invalidated result, its OOS investigation and the Retest
   );
   assert.ok(files.has(`worksheets/${original.id}/worksheet.csv`));
   assert.ok(files.has(`worksheets/${retest.id}/worksheet.csv`));
+});
+
+test('the Record copy holds a Test closed as not reported, reopened and closed again, with each reason and Form reference', async () => {
+  const lab = laboratory();
+  let s = run(lab, receipt, 'coordinator');
+  s = run(
+    lab,
+    { type: 'assign', ...target(s), assignee: 'analyst' },
+    'coordinator',
+  );
+  s = entered(lab, s, 30, worksheet(lab).id);
+  const testId = s.tests[0].id;
+  s = run(
+    lab,
+    { type: 'openOosInvestigation', ...target(s), testId },
+    'manager',
+  );
+  const id = s.investigations[0].id;
+  s = run(
+    lab,
+    {
+      type: 'recordLabErrorCheck',
+      ...target(s),
+      investigationId: id,
+      findings: 'Standard preparation log shows a dilution error.',
+      errorIdentified: true,
+    },
+    'analyst',
+  );
+  s = run(
+    lab,
+    {
+      type: 'concludeOosInvestigation',
+      ...target(s),
+      investigationId: id,
+      outcome: 'Invalidated',
+      assignableCause: 'Standard diluted twice (prep log p. 14).',
+      causationConfirmed: true,
+    },
+    'manager',
+  );
+  const close = (reason: string, formReference: string) => ({
+    type: 'closeTestAsNotReported',
+    ...target(s),
+    testId,
+    reason,
+    formReference,
+  });
+  s = run(lab, close('No retained material', 'NCW-26-013'), 'manager');
+  s = run(
+    lab,
+    {
+      type: 'reopenNotReportedTest',
+      ...target(s),
+      testId,
+      reason: 'Retained material found in the second store.',
+    },
+    'manager',
+  );
+  s = run(lab, close('Retest maximum reached', 'NCW-26-014'), 'manager');
+
+  const { record } = await recordOf(lab, s.id);
+  assert.deepEqual(record.sample.tests[0].notReported, {
+    reason: 'Retest maximum reached',
+    formReference: 'NCW-26-014',
+    by: 'manager',
+    at: NOW,
+  });
+  const doc = renderRecordCopy(record);
+  assert.equal(
+    fieldsOf(doc, 'Results', 'Impurity A (NIT-001 v1)').get('Not reported'),
+    'Retest maximum reached, Nonconforming work Form NCW-26-014 (closed by Taylor Brooks, 2026-09-10 12:00:00 UTC)',
+  );
+  assert.deepEqual(
+    rowsOf(doc, 'Audit trail', 'Audit trail')
+      .filter((row) => String(row[5]).startsWith('notReported.'))
+      .map((row) => row.slice(2)),
+    [
+      [
+        'Test closed as not reported',
+        'Taylor Brooks',
+        'Test Impurity A (NIT-001 v1)',
+        'notReported.reason',
+        'empty',
+        'No retained material',
+        '—',
+      ],
+      [
+        'Test closed as not reported',
+        'Taylor Brooks',
+        'Test Impurity A (NIT-001 v1)',
+        'notReported.formReference',
+        'empty',
+        'NCW-26-013',
+        '—',
+      ],
+      [
+        'Not reported Test reopened',
+        'Taylor Brooks',
+        'Test Impurity A (NIT-001 v1)',
+        'notReported.reason',
+        'No retained material',
+        'empty',
+        'Retained material found in the second store.',
+      ],
+      [
+        'Not reported Test reopened',
+        'Taylor Brooks',
+        'Test Impurity A (NIT-001 v1)',
+        'notReported.formReference',
+        'NCW-26-013',
+        'empty',
+        'Retained material found in the second store.',
+      ],
+      [
+        'Test closed as not reported',
+        'Taylor Brooks',
+        'Test Impurity A (NIT-001 v1)',
+        'notReported.reason',
+        'empty',
+        'Retest maximum reached',
+        '—',
+      ],
+      [
+        'Test closed as not reported',
+        'Taylor Brooks',
+        'Test Impurity A (NIT-001 v1)',
+        'notReported.formReference',
+        'empty',
+        'NCW-26-014',
+        '—',
+      ],
+    ],
+  );
 });
 
 test('the PDF shows a signature that fails its check as failing', async () => {

@@ -110,20 +110,29 @@ export function changeSummary(
 ): string | null {
   const start = amendmentOf(history);
   if (!start) return null;
-  const corrections = history
+  const since = history
     .filter(
       (e) =>
         e.sequence > start.sequence &&
         e.sampleId === sample.id &&
-        e.recordType === 'Test' &&
-        e.commandType === 'enterResult',
+        e.recordType === 'Test',
     )
     .sort((a, b) => a.sequence - b.sequence);
+  const corrections = since.filter((e) => e.commandType === 'enterResult');
   const clauses = sample.tests.flatMap((test) => {
-    const entries = corrections.filter(
-      (e) => e.recordId === `${sample.id}/${test.id}`,
-    );
-    if (!entries.length) return [];
+    const record = `${sample.id}/${test.id}`;
+    const entries = corrections.filter((e) => e.recordId === record);
+    // A Test closed as not reported in this Amendment, and still closed, is a
+    // change to the report: its row now says so.
+    const closed =
+      test.notReported &&
+      since.some(
+        (e) =>
+          e.recordId === record && e.commandType === 'closeTestAsNotReported',
+      )
+        ? `not reported, ${test.notReported.reason.toLowerCase()}`
+        : null;
+    if (!entries.length) return closed ? [`${testLabel(test)}: ${closed}`] : [];
     // Steps, one per command in the order they were recorded.
     const view = resultsView(sample);
     const steps: { entries: AuditEntry[]; retest?: RetestLineage }[] = [
@@ -210,7 +219,7 @@ export function changeSummary(
     return [
       `${testLabel(test)}: ${
         leading.length ? `${leading.map((f) => f.text).join(', ')}: ` : ''
-      }${steps.map(step).join('; ')}`,
+      }${[...steps.map(step), ...(closed ? [closed] : [])].join('; ')}`,
     ];
   });
   return clauses.length ? clauses.join('; ') : null;

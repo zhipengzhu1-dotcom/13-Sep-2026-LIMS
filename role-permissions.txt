@@ -93,6 +93,15 @@ Can:
   Invalidated (assignable cause required; a retest is then needed) or
   Confirmed, which closes it.
 - Start an Amendment on a Published Sample, with a reason.
+- Close a Test whose latest Result was Invalidated as a Not reported Test
+  (no open investigation on it): reason "Retest maximum reached" or "No
+  retained material", and the Nonconforming work Form reference. Audited,
+  not signed, and not Bench work, so the same Manager may give Approval.
+  Allowed while In progress, Returned, Awaiting approval or Amendment in
+  progress. No Result can then be entered on the Test.
+- Reopen a Not reported Test with a reason, until the Sample's Approval; a
+  Test not reported on an approved Certificate is never reopened. A Retest
+  is due again.
 - Add a new Acceptable intake entry (append-only; no screen in this release).
 
 Cannot: approve a Sample on which they entered, corrected or retested a

@@ -95,12 +95,20 @@ The assigned Analyst's recorded review of their own work on a Result under OOS i
 _Avoid_: Lab check, Phase I, self-review
 
 **Invalidated result**:
-A Result an OOS investigation found to have an assignable laboratory cause: a laboratory error the Laboratory error check identified and the Manager confirmed caused the value; it stays on record, marked with that cause, and is followed by a Retest.
+A Result an OOS investigation found to have an assignable laboratory cause: a laboratory error the Laboratory error check identified and the Manager confirmed caused the value; it stays on record, marked with that cause, and is followed by a Retest unless its Test becomes a Not reported Test.
 _Avoid_: Deleted result, void, superseded result
 
 **Retest**:
 A new Result on a Test whose Result was Invalidated, recording the Invalidated result and the OOS investigation it follows. It is calculated again, on its own calculation worksheet, and a correction of it is still that Retest.
 _Avoid_: Re-analysis, repeat, correction
+
+**Not reported Test**:
+A Test whose latest Result was Invalidated and which the Manager closed without a Retest, because the Retest maximum was reached or no retained material is left, citing the Nonconforming work Form. Until the Sample's Approval the Manager may reopen it with a reason, and a Retest is due again; once a version with it is approved, no Amendment reopens it. Its row on the Certificate of Analysis says it was not reported and why, lists its OOS investigations, and has no Conformity statement.
+_Avoid_: Closed Test, abandoned Test, cancelled Test
+
+**Nonconforming work**:
+Laboratory work, or its results, that does not conform to the lab's procedures or the Client's agreed requirements; recorded and evaluated on the lab's Nonconforming work Form outside Benchline (ISO/IEC 17025 7.10).
+_Avoid_: Deviation, nonconformance (in prose), CAPA
 
 **Bench work**:
 A person's own work on a Sample's Results: entering, correcting or retesting a Result, or recording a Laboratory error check. Whoever did bench work on a Sample never gives it Approval.
@@ -125,7 +133,7 @@ The person who may act in every lab role — as Coordinator, Analyst (when a Sam
 _Avoid_: Super admin, superuser, root
 
 **Approval**:
-Management's single electronically signed sign-off that a Sample's Results are correct and may be published; there is no separate peer review step. Its signature attests that the Results, their calculation worksheets, the original instrument data, any OOS investigations and the Sample's audit trail were reviewed, and an Amendment's Approval attests the same for the corrected Results.
+Management's single electronically signed sign-off that a Sample's Results are correct and may be published; there is no separate peer review step. Its signature attests that the Results, their calculation worksheets, the original instrument data, any OOS investigations, any Not reported Tests with their Nonconforming work Forms, and the Sample's audit trail were reviewed, and an Amendment's Approval attests the same for the corrected Results.
 _Avoid_: Review, release, sign-off
 
 **Electronic signature**:

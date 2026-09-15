@@ -217,6 +217,16 @@ export function renderRecordCopy(copy: RecordCopy): RecordDocument {
             ...(test.results.length
               ? []
               : [{ label: 'Results', value: 'None entered' }]),
+            // The close in force; any earlier close and each reopen, with
+            // its reason, are in the audit trail.
+            ...(test.notReported
+              ? [
+                  {
+                    label: 'Not reported',
+                    value: `${test.notReported.reason}, Nonconforming work Form ${test.notReported.formReference} (closed by ${by(test.notReported.by, test.notReported.at)})`,
+                  },
+                ]
+              : []),
           ],
         },
         ...test.results.map((r): DocumentSection => ({

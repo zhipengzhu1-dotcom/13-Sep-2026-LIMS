@@ -8,6 +8,7 @@ import {
   type ClientKind,
   type IssueChannel,
   type MaterialType,
+  type NotReportedReason,
   type Qualifier,
   type ReceiptDeviationKind,
   type ReportingUnit,
@@ -89,19 +90,47 @@ export type CertificateSignature = {
   signedAt: string;
 };
 
-/** One row per Test, reporting its current Result. */
-export type CertificateResult = {
+/** What every row names: the Test, and the investigations on its Results. */
+type CertificateRow = {
   testId: string;
   analyte: string;
   methodCode: string;
   methodVersion: number;
   technique: string;
-  /** The reported Result's analysis date; null when it has none. Absent on
-   * a version issued before analysis dates were recorded. */
+  /** The reported Result's analysis date, or for a Not reported Test its
+   * latest Invalidated result's; null when it has none. Absent on a version
+   * issued before analysis dates were recorded. */
   analysedOn?: string | null;
+  unit: ReportingUnit;
+  lod: number;
+  loq: number;
+  /** Every closed OOS investigation on the Test's Results, oldest first: on
+   * the reported Result, on an Invalidated Result it retests, or on a Result
+   * an Amendment corrected, each with the value, qualifier and unit of the
+   * Result it decided. Empty when there was none. */
+  investigations: CertificateInvestigation[];
+};
+
+/** One row per Test: its current Result, or that it was not reported. A
+ * version issued before Not reported Tests has reported rows only. */
+export type CertificateResult = ReportedCertificateResult | NotReportedRow;
+
+/** A Not reported Test's row: why it was not reported and its
+ * investigations, with no value, qualifier, Limit or Conformity statement,
+ * and never the Nonconforming work Form reference. */
+export type NotReportedRow = CertificateRow & {
+  notReported: NotReportedReason;
+  value?: never;
+  qualifier?: never;
+  limit?: never;
+  conformity?: never;
+};
+
+/** A row reporting the Test's current Result. */
+export type ReportedCertificateResult = CertificateRow & {
+  notReported?: never;
   value: number;
   qualifier: Qualifier;
-  unit: ReportingUnit;
   lod: number;
   loq: number;
   /** The Limit the Result was judged against; null for raw materials. */
@@ -116,11 +145,6 @@ export type CertificateResult = {
     illustrative: boolean;
   } | null;
   conformity: ConformityStatement;
-  /** Every closed OOS investigation on the Test's Results, oldest first: on
-   * the reported Result, on an Invalidated Result it retests, or on a Result
-   * an Amendment corrected, each with the value, qualifier and unit of the
-   * Result it decided. Empty when there was none. */
-  investigations: CertificateInvestigation[];
 };
 
 export type CertificateContent = {
@@ -256,7 +280,8 @@ export type CertificateSummary = Omit<Certificate, 'content'>;
 
 /**
  * The content of a Certificate for an approved Sample. Each Test must have a
- * current Result; the core calls this only once Approval's checks passed.
+ * current Result or be a Not reported Test; the core calls this only once
+ * Approval's checks passed.
  */
 export function certificateContent({
   sample,
@@ -287,6 +312,21 @@ export function certificateContent({
   );
   const results = resultsView(sample).tests.map((view): CertificateResult => {
     const { test, current: r } = view;
+    if (!r && view.notReported)
+      return {
+        testId: test.id,
+        analyte: test.analyteName,
+        methodCode: test.methodCode,
+        methodVersion: test.methodVersion,
+        technique: test.technique,
+        // The dates of testing include the analysis it was not reported on.
+        analysedOn: view.retestDue?.invalidated.analysedOn ?? null,
+        unit: test.unit,
+        lod: test.lod,
+        loq: test.loq,
+        notReported: view.notReported.reason,
+        investigations: view.certificateInvestigations,
+      };
     if (!r)
       throw new Error(`Test ${test.id} has no current Result to certify.`);
     return {

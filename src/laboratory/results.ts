@@ -2,9 +2,14 @@ import {
   conformity,
   isFinishedProduct,
   laboratoryDay,
+  notReportedFormPrompt,
+  notReportedReasonPrompt,
+  notReportedReasons,
   qualify,
+  reopenReasonPrompt,
   type AcceptableIntake,
   type AuditEntry,
+  type NotReported,
   type Result,
   type Sample,
   type Test,
@@ -88,7 +93,12 @@ export type RefusalCode =
   | 'worksheet reused'
   | 'no laboratory error'
   | 'notification pending'
-  | 'separation of duties';
+  | 'separation of duties'
+  | 'result current'
+  | 'no result'
+  | 'not reported'
+  | 'not closed'
+  | 'approved';
 
 /** A rule blocking an act right now. `reason` is exactly the text the
  * matching command refuses with. */
@@ -130,8 +140,33 @@ export type TestResults = {
   readonly current: Result | undefined;
   /** Every Result ever entered, oldest first. */
   readonly history: readonly ResultRecord[];
-  /** Whether the Test's Result was Invalidated and no Retest is recorded. */
+  /** Whether the Test's Result was Invalidated and no Retest is recorded,
+   * and the Test is not a Not reported Test. */
   readonly retestRequired: boolean;
+  /** The Manager's close, while the Test is a Not reported Test; else null. */
+  readonly notReported: NotReported | null;
+  /**
+   * Why the Test cannot be closed as a Not reported Test now, or null: it
+   * already is one, an investigation on it is open, it reports a current
+   * Result (a confirmed OOS named as such), or it never had a Result. Only a
+   * Test whose latest Result was Invalidated can be closed.
+   */
+  readonly closeBlocker: Refusal | null;
+  /** Why no Result, not even a Retest, can be recorded on the Test now: it is
+   * a Not reported Test. Null otherwise. */
+  readonly entryBlocker: Refusal | null;
+  /**
+   * Why the Test cannot be reopened now, or null: it is not a Not reported
+   * Test, or `history`, the Sample's audit entries so far, shows an Approval
+   * after its latest close, so a Certificate version with it not reported
+   * was approved and no Amendment reopens it.
+   */
+  reopenBlocker(
+    history: readonly Pick<
+      AuditEntry,
+      'sequence' | 'recordId' | 'field' | 'newValue' | 'commandType'
+    >[],
+  ): Refusal | null;
   /** While a Retest is required, the investigation it will follow and the
    * Invalidated result: the last one Invalidated on the Test. */
   readonly retestDue: RetestLineage | undefined;
@@ -369,8 +404,97 @@ export function resultsView(sample: Sample): SampleResults {
     },
     get retestRequired() {
       return (
-        !this.current && test.results.some((r) => r.status === 'invalidated')
+        !this.notReported &&
+        !this.current &&
+        test.results.some((r) => r.status === 'invalidated')
       );
+    },
+    get notReported() {
+      return test.notReported ?? null;
+    },
+    get closeBlocker() {
+      const label = testLabel(test);
+      const refusal = (
+        code: RefusalCode,
+        reason: string,
+        investigationId: string | null = null,
+      ): Refusal => ({ code, reason, investigationId });
+      if (this.notReported)
+        return refusal(
+          'not reported',
+          `${label} is already a Not reported Test.`,
+        );
+      const open = sample.investigations.find(
+        (i) => i.testId === test.id && i.status === 'Open',
+      );
+      if (open)
+        return refusal(
+          'investigation open',
+          `OOS investigation ${open.id} is open on ${label}, so it cannot be closed as not reported.`,
+          open.id,
+        );
+      const current = this.current;
+      const confirmed = current && investigationOf(sample, current);
+      if (confirmed?.outcome === 'Confirmed')
+        return refusal(
+          'confirmed OOS',
+          `The ${label} Result is a confirmed OOS (${confirmed.id}), so the Test cannot be closed as not reported.`,
+          confirmed.id,
+        );
+      if (current)
+        return refusal(
+          'result current',
+          `${label} reports a current Result, so it cannot be closed as not reported.`,
+        );
+      if (!test.results.length)
+        return refusal(
+          'no result',
+          `No Result was entered on ${label}, so it cannot be closed as not reported.`,
+        );
+      return null;
+    },
+    get entryBlocker(): Refusal | null {
+      return this.notReported
+        ? {
+            code: 'not reported',
+            reason: `${testLabel(test)} is a Not reported Test, so no Result can be entered on it. A Manager must reopen it first.`,
+            investigationId: null,
+          }
+        : null;
+    },
+    reopenBlocker(history) {
+      const label = testLabel(test);
+      if (!this.notReported)
+        return {
+          code: 'not closed',
+          reason: `${label} is not a Not reported Test.`,
+          investigationId: null,
+        };
+      // Reopening is refused from Approval on, so the latest close is the one
+      // in force; an Approval after it approved the Test not reported.
+      const record = auditRecord.test(sample, test).id;
+      const closedAt = history.reduce(
+        (latest, e) =>
+          e.recordId === record &&
+          e.field === 'notReported.reason' &&
+          e.newValue !== null
+            ? Math.max(latest, e.sequence)
+            : latest,
+        -Infinity,
+      );
+      const approvedSince = history.some(
+        (e) =>
+          e.commandType === 'approve' &&
+          e.field === 'status' &&
+          e.sequence > closedAt,
+      );
+      return approvedSince
+        ? {
+            code: 'approved',
+            reason: `${label} was not reported on an approved Certificate of Analysis, so it cannot be reopened.`,
+            investigationId: null,
+          }
+        : null;
     },
     get retestDue() {
       if (this.current) return undefined;
@@ -703,6 +827,8 @@ export function recordResult(
 ): RecordedKind {
   const view = resultsView(sample).test(input.testId);
   const { test } = view;
+  const closed = view.entryBlocker;
+  if (closed) throw new WorkflowError(closed.reason);
   const previous = view.current;
   // Only a correction supersedes a Result; without a current one this is a
   // first entry or a Retest, which the blocker does not stop.
@@ -968,6 +1094,75 @@ export function concludeInvestigation(
     );
     result.status = 'invalidated';
   }
+}
+
+export type CloseAsNotReportedInput = {
+  testId: string;
+  /** One of `notReportedReasons`; anything else is refused. */
+  reason: string;
+  /** The Nonconforming work Form cited; required. */
+  formReference: string;
+};
+
+/**
+ * Closes a Test whose latest Result was Invalidated as a Not reported Test,
+ * without a Retest, because the Retest maximum was reached or no retained
+ * material is left, citing the Nonconforming work Form. Not signed and not
+ * Bench work: the audit trail attributes the close to the Manager, as it does
+ * concluding an investigation (ADR-0006).
+ */
+export function closeAsNotReported(
+  sample: Sample,
+  { testId, reason, formReference }: CloseAsNotReportedInput,
+  { actor, at, audit }: Act,
+) {
+  const view = resultsView(sample).test(testId);
+  const blocked = view.closeBlocker;
+  if (blocked) throw new WorkflowError(blocked.reason);
+  const allowed = notReportedReasons.find((r) => r === reason);
+  if (!allowed) throw new WorkflowError(notReportedReasonPrompt);
+  const form = formReference.trim();
+  if (!form) throw new WorkflowError(notReportedFormPrompt);
+  audit.compare(auditRecord.test(sample, view.test), null, {
+    notReported: { reason: allowed, formReference: form },
+  });
+  view.test.notReported = {
+    reason: allowed,
+    formReference: form,
+    by: actor,
+    at,
+  };
+}
+
+export type ReopenNotReportedInput = {
+  testId: string;
+  reason: string;
+  /** The Sample's audit entries so far, to tell whether the Test was
+   * approved not reported. */
+  history: Parameters<TestResults['reopenBlocker']>[0];
+};
+
+/** Reopens a Not reported Test, with a reason, until a Certificate version
+ * with it not reported is approved; a Retest is then due again. The close
+ * stays on the audit trail. */
+export function reopenNotReported(
+  sample: Sample,
+  { testId, reason, history }: ReopenNotReportedInput,
+  { audit }: Act,
+) {
+  const view = resultsView(sample).test(testId);
+  const blocked = view.reopenBlocker(history);
+  if (blocked) throw new WorkflowError(blocked.reason);
+  const why = reason.trim();
+  if (why.length < 3) throw new WorkflowError(reopenReasonPrompt);
+  const { reason: was, formReference } = view.notReported!;
+  audit.compare(
+    auditRecord.test(sample, view.test),
+    { notReported: { reason: was, formReference } },
+    {},
+    { reason: why },
+  );
+  view.test.notReported = null;
 }
 
 export type ClientNotificationInput = {

@@ -206,6 +206,23 @@ export type Result = {
   retestAfter: string | null;
 };
 
+/** Why a Manager closed a Test as a Not reported Test: the only two. The
+ * Manager attests to either; Benchline counts no Retests. */
+export const notReportedReasons = [
+  'Retest maximum reached',
+  'No retained material',
+] as const;
+export type NotReportedReason = (typeof notReportedReasons)[number];
+
+/** A Manager's close of a Test as a Not reported Test, without a Retest. */
+export type NotReported = {
+  reason: NotReportedReason;
+  /** The Nonconforming work Form the close cites, held outside Benchline. */
+  formReference: string;
+  by: string;
+  at: string;
+};
+
 /** One Method applied to one Sample. The Method's identity and Analyte are
  * copied at receipt, so a later Method change never rewrites the Test. */
 export type Test = {
@@ -227,6 +244,10 @@ export type Test = {
   maximumDoseCeiling?: number | null;
   /** Every Result ever entered, oldest first, each with its status. */
   results: Result[];
+  /** Set while the Test is a Not reported Test; null once reopened, and
+   * absent on a Test never closed. Earlier closes stay on the audit trail.
+   * Written only by the Result & OOS investigation module. */
+  notReported?: NotReported | null;
 };
 
 /** The Result a Test currently reports, if any. */
@@ -579,6 +600,8 @@ export const auditedActLabels: Record<AuditedAct, string> = {
   openOosInvestigation: 'OOS investigation opened',
   recordLabErrorCheck: 'Lab error check recorded',
   concludeOosInvestigation: 'OOS investigation concluded',
+  closeTestAsNotReported: 'Test closed as not reported',
+  reopenNotReportedTest: 'Not reported Test reopened',
   recordReceiptDeviation: 'Receipt deviation recorded',
   recordClientInstruction: 'Client instruction recorded',
   recordClientOosNotification: 'Client informed of confirmed OOS',
@@ -717,9 +740,11 @@ export function signatureMeaning(
 }
 
 /** What every Approval signature, including an Amendment's, attests was
- * reviewed (§211.194(a)(8)). Its meaning stays "approved by". */
+ * reviewed (§211.194(a)(8)). Its meaning stays "approved by". An Approval
+ * signed before #70 keeps the statement stored in its Signed content, which
+ * named no Not reported Tests. */
 export const approvalReviewStatement =
-  "The Results, their calculation worksheets, the original instrument data, any OOS investigations and the Sample's audit trail were reviewed.";
+  "The Results, their calculation worksheets, the original instrument data, any OOS investigations, any Not reported Tests and their Nonconforming work Forms, and the Sample's audit trail were reviewed.";
 
 /** An Electronic signature as recorded. It never holds the password. */
 export type Signature = {
@@ -849,6 +874,14 @@ const required = (label: string) =>
     .min(1, `Enter the ${label}.`)
     .max(200);
 const optionalText = z.string().trim().max(200).default('');
+/** The Not reported Test commands' refusals of their input, word for word
+ * the module's. */
+export const notReportedReasonPrompt =
+  'Choose why the Test is not reported: Retest maximum reached or No retained material.';
+export const notReportedFormPrompt =
+  'Cite the Nonconforming work Form for the Test not reported.';
+export const reopenReasonPrompt =
+  'Give a reason for reopening the Not reported Test.';
 const optionalDate = date.nullable().default(null);
 
 const receiptDeviation = {
@@ -1022,6 +1055,29 @@ export const commandSchema = z.discriminatedUnion('type', [
     /** The Manager confirms the identified laboratory error caused the value:
      * true for Invalidated, false for Confirmed. Always stated. */
     causationConfirmed: z.boolean(),
+  }),
+  z.object({
+    commandId,
+    type: z.literal('closeTestAsNotReported'),
+    ...target,
+    testId: text,
+    reason: z.enum(notReportedReasons, { error: notReportedReasonPrompt }),
+    formReference: z
+      .string({ error: notReportedFormPrompt })
+      .trim()
+      .min(1, notReportedFormPrompt)
+      .max(200),
+  }),
+  z.object({
+    commandId,
+    type: z.literal('reopenNotReportedTest'),
+    ...target,
+    testId: text,
+    reason: z
+      .string({ error: reopenReasonPrompt })
+      .trim()
+      .min(3, reopenReasonPrompt)
+      .max(2000),
   }),
   z.object({
     commandId,

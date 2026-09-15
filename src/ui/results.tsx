@@ -5,8 +5,10 @@ import {
   isFinishedProduct,
   laboratoryDay,
   limitInForce,
+  notReportedReasons,
   qualify,
   type AcceptableIntake,
+  type AuditEntry,
   type Qualifier,
   type Result,
   type Snapshot,
@@ -22,6 +24,7 @@ import {
   resultsView,
   retestLabel,
   type RetestLineage,
+  type TestResults,
 } from '../laboratory/results';
 import { investigationStatusText, OosNote, RefusalNote } from './oos';
 import {
@@ -32,6 +35,7 @@ import {
   type Execute,
   initials,
   personName,
+  RequiredMark,
   stamp,
 } from './shared';
 
@@ -419,12 +423,98 @@ function RetestLineageText({
   );
 }
 
+/**
+ * The Manager's close of a Test as a Not reported Test, or its reopening,
+ * inline beneath the Test. Closing takes one of the two reasons and the
+ * Nonconforming work Form reference; reopening takes a reason.
+ */
+function NotReportedForm({
+  sample: s,
+  view,
+  busy,
+  execute,
+  onDone,
+}: {
+  sample: Sample;
+  view: TestResults;
+  busy: boolean;
+  execute: Execute;
+  onDone: () => void;
+}) {
+  const t = view.test;
+  const reopening = !!view.notReported;
+  const target = { sampleId: s.id, revision: s.revision, testId: t.id };
+  return (
+    <form
+      aria-label={`${reopening ? 'Reopen' : 'Close as not reported'}: ${t.analyteName}`}
+      onSubmit={async (e) => {
+        e.preventDefault();
+        const f = new FormData(e.currentTarget);
+        const typed = String(f.get('reason') ?? '');
+        // The choice is required, so a close always names one of the two.
+        const reason = notReportedReasons.find((r) => r === typed);
+        if (!reopening && !reason) return;
+        const saved = await execute(
+          reopening
+            ? { type: 'reopenNotReportedTest', ...target, reason: typed }
+            : {
+                type: 'closeTestAsNotReported',
+                ...target,
+                reason: reason!,
+                formReference: String(f.get('formReference') ?? ''),
+              },
+        );
+        if (saved) onDone();
+      }}
+    >
+      {reopening ? (
+        <label className="grow">
+          <span>
+            Reason for reopening <RequiredMark />
+          </span>
+          <input name="reason" required minLength={3} maxLength={2000} />
+        </label>
+      ) : (
+        <>
+          <fieldset className="priority not-reported-reason">
+            <legend>
+              Why it is not reported <RequiredMark />
+            </legend>
+            {notReportedReasons.map((reason) => (
+              <label key={reason}>
+                <input type="radio" name="reason" value={reason} required />
+                {reason}
+              </label>
+            ))}
+          </fieldset>
+          <label>
+            <span>
+              Nonconforming work Form <RequiredMark />
+            </span>
+            <input name="formReference" required maxLength={200} />
+          </label>
+        </>
+      )}
+      <button className="btn sm primary" disabled={busy}>
+        {reopening ? 'Reopen Test' : 'Close as not reported'}
+      </button>
+      <button type="button" className="btn sm" onClick={onDone}>
+        Cancel
+      </button>
+    </form>
+  );
+}
+
 /** Every requested test as one row. Unrecorded tests show their entry fields
  * inline for the assigned analyst, so a whole sample can be keyed in one pass
- * with Tab and Enter; a current Result opens for correction on request. */
+ * with Tab and Enter; a current Result opens for correction on request. A
+ * Test whose Result was Invalidated can be closed as not reported, and
+ * reopened, by a Manager. */
 export function TestSheet({
   sample: s,
   canRecord,
+  canManage,
+  history: sampleHistory,
   hasCertificate,
   busy,
   execute,
@@ -432,6 +522,13 @@ export function TestSheet({
 }: {
   sample: Sample;
   canRecord: boolean;
+  /** Whether the signed-in person may close or reopen a Not reported Test on
+   * the Sample in its state: a Manager, wherever investigations are
+   * concluded. */
+  canManage: boolean;
+  /** The Sample's audit entries, which tell whether a Not reported Test was
+   * approved not reported. */
+  history: readonly AuditEntry[];
   /** Whether the Sample has a Certificate of Analysis, decided from the
    * loaded Certificates as the core decides it. */
   hasCertificate: boolean;
@@ -440,6 +537,7 @@ export function TestSheet({
   data: Snapshot;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [managingId, setManagingId] = useState<string | null>(null);
   const [openHistory, setOpenHistory] = useState<string | null>(null);
   return (
     <table className="grid sheet">
@@ -459,8 +557,19 @@ export function TestSheet({
             ? view.correctionBlocker({ hasCertificate })
             : null;
         const blockerId = `correction-blocker-${s.id}-${t.id}`;
+        const notReported = view.notReported;
         const editing =
-          canRecord && (!current || (editingId === t.id && !blocker));
+          canRecord &&
+          !notReported &&
+          (!current || (editingId === t.id && !blocker));
+        // The Manager's close or reopen, asked as the core asks it. Closing is
+        // offered only where a Retest is due, the one state it is allowed in.
+        const reopenBlocker =
+          canManage && notReported ? view.reopenBlocker(sampleHistory) : null;
+        const reopenBlockerId = `reopen-blocker-${s.id}-${t.id}`;
+        const canClose = canManage && view.retestRequired && !view.closeBlocker;
+        const managing = managingId === t.id && !reopenBlocker;
+        const entryBlockerId = `entry-blocker-${s.id}-${t.id}`;
         const history = openHistory === t.id;
         // Earlier Results besides the current one, such as an Invalidated
         // result awaiting its retest.
@@ -468,7 +577,10 @@ export function TestSheet({
         const due = view.retestDue;
         const lineage = results.find((h) => h.result === current)?.retestOf;
         return (
-          <tbody key={t.id} className={editing ? 'editing' : undefined}>
+          <tbody
+            key={t.id}
+            className={editing || managing ? 'editing' : undefined}
+          >
             <tr>
               <td>
                 <span className="strong">{t.analyteName}</span>
@@ -489,6 +601,8 @@ export function TestSheet({
                       <WorksheetLink data={data} id={current.attachmentId} />
                     </span>
                   </>
+                ) : notReported ? (
+                  <span className="not-reported">Not reported</span>
                 ) : (
                   <span className="dim">— {t.unit}</span>
                 )}
@@ -512,6 +626,19 @@ export function TestSheet({
                         <RetestLineageText test={t} lineage={lineage} />
                       </span>
                     )}
+                  </>
+                ) : notReported ? (
+                  <>
+                    <span className="strong">{notReported.reason}</span>
+                    <span className="sub">
+                      Nonconforming work Form {notReported.formReference}
+                      {due && (
+                        <>
+                          {' · after '}
+                          <InvestigationLink id={due.investigation.id} />
+                        </>
+                      )}
+                    </span>
                   </>
                 ) : due ? (
                   <span className="oos-note">
@@ -561,11 +688,77 @@ export function TestSheet({
                       <RefusalNote id={blockerId} refusal={blocker} />
                     )}
                   </span>
+                ) : notReported ? (
+                  <span className="rec">
+                    <span>
+                      Closed by {personName(data, notReported.by)}{' '}
+                      <time className="num" dateTime={notReported.at}>
+                        {stamp(notReported.at)}
+                      </time>
+                    </span>
+                    {canManage && (
+                      <span className="rec-actions">
+                        {/* Disabled but focusable, its reason the note. */}
+                        <button
+                          className="link"
+                          aria-expanded={managing}
+                          aria-disabled={reopenBlocker ? true : undefined}
+                          aria-describedby={
+                            reopenBlocker ? reopenBlockerId : undefined
+                          }
+                          onClick={() => {
+                            if (!reopenBlocker)
+                              setManagingId(managing ? null : t.id);
+                          }}
+                        >
+                          Reopen
+                        </button>
+                      </span>
+                    )}
+                    {reopenBlocker && (
+                      <RefusalNote
+                        id={reopenBlockerId}
+                        refusal={reopenBlocker}
+                      />
+                    )}
+                    {canRecord && view.entryBlocker && (
+                      <RefusalNote
+                        id={entryBlockerId}
+                        refusal={view.entryBlocker}
+                      />
+                    )}
+                  </span>
+                ) : canClose ? (
+                  <span className="rec">
+                    <span className="dim">Not entered</span>
+                    <span className="rec-actions">
+                      <button
+                        className="link"
+                        aria-expanded={managing}
+                        onClick={() => setManagingId(managing ? null : t.id)}
+                      >
+                        Close as not reported
+                      </button>
+                    </span>
+                  </span>
                 ) : (
                   <span className="dim">Not entered</span>
                 )}
               </td>
             </tr>
+            {managing && (
+              <tr className="entry">
+                <td colSpan={4}>
+                  <NotReportedForm
+                    sample={s}
+                    view={view}
+                    busy={busy}
+                    execute={execute}
+                    onDone={() => setManagingId(null)}
+                  />
+                </td>
+              </tr>
+            )}
             {editing && (
               <tr className="entry">
                 <td colSpan={4}>

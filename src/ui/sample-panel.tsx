@@ -89,7 +89,14 @@ export function SamplePanel({
     (actsAs(person, 'coordinator') || actsAs(person, 'manager')) &&
     s.status === 'Published';
   const history = data.audit.filter((e) => auditsSample(e, s));
-  const recorded = s.tests.filter((t) => currentResult(t)).length;
+  // A Not reported Test is done, as the core decides it for submission.
+  const recorded = results.tests.filter(
+    (t) => t.current || t.notReported,
+  ).length;
+  // Wherever the Manager may conclude an investigation.
+  const canManage =
+    actsAs(person, 'manager') &&
+    !['Approved', 'Published', ...heldStatuses].includes(s.status);
   // A Sample with a Certificate that is back at the bench or awaiting
   // Approval is in an Amendment, as the core decides it.
   const versions = data.certificates.filter((c) => c.sampleId === s.id);
@@ -288,6 +295,8 @@ export function SamplePanel({
             <TestSheet
               sample={s}
               canRecord={canRecord}
+              canManage={canManage}
+              history={history}
               hasCertificate={versions.length > 0}
               busy={busy}
               execute={execute}
@@ -321,7 +330,7 @@ export function SamplePanel({
             <>
               {signatureNote}
               <span className="dim">
-                {recorded} of {s.tests.length} results recorded
+                {recorded} of {s.tests.length} Tests recorded or not reported
               </span>
               <button
                 className="btn primary"
@@ -337,7 +346,7 @@ export function SamplePanel({
                 }
                 title={
                   amendment && !amendmentChanges
-                    ? 'Correct at least one Result before submitting the Amendment.'
+                    ? 'Correct at least one Result, with a reason, or close a Test as not reported before submitting the Amendment.'
                     : undefined
                 }
                 onClick={() =>

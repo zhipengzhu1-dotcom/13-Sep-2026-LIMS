@@ -3,6 +3,7 @@ import {
   type CertificateContent,
   type CertificateResult,
   type ClientSuppliedField,
+  type ReportedCertificateResult,
 } from './certificate.ts';
 import { isFinishedProduct, type ClientContact } from './contracts.ts';
 import { reportedValue } from './results.ts';
@@ -97,7 +98,7 @@ const notRecorded = 'Not recorded';
 export const contactLine = (c: ClientContact) =>
   `${c.name}, ${c.role} · ${c.email} · ${c.phone}`;
 
-function limitSource(limit: NonNullable<CertificateResult['limit']>) {
+function limitSource(limit: NonNullable<ReportedCertificateResult['limit']>) {
   return `${limit.sourceTitle}, revision ${limit.sourceRevisionDate}, in force from ${limit.effectiveFrom}${limit.illustrative ? ' (illustrative value)' : ''}`;
 }
 
@@ -233,7 +234,9 @@ export function renderCertificate(
       }),
     });
   const notes = content.results.flatMap((r) =>
-    r.limit ? [`${r.analyte}: Limit source ${limitSource(r.limit)}.`] : [],
+    !r.notReported && r.limit
+      ? [`${r.analyte}: Limit source ${limitSource(r.limit)}.`]
+      : [],
   );
   sections.push({
     kind: 'table',
@@ -252,12 +255,19 @@ export function renderCertificate(
       r.analyte,
       `${r.methodCode} v${r.methodVersion} (${r.technique})`,
       ...(withReportContent ? [r.analysedOn ?? notRecorded] : []),
-      reportedValue({ lod: r.lod, loq: r.loq }, r),
+      // A Not reported Test states so and why, with no value to judge.
+      r.notReported
+        ? `Not reported: ${r.notReported}`
+        : reportedValue({ lod: r.lod, loq: r.loq }, r),
       r.unit,
       ...(finished
-        ? [r.limit ? `${r.limit.value} ${r.limit.unit}` : none]
+        ? [
+            !r.notReported && r.limit
+              ? `${r.limit.value} ${r.limit.unit}`
+              : none,
+          ]
         : []),
-      r.conformity,
+      r.notReported ? none : r.conformity,
       r.investigations.length
         ? r.investigations.map((i) => certificateInvestigationText(i, r))
         : none,
