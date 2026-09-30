@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# Visits every view every role can open, and the first Sample in each, and
-# records what the screen shows: a screenshot and the accessibility tree
-# (names, roles, disabled state) with volatile parts stripped, so two tours
-# can be compared with compare.sh. Tour a freshly started instance each time
-# (stop.sh, start.sh): every sign-in adds audit trail rows.
-# Usage: tour.sh <out-dir> [port] [roles...]
-#   default roles: coordinator analyst manager admin quality-lead
-#   BENCHLINE_TOUR_SCHEMES="light dark" also captures dark mode (default light)
 set -euo pipefail
 out="$1"
 port="${2:-5199}"
@@ -14,19 +6,10 @@ shift $(($# >= 2 ? 2 : 1))
 roles=("$@")
 [ ${#roles[@]} -gt 0 ] || roles=(coordinator analyst manager admin quality-lead)
 here="$(cd "$(dirname "$0")" && pwd)"
+source "$here/lib.sh"
 : "${AGENT_BROWSER_SESSION:?export AGENT_BROWSER_SESSION first (see SKILL.md, Drive)}"
 mkdir -p "$out"
-
-# The browser daemon occasionally answers "busy"; a command is retried before
-# the tour gives up.
-ab() {
-  local n
-  for n in 1 2 3 4; do
-    agent-browser "$@" && return 0
-    sleep "$n"
-  done
-  return 1
-}
+rail='nav[aria-label="Main navigation"] .rail-item'
 
 normalise() {
   sed -E \
@@ -41,41 +24,74 @@ normalise() {
 }
 
 capture() {
-  local name="$1"
-  ab snapshot -i -c | normalise >"$out/$name.a11y.txt"
-  ab screenshot "$out/$name.png" >/dev/null
+  local snapshot
+  snapshot="$(browser snapshot -i -c)" && [ -n "$snapshot" ] || return 1
+  printf '%s\n' "$snapshot" | normalise >"$out/$1.a11y.txt" || return 1
+  browser screenshot "$out/$1.png" >/dev/null || return 1
 }
 
-ab set viewport 1440 900 >/dev/null
+prepare() {
+  browser set viewport 1440 900 >/dev/null || return 1
+  browser set media "$1" >/dev/null || return 1
+}
+
+signed_out() {
+  prepare "$1" || return 1
+  browser open "http://127.0.0.1:$port/" >/dev/null || return 1
+  browser wait 600 >/dev/null || return 1
+  local signed
+  signed="$(browser get count 'nav[aria-label="Main navigation"]')" || return 1
+  if [ "$signed" -gt 0 ]; then
+    browser find role button click --name "Sign out" >/dev/null || return 1
+    browser wait 'input[required]' >/dev/null || return 1
+  fi
+  capture "sign-in$2" || return 1
+}
+
+view() {
+  local role="$1" suffix="$2" i="$3" name
+  browser eval "document.querySelectorAll('$rail')[$i].click()" >/dev/null || return 1
+  browser wait 500 >/dev/null || return 1
+  name="$(browser eval "document.querySelectorAll('$rail')[$i].querySelector('span').textContent" | tr -d '"' | tr ' ' '-' | tr '[:upper:]' '[:lower:]')" || return 1
+  capture "$role.$name$suffix" || return 1
+  local samples
+  samples="$(browser get count '[data-sample]')" || return 1
+  if [ "$samples" -gt 0 ]; then
+    browser eval "document.querySelector('[data-sample] button, [data-sample]').click()" >/dev/null || return 1
+    browser wait 600 >/dev/null || return 1
+    capture "$role.$name.sample$suffix" || return 1
+  fi
+}
+
+signed_in() {
+  "$here/sign-in.sh" "$1" "$port" >/dev/null && prepare "$2"
+}
+
+# A step that fails has already restarted the browser; sign back in and try
+# it once more before giving up on the tour.
+again() {
+  local role="$1" scheme="$2"
+  shift 2
+  "$@" && return 0
+  echo "retrying on a fresh browser: $*" >&2
+  { [ -z "$role" ] || signed_in "$role" "$scheme"; } && "$@" && return 0
+  echo "gave up: $*" >&2
+  exit 1
+}
+
+"$here/stop.sh" "$port" >/dev/null
+"$here/start.sh" "$port" >/dev/null
+trap '"$here/stop.sh" "$port" >/dev/null' EXIT
+
 for scheme in ${BENCHLINE_TOUR_SCHEMES:-light}; do
-  ab set media "$scheme" >/dev/null
   suffix=""
   [ "$scheme" = light ] || suffix=".$scheme"
-  ab open "http://127.0.0.1:$port/" >/dev/null
-  ab wait 600 >/dev/null
-  if [ "$(ab get count 'nav[aria-label="Main navigation"]')" -gt 0 ]; then
-    ab find role button click --name "Sign out" >/dev/null
-    ab wait 'input[required]' >/dev/null
-  fi
-  capture "sign-in$suffix"
+  again "" "$scheme" signed_out "$scheme" "$suffix"
   for role in "${roles[@]}"; do
-    "$here/sign-in.sh" "$role" "$port" >/dev/null
-    # A relaunched browser forgets the viewport and colour scheme; set both
-    # for every role so every screenshot has the same size and theme.
-    ab set viewport 1440 900 >/dev/null
-    ab set media "$scheme" >/dev/null
-    count="$(ab get count 'nav[aria-label="Main navigation"] .rail-item')"
+    again "" "$scheme" signed_in "$role" "$scheme"
+    count="$(browser get count "$rail")" || { signed_in "$role" "$scheme"; count="$(browser get count "$rail")"; }
     for i in $(seq 0 $((count - 1))); do
-      ab eval "document.querySelectorAll('nav[aria-label=\"Main navigation\"] .rail-item')[$i].click()" >/dev/null
-      ab wait 500 >/dev/null
-      view="$(ab eval "document.querySelectorAll('nav[aria-label=\"Main navigation\"] .rail-item')[$i].querySelector('span').textContent" | tr -d '"' | tr ' ' '-' | tr '[:upper:]' '[:lower:]')"
-      capture "$role.$view$suffix"
-      if [ "$(ab get count '[data-sample]')" -gt 0 ]; then
-        ab eval "document.querySelector('[data-sample] button, [data-sample]').click()" >/dev/null
-        ab wait 600 >/dev/null
-        capture "$role.$view.sample$suffix"
-        ab press Escape >/dev/null
-      fi
+      again "$role" "$scheme" view "$role" "$suffix" "$i"
     done
     echo "toured $role ($count views, $scheme)"
   done

@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# Compares two tours. The accessibility trees must match for a change that
-# only restyles: every label, reason, role and disabled state the same. Any
-# difference is printed and must be explained or fixed.
-# Usage: compare.sh <before-dir> <after-dir>
 set -uo pipefail
 before="$1"
 after="$2"

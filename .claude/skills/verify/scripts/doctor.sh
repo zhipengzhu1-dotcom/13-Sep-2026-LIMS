@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-# Read-only: is the instance on this port one this skill started, on this
-# checkout, on a scratch database, and answering?
-# Usage: doctor.sh [port]
 set -uo pipefail
 port="${1:-5199}"
-repo="$(cd "$(dirname "$0")/../../../.." && pwd)"
+repo="${BENCHLINE_VERIFY_CHECKOUT:-$(cd "$(dirname "$0")/../../../.." && pwd)}"
 dir="${BENCHLINE_VERIFY_DIR:-${TMPDIR:-/tmp}/benchline-verify}/$port"
 fail=0
 check() { if eval "$2"; then echo "ok    $1"; else echo "FAIL  $1"; fail=1; fi; }

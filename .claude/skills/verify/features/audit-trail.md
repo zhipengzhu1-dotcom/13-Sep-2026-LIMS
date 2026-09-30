@@ -28,7 +28,7 @@ Preconditions:
 
 ## Gotchas
 
-- Displayed times are the lab's local time (EDT in the demo), while `From (UTC)` and `To (UTC)` filter by UTC dates. Evening runs cross the UTC day boundary; compute dates with `date -u`.
+- Displayed times are in the browser's local time zone (the host's; EDT on the demo machine), not UTC, while `From (UTC)` and `To (UTC)` filter by UTC dates (issue #92). Evening runs cross the UTC day boundary; compute dates with `date -u`.
 - The type select and date inputs have no `name`; the selectors above are the stable handles. `fill` leaves the date inputs empty.
 - Each `sign-in.sh` call adds `Signed Out` and `Signed In` groups, and each abandoned browser adds a `Session Expired` group by `Benchline` 15 minutes later. Count record changes, not Access events, when a recipe's proof is a tally.
 - `Worksheet Uploaded` groups name the attachment's UUID, not the Sample; they sit next to the `Result Entered` group that uses the attachment.

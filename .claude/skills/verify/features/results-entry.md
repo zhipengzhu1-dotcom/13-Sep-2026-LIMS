@@ -34,6 +34,10 @@ Preconditions:
 
 ## Gotchas
 
+- The correction form arrives with `Analysis date` already filled with the Result's date; only the value, reading, sequence ID, worksheet and `Reason for correction` need entering.
+- On a Sample with two Tests, the second Test's entry form and its `Save` can sit below the panel's scrolled area, behind the footer. `agent-browser find role button click --name "Save"` scrolls it into view; a screenshot needs `scrollintoview` first.
+- Rail counts in the README are for a fresh instance. Assigning a Sample to Alex Chen first makes the Analyst's rail `My work 3`.
+
 - An over-Limit Result does not open an OOS investigation by itself. It shows `Investigation required`, and a Manager opens it from the Approval queue panel.
 - `Submit for approval…` is a plain `disabled` button whose reason (`0 of 1 Tests recorded or not reported`) is footer text with no `aria-describedby` link, unlike `Correct` and `Approve…`, which use `aria-disabled` plus a linked reason. A presentation-rules review should flag it.
 - A correction is recorded under the event name `Result Entered`; the old value and the reason are what distinguish it.

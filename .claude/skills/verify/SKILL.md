@@ -68,28 +68,49 @@ Feature recipes, with exact button names and the end state that proves each one,
 
 ### Tour and compare
 
-For any change to how screens look, record every view for every role before and after, and compare:
+For any change to how screens look, record every view for every role on the base commit and on the change, the same UTC day, and compare. The base runs from a worktree of `main` on its own port, served by this checkout's scripts through `BENCHLINE_VERIFY_CHECKOUT`:
 
 ```bash
 V=.claude/skills/verify/scripts
-git stash -u   # or check out the base commit in a worktree
-$V/stop.sh 5199; $V/start.sh 5199 && BENCHLINE_TOUR_SCHEMES="light dark" $V/tour.sh "$BENCHLINE_VERIFY_DIR/evidence/before" 5199; $V/stop.sh 5199
-git stash pop
-$V/start.sh 5199 && BENCHLINE_TOUR_SCHEMES="light dark" $V/tour.sh "$BENCHLINE_VERIFY_DIR/evidence/after" 5199; $V/stop.sh 5199
+BASE="$BENCHLINE_VERIFY_DIR/base-checkout"
+git worktree add "$BASE" main && ln -s "$PWD/node_modules" "$BASE/node_modules"
+AGENT_BROWSER_SESSION=benchline-verify-5198 BENCHLINE_VERIFY_CHECKOUT="$BASE" BENCHLINE_TOUR_SCHEMES="light dark" \
+  $V/tour.sh "$BENCHLINE_VERIFY_DIR/evidence/before" 5198
+BENCHLINE_TOUR_SCHEMES="light dark" $V/tour.sh "$BENCHLINE_VERIFY_DIR/evidence/after" 5199
 $V/compare.sh "$BENCHLINE_VERIFY_DIR/evidence/before" "$BENCHLINE_VERIFY_DIR/evidence/after"
+git worktree remove --force "$BASE"
 ```
 
-`tour.sh <out> [port] [roles...]` signs in as each role, opens every rail view and the first Sample in it, and writes `<role>.<view>[.sample][.dark].png` plus `.a11y.txt`. The accessibility text has clock times, UUIDs, hashes and refs masked, so two tours of fresh instances on the same day are identical (tested). Always tour a freshly started instance, because each sign-in adds audit trail rows.
+`tour.sh <out> [port] [roles...]` stops anything it started on that port, starts a freshly seeded instance, signs in as each role, opens every rail view and the first Sample in it, writes `<role>.<view>[.sample][.dark].png` plus `.a11y.txt`, and stops the instance when it exits. The accessibility text has clock times, UUIDs, hashes and refs masked, so two tours of fresh instances on the same UTC day are identical (tested). The seed places Due and received dates relative to the current UTC day, so a tour from yesterday differs on every queue screen: capture both sides in one sitting.
 
-`compare.sh <before> <after>` exits 0 only when every accessibility tree matches. A pure restyle must exit 0. Every difference it prints must be an intended change named in the PR, or it is a defect. One known exception: when the browser daemon times out and a step is retried, a tour can sign in or out one time more or less than the other, which shows as extra or missing `Signed In` / `Signed Out` rows on the `Audit trail` screens only. Those rows are the harness, not the change; any other difference is not.
+`compare.sh <before> <after>` exits 0 only when every accessibility tree matches. A pure restyle must exit 0. Every difference it prints must be an intended change named in the PR, or it is a defect. One known exception: when a browser command hangs and the tour signs back in to retry it, the `Audit trail` screens show one more `Signed In` / `Signed Out` group than the other tour. Those rows are the harness, not the change; any other difference is not.
 
-### Contrast
+### Stylesheet checks
 
 ```bash
-node .claude/skills/verify/scripts/contrast.mjs            # or pass another stylesheet path
+node .claude/skills/verify/scripts/contrast.mjs     # or pass another stylesheet path
+node .claude/skills/verify/scripts/invariants.mjs
 ```
 
-Reads the colour tokens from `src/styles.css`, light and dark, and measures every text-on-background pairing the workspace draws (ink, muted and accent on each surface; each status colour on its wash; button text on its fill). Exits 1 if any pairing is below WCAG AA's 4.5:1. A new token pairing that the workspace uses is added to its `pairs` list in the same change.
+`contrast.mjs` reads the colour tokens from `src/styles.css`, light and dark, and measures every text-on-background pairing the workspace draws (ink, muted and accent on each surface; each status colour on its wash; button text on its fill) against WCAG AA's 4.5:1. It also fails any rule that fades an element below full opacity, unless it is a blocked control, a decorative mark or an entrance state (`MAY_FADE`), because token ratios can't see opacity. A new token pairing the workspace uses is added to `TEXT_PAIRINGS` in the same change.
+
+`invariants.mjs` holds the presentation rules that a restyle could silently undo, each checked against the stylesheet: a Result value is always ink; the Certificate document keeps Archivo, normal figures and normal tracking, and never animates; a reason, badge or hold never fades or slides in; press and entrance scaling only under `prefers-reduced-motion: no-preference` (or with a reduced-motion override); hover styles only for a fine pointer. Both scripts share `css-rules.mjs`, a small parser of the stylesheet's declarations and the blocks they sit in. Both exit 1 on any failure.
+
+### When the browser hangs
+
+agent-browser's daemon can stop answering: a command sits for minutes, or every retry prints `Resource temporarily unavailable (os error 35)`. Retrying through the same daemon never recovers, and `agent-browser close` hangs too, because it goes through that daemon.
+
+Every script drives the browser through `browser` in `scripts/lib.sh`. It runs each `agent-browser` command under a deadline (`BROWSER_COMMAND_SECONDS`, default 45), and on a timeout or error it kills the session's daemon by the pid agent-browser 0.37 keeps in `~/.agent-browser/<session>.pid`, then returns failure. The next command starts a fresh browser. `tour.sh` then signs back in as the role, resets the viewport and colour scheme, and retries that view once before giving up with `gave up: <step>`. Proven by freezing the daemon mid-tour with `kill -STOP`: the tour logged `browser session ... restarted` and `retrying on a fresh browser: view admin 0`, and finished every screen.
+
+By hand, when an interactive drive hangs:
+
+```bash
+source .claude/skills/verify/scripts/lib.sh
+restart_browser                                   # kills this session's daemon and its Chrome
+.claude/skills/verify/scripts/doctor.sh 5199      # then sign in again and reset the viewport
+```
+
+Use `browser <args>` instead of `agent-browser <args>` in any new helper so it inherits the deadline and the restart.
 
 ## Verification panel (subagents)
 
@@ -101,7 +122,7 @@ A single agent grading its own work passes too easily. After a change, the paren
 | **Feature driver** (one per touched feature file) | any change a feature file covers | `features/<feature>.md` | Starts its own instance on its own port, drives every entry point in the recipe as the named role, captures the action and the resulting state, and checks the side effect in a second view (the History tab or the Audit trail). | per sub-feature ID: verdict plus screenshot and `.a11y.txt` paths |
 | **Regulatory auditor** (one per matching file in `docs/regulatory/`, per `docs/agents/regulatory.md`) | the change touches Results, OOS, Limits, the audit trail, Electronic signatures, access, Sample receipt or Certificates, including how they are displayed | its regulatory file, the diff, the tour screenshots | Checks every requirement and developer-checklist rule that bears on what the screen shows. Examples are a signature showing the signer's printed name, date and time, and meaning (21 CFR 11.50); audit trail entries showing who, when, old and new value, and reason (11.10(e)); an OOS Result never looking like a passing one; a Certificate keeping every ISO/IEC 17025 7.8 item. | each rule with citation: satisfied / at risk / violated, and the screenshot that shows it |
 | **Presentation-rules auditor** | any UI change | `docs/agents/frontend-design.md` step 3, `CONTEXT.md`, the diff, the tour | Checks that a never-usable control is hidden, a blocked control is disabled but focusable with its reason as visible text linked by `aria-describedby`, that no reason lives in a tooltip, that separation-of-duties notes are neutral and OOS blockers are the warning style, that every reason is word for word the server's refusal, and that labels use `CONTEXT.md` terms. | each rule: pass / fail with the element and screenshot |
-| **Craft auditor** | any change to styles or motion | the `emil-design-eng` skill, the diff, the tour | Reviews against Emil Kowalski's checklist (no `transition: all`, ease-out entries, under 300ms, no motion on keyboard actions, press feedback, hover gated by `(hover: hover)`, reduced motion honoured). Runs `contrast.mjs`, and spot-checks computed colours on the rendered screens with `agent-browser eval` for any colour not drawn from a token. Checks focus is visible on every control. | Emil's Before / After / Why table, plus measured contrast ratios |
+| **Craft auditor** | any change to styles or motion | the `emil-design-eng` skill, the diff, the tour | Reviews against Emil Kowalski's checklist (no `transition: all`, ease-out entries, under 300ms, no motion on keyboard actions, press feedback, hover gated by `(hover: hover)`, reduced motion honoured). Runs `contrast.mjs` and `invariants.mjs`, and spot-checks computed colours on the rendered screens with `agent-browser eval` for any colour not drawn from a token. Checks focus is visible on every control. | Emil's Before / After / Why table, plus measured contrast ratios |
 
 Brief template for each reviewer (fill the brackets, keep the rest):
 

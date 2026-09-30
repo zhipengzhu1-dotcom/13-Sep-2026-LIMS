@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-# Starts an isolated demo instance: its own port, its own freshly seeded
-# database, never data/prototype.sqlite. Prints the URL once it answers.
-# Usage: start.sh [port]   (default 5199)
 set -euo pipefail
 port="${1:-5199}"
-repo="$(cd "$(dirname "$0")/../../../.." && pwd)"
+repo="${BENCHLINE_VERIFY_CHECKOUT:-$(cd "$(dirname "$0")/../../../.." && pwd)}"
 dir="${BENCHLINE_VERIFY_DIR:-${TMPDIR:-/tmp}/benchline-verify}/$port"
 
 if [ -f "$dir/server.pid" ] && kill -0 "$(cat "$dir/server.pid")" 2>/dev/null; then
