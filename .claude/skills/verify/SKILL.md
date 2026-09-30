@@ -74,6 +74,8 @@ For any change to how screens look, record every view for every role on the base
 V=.claude/skills/verify/scripts
 BASE="$BENCHLINE_VERIFY_DIR/base-checkout"
 git worktree add "$BASE" main && ln -s "$PWD/node_modules" "$BASE/node_modules"
+exclude="$(git rev-parse --git-common-dir)/info/exclude"
+grep -qx node_modules "$exclude" || echo node_modules >>"$exclude"
 AGENT_BROWSER_SESSION=benchline-verify-5198 BENCHLINE_VERIFY_CHECKOUT="$BASE" BENCHLINE_TOUR_SCHEMES="light dark" \
   $V/tour.sh "$BENCHLINE_VERIFY_DIR/evidence/before" 5198
 BENCHLINE_TOUR_SCHEMES="light dark" $V/tour.sh "$BENCHLINE_VERIFY_DIR/evidence/after" 5199
@@ -81,7 +83,7 @@ $V/compare.sh "$BENCHLINE_VERIFY_DIR/evidence/before" "$BENCHLINE_VERIFY_DIR/evi
 git worktree remove --force "$BASE"
 ```
 
-`tour.sh <out> [port] [roles...]` stops anything it started on that port, starts a freshly seeded instance, signs in as each role, opens every rail view and the first Sample in it, writes `<role>.<view>[.sample][.dark].png` plus `.a11y.txt`, and stops the instance when it exits. The accessibility text has clock times, UUIDs, hashes and refs masked, so two tours of fresh instances on the same UTC day are identical (tested). The seed places Due and received dates relative to the current UTC day, so a tour from yesterday differs on every queue screen: capture both sides in one sitting.
+`tour.sh <out> [port] [roles...]` stops anything it started on that port, starts a freshly seeded instance, signs in as each role, opens every rail view and the first Sample in it, writes `<role>.<view>[.sample][.dark].png` plus `.a11y.txt`, and stops the instance when it exits. The accessibility text has clock times, UUIDs, hashes and refs masked, so two tours of fresh instances on the same UTC day are identical (tested). The seed places Due and received dates relative to the current UTC day, so a tour from yesterday differs on every queue screen: capture both sides in one sitting. The `exclude` line matters: `.gitignore`'s `node_modules/` does not match the symlink, so without it the base counts as modified and every Audit trail screen reads "with uncommitted changes" on one side only. For the same reason, commit or stash before the after tour: `git status --porcelain` must print nothing in both checkouts.
 
 `compare.sh <before> <after>` exits 0 only when every accessibility tree matches. A pure restyle must exit 0. Every difference it prints must be an intended change named in the PR, or it is a defect. One known exception: when a browser command hangs and the tour signs back in to retry it, the `Audit trail` screens show one more `Signed In` / `Signed Out` group than the other tour. Those rows are the harness, not the change; any other difference is not.
 
