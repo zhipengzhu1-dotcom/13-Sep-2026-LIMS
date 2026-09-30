@@ -22,8 +22,8 @@ Code follows Matt Pocock's recommendations: deep modules, test-first through pub
 
 ### Front-end design
 
-Before designing, building or reviewing a change to workspace screens, styles or the rendered Certificate of Analysis, invoke the `ui-ux-pro-max` skills. See `docs/agents/frontend-design.md`.
+Before designing, building or reviewing a change to workspace screens, styles, motion or the rendered Certificate of Analysis, invoke `emil-design-eng` and Emil Kowalski's related skills (`animate`, `review-animations`). See `docs/agents/frontend-design.md`.
 
 ### Seeing the web UI
 
-When you need to see what the workspace looks like or how it behaves (finishing or reviewing a UI change, or a UI bug), use the `agent-browser` CLI against `npm run dev`. See `docs/agents/browser-verification.md`.
+When you need to see what the workspace looks like or how it behaves (finishing or reviewing a UI change, or a UI bug), use the `agent-browser` CLI against `npm run dev`. See `docs/agents/browser-verification.md`. To prove a change, use the project `verify` skill (`.claude/skills/verify/`): isolated instances, before/after tours of every role, and a panel of checking subagents.
